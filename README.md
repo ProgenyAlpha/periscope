@@ -27,9 +27,9 @@ PERISCOPE is a hook-based telemetry system for [Claude Code](https://docs.anthro
 ```
                  ┃o┃
                  ┃ ┃
-    ▄▄▄▄▄▄▄▄▄▄▄▄▄┃ ┃▄▄▄▄▄▄▄▄▄▄▄▄▄▄
-    █ PERISCOPE ░░░░░░ TELEMETRY █
-    ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+    ▄▄▄▄▄▄▄▄▄▄▄▄▄┃ ┃▄▄▄▄▄▄▄▄▄▄▄▄▄
+    █ PERISCOPE ░░░░░ TELEMETRY █
+    ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
 ```
 
 ## Architecture
