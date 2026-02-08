@@ -1,0 +1,11 @@
+# Session data (generated at runtime)
+*.json
+!statusline/statusline-config.json
+*.jsonl
+
+# Backups
+*.bak
+*.bak.*
+
+# Temp files
+temp-*.ps1
