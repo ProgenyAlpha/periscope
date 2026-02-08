@@ -25,7 +25,7 @@ PERISCOPE is a hook-based telemetry system for [Claude Code](https://docs.anthro
 - **Renders a statusline** showing rate limits, cost, and pace directly in your terminal
 
 ```
-                  ┃◉┃
+                  ┃o┃
                   ┃ ┃
     ▄▄▄▄▄▄▄▄▄▄▄▄▄┃ ┃▄▄▄▄▄▄▄▄▄▄▄▄▄▄
     █ PERISCOPE ░░░░░░ TELEMETRY █
