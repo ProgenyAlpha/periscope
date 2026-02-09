@@ -1,6 +1,16 @@
+# Binary
+periscope.exe
+periscope
+
+# Go
+go.sum
+
+# Database
+*.db
+*.db-wal
+*.db-shm
+
 # Session data (generated at runtime)
-*.json
-!statusline/statusline-config.json
 *.jsonl
 
 # Backups
@@ -9,3 +19,4 @@
 
 # Temp files
 temp-*.ps1
+test-api.ps1

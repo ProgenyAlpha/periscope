@@ -1,0 +1,248 @@
+<style>
+.w-metrics .m-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
+@media(max-width:900px){.w-metrics .m-grid{grid-template-columns:repeat(2,1fr)}}
+.w-metrics .m-card{background:var(--bg-inset);border:1px solid var(--rule);border-radius:var(--radius,6px);padding:12px 14px;position:relative;transition:border-color 0.2s;overflow:hidden}
+.w-metrics .m-card:hover{border-color:color-mix(in srgb,var(--rule) 50%,var(--text-dim))}
+.w-metrics .m-card::before{content:'';position:absolute;left:0;top:8px;bottom:8px;width:2px;border-radius:1px}
+.w-metrics .m-card[data-accent="primary"]::before{background:var(--c-primary)}
+.w-metrics .m-card[data-accent="secondary"]::before{background:var(--c-secondary)}
+.w-metrics .m-card[data-accent="tertiary"]::before{background:var(--c-tertiary)}
+.w-metrics .m-card[data-accent="accent"]::before{background:var(--c-accent)}
+.w-metrics .m-card[data-accent="danger"]::before{background:var(--c-danger)}
+.w-metrics .m-card[data-accent="warm"]::before{background:var(--c-warm)}
+.w-metrics .m-label{font-size:0.55rem;text-transform:uppercase;letter-spacing:1.2px;color:var(--text-dim);margin-bottom:6px;line-height:1}
+.w-metrics .m-value{font-size:1.4rem;font-weight:600;font-family:var(--font-mono);color:var(--text-bright);line-height:1.1;display:flex;align-items:baseline;gap:6px}
+.w-metrics .m-sub{font-size:0.58rem;color:var(--text-dim);font-family:var(--font-mono);margin-top:4px;line-height:1.2}
+.w-metrics .m-value.count-flash{transition:color 0.3s;color:var(--c-primary)}
+.w-metrics .m-spark{position:absolute;right:8px;top:8px;opacity:0.5}
+</style>
+<script>
+Periscope.registerWidget({
+  id: 'cost-overview',
+  title: 'Key Metrics',
+  size: 'xl',
+  priority: 5,
+
+  init(el) {
+    const cards = [
+      { id: 'km-cost',     accent: 'primary',   label: 'Total Cost',      spark: true },
+      { id: 'km-turns',    accent: 'secondary',  label: 'Total Turns',     spark: true },
+      { id: 'km-cache',    accent: 'tertiary',   label: 'Cache Hit Rate',  spark: true },
+      { id: 'km-weighted', accent: 'accent',     label: 'Weighted Tokens', spark: true },
+      { id: 'km-burn',     accent: 'warm',       label: 'Burn Rate',       spark: false },
+      { id: 'km-avgturn',  accent: 'warm',       label: 'Avg Turn Cost',   spark: false },
+      { id: 'km-model',    accent: 'primary',    label: 'Active Model',    spark: false },
+      { id: 'km-sessions', accent: 'secondary',  label: 'Sessions Today',  spark: false },
+    ];
+    el.innerHTML =
+      '<div class="widget-title">Key Metrics</div>' +
+      '<div class="w-metrics"><div class="m-grid">' +
+      cards.map(c =>
+        '<div class="m-card" data-accent="' + c.accent + '" id="' + c.id + '-card">' +
+          (c.spark ? '<div class="m-spark" id="' + c.id + '-spark"></div>' : '') +
+          '<div class="m-label">' + c.label + '</div>' +
+          '<div class="m-value" id="' + c.id + '"><span class="m-num">--</span></div>' +
+          '<div class="m-sub" id="' + c.id + '-sub">&nbsp;</div>' +
+        '</div>'
+      ).join('') +
+      '</div></div>';
+  },
+
+  render(el, data) {
+    const sidecars = data.sidecars || [];
+    const nSessions = sidecars.length;
+
+    // --- Aggregate sidecar data ---
+    let totalIn = 0, totalCR = 0, totalCW = 0, totalOut = 0, totalCost = 0;
+    let agentCalls = 0, toolCalls = 0, chatCalls = 0;
+
+    for (const s of sidecars) {
+      const c = s.data && s.data.cumulative;
+      if (!c) continue;
+      totalIn   += c.input || 0;
+      totalCR   += c.cache_read || 0;
+      totalCW   += c.cache_write || 0;
+      totalOut  += c.output || 0;
+      totalCost += c.cost || 0;
+      agentCalls += c.agent_calls || 0;
+      toolCalls  += c.tool_calls || 0;
+      chatCalls  += c.chat_calls || 0;
+    }
+
+    const totalTurns = agentCalls + toolCalls + chatCalls;
+    const totalRawTokens = totalIn + totalCR + totalCW + totalOut;
+    const totalWeighted = weightedTokens(totalIn, totalCR, totalCW, totalOut);
+    const cacheRate = cacheHitRate(totalIn, totalCR);
+    const cs = costSuffix(data);
+
+    // --- Deduped history for sparklines & deltas ---
+    const deduped = data.historyDeduped || [];
+    const recent20 = deduped.slice(-20);
+    // Previous session = second-to-last deduped entry (current = last)
+    const prev = deduped.length >= 2 ? deduped[deduped.length - 2] : null;
+    const curr = deduped.length >= 1 ? deduped[deduped.length - 1] : null;
+
+    // ---- 1. Total Cost ----
+    const costEl = el.querySelector('#km-cost .m-num');
+    animateValue(costEl, totalCost, v => fmtCost(v) + cs, 900);
+    const costPerMTok = totalRawTokens > 0 ? (totalCost / (totalRawTokens / 1e6)).toFixed(2) : '0';
+    const costDelta = (curr && prev) ? deltaHtml(curr.cost || 0, prev.cost || 0) : '';
+    el.querySelector('#km-cost').innerHTML =
+      '<span class="m-num" id="km-cost-num">' + (fmtCost(totalCost) + cs) + '</span>' + costDelta;
+    animateValue(el.querySelector('#km-cost-num'), totalCost, v => fmtCost(v) + cs, 900);
+    el.querySelector('#km-cost-sub').textContent = nSessions + ' sessions \u00b7 $' + costPerMTok + '/MTok';
+
+    // ---- 2. Total Turns ----
+    const turnsDelta = (curr && prev) ? deltaHtml(curr.turns || 0, prev.turns || 0) : '';
+    el.querySelector('#km-turns').innerHTML =
+      '<span class="m-num" id="km-turns-num">--</span>' + turnsDelta;
+    animateValue(el.querySelector('#km-turns-num'), totalTurns, v => fmt(Math.round(v)), 900);
+    el.querySelector('#km-turns-sub').textContent = agentCalls + ' agent \u00b7 ' + toolCalls + ' tool \u00b7 ' + chatCalls + ' chat';
+
+    // ---- 3. Cache Hit Rate ----
+    const prevCacheRate = prev ? cacheHitRate(prev.input || 0, prev.cr || 0) : null;
+    const cacheDelta = (prevCacheRate !== null && cacheRate > 0) ? deltaHtml(cacheRate, prevCacheRate) : '';
+    el.querySelector('#km-cache').innerHTML =
+      '<span class="m-num" id="km-cache-num">--</span>' + cacheDelta;
+    animateValue(el.querySelector('#km-cache-num'), cacheRate, v => fmtCacheRate(v) + '%', 900);
+    el.querySelector('#km-cache-sub').textContent = fmtK(totalCR) + ' cache reads \u00b7 lifetime';
+
+    // ---- 4. Weighted Tokens ----
+    const currWt = curr ? weightedTokens(curr.input || 0, curr.cr || 0, curr.cw || 0, curr.out || 0) : 0;
+    const prevWt = prev ? weightedTokens(prev.input || 0, prev.cr || 0, prev.cw || 0, prev.out || 0) : 0;
+    const wtDelta = (currWt > 0 && prevWt > 0) ? deltaHtml(currWt, prevWt) : '';
+    el.querySelector('#km-weighted').innerHTML =
+      '<span class="m-num" id="km-weighted-num">--</span>' + wtDelta;
+    animateValue(el.querySelector('#km-weighted-num'), totalWeighted, v => fmtK(Math.round(v)), 900);
+    const weightMultiplier = totalRawTokens > 0 ? (totalWeighted / totalRawTokens).toFixed(1) : '0';
+    el.querySelector('#km-weighted-sub').textContent = fmtK(totalRawTokens) + ' raw \u00b7 ' + weightMultiplier + 'x weight';
+
+    // ---- 5. Burn Rate (session-based delta calculation) ----
+    let burnPerHr = 0;
+    let tokenBurnPerHr = 0;
+    const history = data.history || [];
+    if (history.length > 1) {
+      const now = Date.now();
+      const recent = history.filter(h => (now - new Date(h.ts).getTime()) < WINDOW_5HR_MS);
+      if (recent.length > 1) {
+        // Cost burn: group by sid, compute cost delta (max - min) within window per session
+        const bySid = {};
+        for (const h of recent) {
+          if (!bySid[h.sid]) bySid[h.sid] = { minCost: h.cost || 0, maxCost: h.cost || 0, first: h.ts, last: h.ts };
+          const s = bySid[h.sid];
+          const c = h.cost || 0;
+          if (c < s.minCost) s.minCost = c;
+          if (c > s.maxCost) s.maxCost = c;
+          if (h.ts < s.first) s.first = h.ts;
+          if (h.ts > s.last) s.last = h.ts;
+        }
+        let windowCost = 0, earliest = null, latest = null;
+        for (const s of Object.values(bySid)) {
+          windowCost += s.maxCost - s.minCost;
+          if (!earliest || s.first < earliest) earliest = s.first;
+          if (!latest || s.last > latest) latest = s.last;
+        }
+        const spanHrs = Math.max((new Date(latest) - new Date(earliest)) / 3600e3, 0.1);
+        burnPerHr = windowCost / spanHrs;
+
+        // Token burn: same approach with weighted tokens
+        const bySid2 = {};
+        for (const h of recent) {
+          const wt = weightedTokens(h.input || 0, h.cr || 0, h.cw || 0, h.output || 0);
+          if (!bySid2[h.sid]) bySid2[h.sid] = { min: wt, max: wt, first: h.ts, last: h.ts };
+          const s2 = bySid2[h.sid];
+          if (wt < s2.min) s2.min = wt;
+          if (wt > s2.max) s2.max = wt;
+          if (h.ts < s2.first) s2.first = h.ts;
+          if (h.ts > s2.last) s2.last = h.ts;
+        }
+        let wDelta = 0, e2 = null, l2 = null;
+        for (const s2 of Object.values(bySid2)) {
+          wDelta += s2.max - s2.min;
+          if (!e2 || s2.first < e2) e2 = s2.first;
+          if (!l2 || s2.last > l2) l2 = s2.last;
+        }
+        const sp2 = Math.max((new Date(l2) - new Date(e2)) / 3600e3, 0.1);
+        tokenBurnPerHr = wDelta / sp2;
+      }
+    }
+    const burnEl = el.querySelector('#km-burn');
+    const burnCard = el.querySelector('#km-burn-card');
+    burnEl.innerHTML = '<span class="m-num" id="km-burn-num">--</span>';
+    const burnNumEl = el.querySelector('#km-burn-num');
+    if (burnPerHr > 0) {
+      animateValue(burnNumEl, burnPerHr, v => '$' + v.toFixed(2) + '/hr' + cs, 900);
+      if (burnPerHr > 15) {
+        burnNumEl.style.color = 'var(--c-danger)';
+        burnCard.dataset.accent = 'danger';
+      } else {
+        burnNumEl.style.color = '';
+        burnCard.dataset.accent = 'warm';
+      }
+      el.querySelector('#km-burn-sub').textContent =
+        fmtK(Math.round(tokenBurnPerHr)) + ' wt/hr \u00b7 $' + (burnPerHr * 24).toFixed(0) + '/day';
+    } else {
+      burnNumEl.textContent = '--';
+      el.querySelector('#km-burn-sub').textContent = 'no recent data';
+    }
+
+    // ---- 6. Avg Turn Cost ----
+    const avgTurn = totalTurns > 0 ? totalCost / totalTurns : 0;
+    const rawPerTurn = totalTurns > 0 ? fmtK(Math.round(totalRawTokens / totalTurns)) : '--';
+    const wtPerTurn = totalTurns > 0 ? fmtK(Math.round(totalWeighted / totalTurns)) : '--';
+    el.querySelector('#km-avgturn').innerHTML = '<span class="m-num" id="km-avgturn-num">--</span>';
+    animateValue(el.querySelector('#km-avgturn-num'), avgTurn, v => '$' + v.toFixed(4) + cs, 900);
+    el.querySelector('#km-avgturn-sub').textContent = rawPerTurn + ' raw \u00b7 ' + wtPerTurn + ' wt/turn';
+
+    // ---- 7. Active Model ----
+    const modelCounts = {};
+    for (const sc of sidecars) {
+      const m = sc.data.lastTurn ? (sc.data.lastTurn.model || 'unknown') : 'unknown';
+      const short = m.replace('claude-', '').replace(/-\d{8}$/, '');
+      modelCounts[short] = (modelCounts[short] || 0) + 1;
+    }
+    const topModel = Object.entries(modelCounts).sort((a, b) => b[1] - a[1]);
+    const activeModel = topModel.length > 0 ? topModel[0][0] : '--';
+    const modelEl = el.querySelector('#km-model');
+    modelEl.innerHTML = '<span class="m-num">' + activeModel + '</span>';
+    const modelSubEl = el.querySelector('#km-model-sub');
+    if (topModel.length > 0) {
+      // Find raw model name for pricing lookup
+      let rawModel = '';
+      for (const sc of sidecars) {
+        if (sc.data.lastTurn && sc.data.lastTurn.model) { rawModel = sc.data.lastTurn.model; break; }
+      }
+      const pricing = rawModel ? getModelPricing(rawModel) : getModelPricing();
+      const modelInfo = topModel.length > 1
+        ? topModel.length + ' models \u00b7 in:$' + pricing.input + '/out:$' + pricing.output
+        : 'in:$' + pricing.input + ' / out:$' + pricing.output + ' /MTok';
+      modelSubEl.textContent = modelInfo;
+    } else {
+      modelSubEl.textContent = '--';
+    }
+
+    // ---- 8. Sessions Today ----
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+    let sessionsToday = 0;
+    if (history.length > 0) {
+      const todaySids = new Set();
+      for (const h of history) {
+        if (new Date(h.ts) >= todayStart) todaySids.add(h.sid);
+      }
+      sessionsToday = todaySids.size;
+    }
+    el.querySelector('#km-sessions').innerHTML = '<span class="m-num" id="km-sessions-num">--</span>';
+    animateValue(el.querySelector('#km-sessions-num'), sessionsToday, v => Math.round(v).toString(), 900);
+    el.querySelector('#km-sessions-sub').textContent = nSessions + ' total tracked';
+
+    // ---- Sparklines (deduped history, last 20 sessions) ----
+    if (recent20.length > 1) {
+      makeSpark('km-cost-spark', recent20.map(h => h.cost || 0));
+      makeSpark('km-turns-spark', recent20.map(h => h.turns || 0));
+      makeSpark('km-cache-spark', recent20.map(h => cacheHitRate(h.input || 0, h.cr || 0)));
+      makeSpark('km-weighted-spark', recent20.map(h => weightedTokens(h.input || 0, h.cr || 0, h.cw || 0, h.out || 0)));
+    }
+  }
+});
+</script>

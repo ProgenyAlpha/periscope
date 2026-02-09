@@ -1,0 +1,205 @@
+<style>
+.w-activity .stat-cards{display:flex;gap:8px;flex-wrap:wrap}
+.w-activity .stat-card{flex:1 1 calc(25% - 6px);min-width:80px;padding:8px 10px;background:var(--bg-inset);border-radius:4px;border:1px solid var(--rule);display:flex;flex-direction:column;gap:2px}
+.w-activity .sc-val{font-size:1.3rem;font-weight:600;font-family:var(--font-mono);line-height:1;color:var(--text-bright)}
+.w-activity .sc-label{font-size:0.55rem;text-transform:uppercase;letter-spacing:1px;color:var(--text-dim);font-weight:600}
+.w-activity .sc-sub{font-size:0.55rem;font-family:var(--font-mono);color:var(--text-dim)}
+.w-activity .sc-agent{border-top:2px solid var(--c-primary)}
+.w-activity .sc-tool{border-top:2px solid var(--c-secondary)}
+.w-activity .sc-chat{border-top:2px solid var(--c-tertiary)}
+.w-activity .sc-total{border-top:2px solid var(--text-dim)}
+.w-activity .sc-agent .sc-val{color:var(--c-primary)}
+.w-activity .sc-tool .sc-val{color:var(--c-secondary)}
+.w-activity .sc-chat .sc-val{color:var(--c-tertiary)}
+
+.w-activity .section-label{font-size:0.55rem;text-transform:uppercase;letter-spacing:1px;color:var(--text-dim);margin-top:14px;margin-bottom:6px}
+
+.w-activity .heatmap-wrap{overflow-x:auto}
+.w-activity .heatmap{display:flex;gap:2px}
+.w-activity .hm-cell{width:18px;height:24px;border-radius:2px;flex-shrink:0;transition:opacity 0.3s ease}
+.w-activity .hm-cell.hm-now{outline:1px solid var(--c-primary);outline-offset:-1px}
+.w-activity .hm-labels{display:flex;justify-content:space-between;margin-top:3px;padding:0 0 0 0}
+.w-activity .hm-labels span{font-size:0.5rem;font-family:var(--font-mono);color:var(--text-dim)}
+
+.w-activity .cost-bar-wrap{margin-top:14px}
+.w-activity .cost-bar{display:flex;height:10px;border-radius:5px;overflow:hidden;background:var(--bg-inset)}
+.w-activity .cb-seg{height:100%;transition:width 0.5s ease;position:relative;display:flex;align-items:center;justify-content:center}
+.w-activity .cb-agent{background:var(--c-primary)}
+.w-activity .cb-tool{background:var(--c-secondary)}
+.w-activity .cb-chat{background:var(--c-tertiary)}
+.w-activity .cost-legend{display:flex;gap:10px;margin-top:6px;flex-wrap:wrap}
+.w-activity .cost-legend span{display:flex;align-items:center;gap:4px;font-size:0.55rem;color:var(--text-dim);font-family:var(--font-mono)}
+.w-activity .cost-legend span::before{content:'';width:8px;height:8px;border-radius:2px;flex-shrink:0}
+.w-activity .cl-agent::before{background:var(--c-primary)}
+.w-activity .cl-tool::before{background:var(--c-secondary)}
+.w-activity .cl-chat::before{background:var(--c-tertiary)}
+
+@media (max-width: 480px) {
+  .w-activity .stat-cards{flex-wrap:wrap}
+  .w-activity .stat-card{flex:1 1 calc(50% - 4px);min-width:0}
+}
+</style>
+<script>
+Periscope.registerWidget({
+  id: 'activity-breakdown',
+  title: 'Activity',
+  size: 'md',
+  priority: 15,
+  init(el) {
+    el.innerHTML = `
+      <div class="widget-title">Activity</div>
+      <div class="w-activity">
+        <div class="stat-cards">
+          <div class="stat-card sc-total">
+            <span class="sc-val" id="ab-sessions">0</span>
+            <span class="sc-label">Sessions Today</span>
+            <span class="sc-sub" id="ab-sessions-sub">0 total</span>
+          </div>
+          <div class="stat-card sc-agent">
+            <span class="sc-val" id="ab-top-tool">--</span>
+            <span class="sc-label">Top Tool</span>
+            <span class="sc-sub" id="ab-top-tool-sub">0 calls</span>
+          </div>
+          <div class="stat-card sc-tool">
+            <span class="sc-val" id="ab-total">0</span>
+            <span class="sc-label">API Breakdown</span>
+            <span class="sc-sub" id="ab-api-sub">A:0 T:0 C:0</span>
+          </div>
+          <div class="stat-card sc-chat">
+            <span class="sc-val" id="ab-peak">--</span>
+            <span class="sc-label">Peak Hour</span>
+            <span class="sc-sub">most active time</span>
+          </div>
+        </div>
+        <div class="section-label">24-Hour Activity</div>
+        <div class="heatmap-wrap">
+          <div class="heatmap" id="ab-heatmap"></div>
+        </div>
+        <div class="hm-labels">
+          <span>0</span><span>6</span><span>12</span><span>18</span><span>23</span>
+        </div>
+        <div class="section-label">Cost by Type</div>
+        <div class="cost-bar">
+          <div class="cb-seg cb-agent" id="ab-cb-agent" style="width:0%"></div>
+          <div class="cb-seg cb-tool" id="ab-cb-tool" style="width:0%"></div>
+          <div class="cb-seg cb-chat" id="ab-cb-chat" style="width:0%"></div>
+        </div>
+        <div class="cost-legend">
+          <span class="cl-agent" id="ab-cl-agent">Agent $0.00</span>
+          <span class="cl-tool" id="ab-cl-tool">Tool $0.00</span>
+          <span class="cl-chat" id="ab-cl-chat">Chat $0.00</span>
+        </div>
+      </div>`;
+
+    // Build 24 heatmap cells
+    const hm = el.querySelector('#ab-heatmap');
+    for (let h = 0; h < 24; h++) {
+      const cell = document.createElement('div');
+      cell.className = 'hm-cell';
+      cell.dataset.hour = h;
+      cell.title = h + ':00';
+      hm.appendChild(cell);
+    }
+  },
+  render(el, data) {
+    let agents = 0, tools = 0, chats = 0;
+    let agentCost = 0, toolCost = 0, chatCost = 0;
+
+    (data.sidecars || []).forEach(s => {
+      const c = s.data && s.data.cumulative;
+      if (!c) return;
+      agents += c.agent_calls || 0;
+      tools += c.tool_calls || 0;
+      chats += c.chat_calls || 0;
+      agentCost += c.agent_cost || 0;
+      toolCost += c.tool_cost || 0;
+      chatCost += c.chat_cost || 0;
+    });
+
+    const total = agents + tools + chats;
+    const pct = (v) => total > 0 ? Math.round(v / total * 100) + '%' : '0%';
+    const fmtC = v => v >= 100 ? '$' + v.toFixed(0) : v >= 10 ? '$' + v.toFixed(1) : '$' + v.toFixed(2);
+    const fmtN = Periscope.fmt || (n => n.toLocaleString());
+
+    // Sessions today
+    const todayStart = new Date(); todayStart.setHours(0,0,0,0);
+    const sessionsToday = data.history ? [...new Set(data.history.filter(h => new Date(h.ts) >= todayStart).map(h => h.sid))].length : 0;
+    el.querySelector('#ab-sessions').textContent = sessionsToday;
+    el.querySelector('#ab-sessions-sub').textContent = (data.sidecars || []).length + ' total tracked';
+
+    // Top tool
+    const toolMap = {};
+    (data.sidecars || []).forEach(s => {
+      const c = s.data && s.data.cumulative;
+      if (!c || !c.tools) return;
+      for (const [name, info] of Object.entries(c.tools)) {
+        toolMap[name] = (toolMap[name]||0) + (info.calls||0);
+      }
+    });
+    const topTool = Object.entries(toolMap).sort((a,b) => b[1] - a[1]);
+    el.querySelector('#ab-top-tool').textContent = topTool.length > 0 ? topTool[0][0] : '--';
+    el.querySelector('#ab-top-tool-sub').textContent = topTool.length > 0 ? (typeof fmt === 'function' ? fmt(topTool[0][1]) : topTool[0][1]) + ' calls' : '0 calls';
+
+    // API breakdown
+    el.querySelector('#ab-total').textContent = fmtN(total);
+    el.querySelector('#ab-api-sub').textContent = 'A:' + agents + ' T:' + tools + ' C:' + chats;
+
+    // Peak hour
+    let peakHour = '--';
+    if (data.history && data.history.length > 0) {
+      const hourBuckets = new Array(24).fill(0);
+      for (const h of data.history) hourBuckets[new Date(h.ts).getHours()]++;
+      const maxIdx = hourBuckets.indexOf(Math.max(...hourBuckets));
+      peakHour = String(maxIdx).padStart(2,'0') + ':00';
+    }
+    el.querySelector('#ab-peak').textContent = peakHour;
+
+    // 24-hour heatmap from ALL history (lifetime hourly density)
+    const hours = new Array(24).fill(0);
+    const currentHour = new Date().getHours();
+
+    (data.history || []).forEach(entry => {
+      if (!entry.ts) return;
+      hours[new Date(entry.ts).getHours()]++;
+    });
+
+    const peak = Math.max(...hours, 1);
+    const colors = Periscope.getColors ? Periscope.getColors() : {};
+    const primary = colors.primary || getComputedStyle(document.documentElement).getPropertyValue('--c-primary').trim() || '#f59e0b';
+    const rgb = (typeof hexToRgb === 'function') ? hexToRgb(primary) : '245,158,11';
+
+    const cells = el.querySelectorAll('.hm-cell');
+    cells.forEach(cell => {
+      const h = parseInt(cell.dataset.hour);
+      const count = hours[h];
+      const intensity = count > 0 ? 0.15 + (count / peak) * 0.85 : 0.1;
+      cell.style.background = 'rgba(' + rgb + ',' + intensity.toFixed(2) + ')';
+      cell.title = h + ':00 \u2014 ' + count + ' entries';
+      if (h === currentHour) {
+        cell.classList.add('hm-now');
+      } else {
+        cell.classList.remove('hm-now');
+      }
+    });
+
+    // Cost stacked bar
+    const totalCost = agentCost + toolCost + chatCost;
+    if (totalCost > 0) {
+      const aPct = (agentCost / totalCost * 100);
+      const tPct = (toolCost / totalCost * 100);
+      const cPct = (chatCost / totalCost * 100);
+      el.querySelector('#ab-cb-agent').style.width = aPct + '%';
+      el.querySelector('#ab-cb-tool').style.width = tPct + '%';
+      el.querySelector('#ab-cb-chat').style.width = cPct + '%';
+    } else {
+      el.querySelector('#ab-cb-agent').style.width = '0%';
+      el.querySelector('#ab-cb-tool').style.width = '0%';
+      el.querySelector('#ab-cb-chat').style.width = '0%';
+    }
+
+    el.querySelector('#ab-cl-agent').textContent = 'Agent ' + fmtC(agentCost);
+    el.querySelector('#ab-cl-tool').textContent = 'Tool ' + fmtC(toolCost);
+    el.querySelector('#ab-cl-chat').textContent = 'Chat ' + fmtC(chatCost);
+  }
+});
+</script>

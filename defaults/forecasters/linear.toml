@@ -1,0 +1,16 @@
+[meta]
+name = "Linear Projection"
+id   = "linear"
+
+[config]
+# Minimum data points before generating a forecast
+min_points = 3
+
+# Look-back window (hours) for trend calculation
+window_hours = 2
+
+# How far ahead to project (hours)
+forecast_hours = 5
+
+# Smoothing factor for exponential weighted average (0-1, higher = more recent bias)
+alpha = 0.3

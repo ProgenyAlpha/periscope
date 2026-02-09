@@ -1,0 +1,28 @@
+[meta]
+name       = "Arctic"
+id         = "arctic"
+variant    = "dark"
+font_stack = "'Rajdhani', sans-serif"
+mono_stack = "'Fira Code', monospace"
+
+[colors]
+bg-void    = "#060a10"
+bg-panel   = "#0b1018"
+bg-inset   = "#111824"
+bg-hover   = "#18202e"
+primary    = "#88c0d0"
+secondary  = "#a3be8c"
+tertiary   = "#81a1c1"
+accent     = "#b48ead"
+danger     = "#bf616a"
+warm       = "#ebcb8b"
+text       = "#eceff4"
+text-dim   = "#616e88"
+text-bright = "#f0f4fc"
+rule       = "rgba(136,192,208,0.1)"
+glow       = "rgba(136,192,208,0.2)"
+signal     = "#a3be8c"
+
+[brand]
+primary = "#88c0d0"
+accent  = "#b48ead"

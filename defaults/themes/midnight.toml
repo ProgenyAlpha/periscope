@@ -1,0 +1,28 @@
+[meta]
+name       = "Midnight"
+id         = "midnight"
+variant    = "dark"
+font_stack = "'Rajdhani', sans-serif"
+mono_stack = "'Fira Code', monospace"
+
+[colors]
+bg-void    = "#08061a"
+bg-panel   = "#0e0b24"
+bg-inset   = "#141030"
+bg-hover   = "#1a1540"
+primary    = "#a78bfa"
+secondary  = "#67e8f9"
+tertiary   = "#818cf8"
+accent     = "#f472b6"
+danger     = "#fb7185"
+warm       = "#c4b5fd"
+text       = "#e0d4fc"
+text-dim   = "#5b4f80"
+text-bright = "#f0ebff"
+rule       = "rgba(167,139,250,0.1)"
+glow       = "rgba(167,139,250,0.25)"
+signal     = "#67e8f9"
+
+[brand]
+primary = "#a78bfa"
+accent  = "#f472b6"

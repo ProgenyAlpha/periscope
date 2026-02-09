@@ -1,0 +1,858 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>PERISCOPE</title>
+<link href="https://fonts.googleapis.com/css2?family=Black+Ops+One&family=Space+Grotesk:wght@300;400;500;600&family=Rajdhani:wght@500;600;700&family=Fira+Code:wght@400;600&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3"></script>
+<style>
+*,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
+:root{
+  --bg-void:#14181e;--bg-panel:rgba(10,14,20,0.90);--bg-inset:rgba(16,20,28,0.92);
+  --bg-hover:rgba(24,28,36,0.88);--c-primary:#E06236;--c-secondary:#D7AB61;
+  --c-tertiary:#2F4C79;--c-accent:#E06236;--c-danger:#C82337;--c-warm:#E06236;
+  --text:#e8e0d4;--text-dim:#5a6270;--text-bright:#f4f0e8;
+  --rule:rgba(224,98,54,0.12);--glow:rgba(224,98,54,0.18);
+  --font-ui:'Space Grotesk','Rajdhani',sans-serif;--font-mono:'Fira Code',monospace;
+  --radius:6px;--stripe-1:#C82337;--stripe-2:#E06236;--stripe-3:#D7AB61;--stripe-4:#2F4C79;
+  --brand-primary:#D7AB61;--brand-accent:#E06236;--signal:#22c55e;
+}
+html,body{height:100%;background:var(--bg-void);color:var(--text);font-family:var(--font-ui);overflow-x:hidden}
+a{color:var(--c-primary);text-decoration:none}
+
+/* Header */
+.top-bar{display:flex;align-items:flex-end;justify-content:space-between;padding:16px 20px;max-width:1480px;margin:0 auto;border-bottom:1px solid var(--rule);margin-bottom:20px;flex-wrap:wrap;gap:12px}
+.brand{font-family:'Black Ops One',cursive;font-size:22px;color:var(--c-primary);letter-spacing:3px;text-shadow:0 0 20px rgba(245,158,11,0.3);display:flex;align-items:baseline;gap:8px}
+.brand span{font-family:'Rajdhani',sans-serif;font-weight:600;font-size:14px;color:var(--text-dim);letter-spacing:4px}
+.status-strip{display:flex;align-items:center;gap:14px}
+.acct-strip{display:flex;align-items:center;gap:8px;flex-wrap:nowrap;flex-shrink:1;overflow:hidden}
+.signal{display:flex;align-items:center;gap:6px}
+.signal-dot{width:8px;height:8px;border-radius:50%;background:var(--c-secondary);box-shadow:0 0 8px var(--c-secondary);animation:pulse 2s ease-in-out infinite}
+.signal-dot.off{background:var(--c-danger);box-shadow:0 0 8px var(--c-danger);animation:none}
+@keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.5;transform:scale(.8)}}
+.signal-label{font-family:var(--font-mono);font-size:10px;color:var(--c-secondary);letter-spacing:1px}
+.chip{font-family:var(--font-mono);font-size:11px;font-weight:600;padding:3px 10px;border:1px solid var(--rule);background:var(--bg-inset);color:var(--text)}
+.chip.amber{color:var(--c-primary);border-color:rgba(245,158,11,0.25)}
+.chip.green{color:var(--c-secondary);border-color:rgba(34,197,94,0.25)}
+.chip.cyan{color:var(--c-tertiary);border-color:rgba(6,182,212,0.25)}
+.chip.dim{color:var(--text-dim)}
+.chip.editable{cursor:pointer;transition:border-color 0.2s,color 0.2s}
+.chip.editable:hover{border-color:rgba(139,92,246,0.4);color:var(--text)}
+@keyframes chipSaved{0%{color:var(--c-secondary);border-color:rgba(34,197,94,0.5)}100%{color:var(--text-dim);border-color:var(--rule)}}
+.chip.saved{animation:chipSaved 1.5s ease forwards}
+.clock{font-family:var(--font-mono);font-size:13px;color:var(--c-primary);letter-spacing:2px;opacity:.7}
+.top-controls{display:flex;align-items:center;gap:8px;position:relative;z-index:100}
+.theme-drop{position:relative;z-index:200}
+.theme-drop-btn{background:var(--bg-inset);border:1px solid var(--rule);color:var(--text);padding:4px 8px;font-family:var(--font-mono);font-size:11px;cursor:pointer;min-width:120px;height:28px;border-radius:3px;display:flex;align-items:center;justify-content:space-between;gap:6px;user-select:none}
+.theme-drop-btn:hover{border-color:var(--c-primary)}
+.theme-drop-btn::after{content:'\25BC';font-size:8px;opacity:.5}
+.theme-drop-menu{display:none;position:absolute;top:100%;right:0;margin-top:2px;min-width:160px;background:var(--bg-panel,#1a1e24);border:1px solid var(--rule);border-radius:3px;box-shadow:0 8px 24px rgba(0,0,0,.5);max-height:300px;overflow-y:auto}
+.theme-drop.open .theme-drop-menu{display:block}
+.theme-drop-item{padding:6px 12px;font-family:var(--font-mono);font-size:11px;color:var(--text,#e8e0d4);cursor:pointer;white-space:nowrap}
+.theme-drop-item:hover{background:rgba(255,255,255,.08)}
+.theme-drop-item.active{background:var(--c-primary);color:var(--bg-void,#0a0e14)}
+.btn{font-family:'Rajdhani',sans-serif;font-weight:600;font-size:12px;letter-spacing:1.5px;text-transform:uppercase;padding:5px 14px;border:1px solid var(--rule);background:var(--bg-inset);color:var(--text);cursor:pointer;transition:all .15s}
+.btn:hover{border-color:var(--c-primary);color:var(--c-primary);box-shadow:0 0 12px var(--glow)}
+.btn.danger{border-color:rgba(239,68,68,0.3)}
+.btn.danger:hover{border-color:var(--c-danger);color:var(--c-danger);box-shadow:0 0 12px rgba(239,68,68,0.3)}
+
+/* Stripe */
+.stripe{height:3px;background:linear-gradient(90deg,var(--stripe-1) 0%,var(--stripe-1) 25%,var(--stripe-2) 25%,var(--stripe-2) 50%,var(--stripe-3) 50%,var(--stripe-3) 75%,var(--stripe-4) 75%,var(--stripe-4) 100%)}
+
+/* Widget Grid */
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px;padding:16px 20px;max-width:1600px;margin:0 auto}
+.widget{background:var(--bg-panel);border:1px solid var(--rule);border-radius:var(--radius);padding:14px 16px;min-height:100px;position:relative;transition:border-color 0.2s}
+.widget:hover{border-color:var(--c-primary)}
+.widget[data-size="md"]{grid-column:span 2}
+.widget[data-size="lg"]{grid-column:span 3}
+.widget[data-size="xl"]{grid-column:1/-1}
+.widget-title{font-size:0.65rem;text-transform:uppercase;letter-spacing:1.5px;color:var(--text-dim);margin-bottom:8px}
+.widget-loading{color:var(--text-dim);font-size:0.8rem;font-style:italic}
+
+/* Status bar */
+.status-bar{position:fixed;bottom:0;left:0;right:0;padding:4px 20px;background:var(--bg-panel);border-top:1px solid var(--rule);display:flex;justify-content:space-between;font-size:0.65rem;font-family:var(--font-mono);color:var(--text-dim)}
+
+/* Scrollbar */
+::-webkit-scrollbar{width:6px}
+::-webkit-scrollbar-track{background:var(--bg-void)}
+::-webkit-scrollbar-thumb{background:var(--rule);border-radius:3px}
+
+/* Utility */
+/* Sparklines */
+.sparkline{width:80px;height:36px}.sparkline polyline{fill:none;stroke:var(--c-primary);stroke-width:1.5;opacity:0.6}
+/* Delta indicators */
+.delta{display:inline-flex;align-items:center;gap:2px;font-size:0.6rem;font-family:var(--font-mono);padding:1px 4px;border-radius:3px}
+.delta svg{width:8px;height:8px}.delta.up{color:var(--c-danger);background:rgba(239,68,68,0.1)}.delta.down{color:var(--c-secondary);background:rgba(34,197,94,0.1)}.delta.flat{color:var(--text-dim)}
+/* Count flash */
+.count-flash{animation:countFlash 0.3s ease-out}
+@keyframes countFlash{0%{text-shadow:0 0 8px var(--c-primary)}100%{text-shadow:none}}
+/* Penguin */
+.penguin-scene{position:relative;margin:0 auto}.penguin-body{position:absolute;bottom:0;left:50%;transform:translateX(-50%)}
+.data-particle{position:absolute;font-family:var(--font-mono);font-size:8px;color:var(--c-primary);opacity:0;animation:particleFly 3s ease-out infinite}
+@keyframes particleFly{0%{opacity:0;transform:translate(0,0)}20%{opacity:0.7}80%{opacity:0.3}100%{opacity:0;transform:translate(var(--dx),var(--dy))}}
+/* Empty state */
+.empty-state{display:flex;flex-direction:column;align-items:center;justify-content:center;padding:40px 20px;min-height:200px}
+.empty-msg{font-family:var(--font-mono);font-size:0.75rem;color:var(--text-dim);letter-spacing:2px;margin-top:16px;text-transform:uppercase}
+.empty-sub{font-size:0.65rem;color:var(--text-dim);margin-top:4px;opacity:0.7}
+/* Toggle group */
+.tog-group{display:flex;gap:2px}.tog{background:var(--bg-inset);border:1px solid var(--rule);color:var(--text-dim);font-family:var(--font-mono);font-size:0.6rem;padding:3px 8px;cursor:pointer;transition:all 0.15s}
+.tog:hover{border-color:var(--c-primary);color:var(--text)}.tog.active{background:var(--c-primary);color:var(--bg-void);border-color:var(--c-primary)}
+
+@media(max-width:768px){.top-bar{flex-direction:column;align-items:stretch;padding:12px 10px}.brand{justify-content:center}}
+.mono{font-family:var(--font-mono)}.dim{color:var(--text-dim)}.bright{color:var(--text-bright)}
+.metric{font-size:1.8rem;font-weight:600;line-height:1.1;font-family:var(--font-mono)}
+.metric-label{font-size:0.65rem;text-transform:uppercase;letter-spacing:1px;color:var(--text-dim);margin-top:4px}
+.metric-sub{font-size:0.7rem;color:var(--text-dim);font-family:var(--font-mono);margin-top:2px}
+</style>
+</head>
+<body>
+
+<header class="top-bar">
+  <div class="brand">PERI <span>SCOPE</span></div>
+  <div class="status-strip">
+    <div class="signal">
+      <div class="signal-dot" id="signal-led"></div>
+      <span class="signal-label" id="signal-text">SIGNAL</span>
+    </div>
+    <span class="chip green" id="badge-sub">--</span>
+    <span class="chip cyan" id="badge-model">--</span>
+    <span class="chip dim" id="badge-sessions">--</span>
+    <span class="chip amber" id="badge-cost">--</span>
+  </div>
+  <div class="acct-strip">
+    <span class="chip dim editable" id="badge-operator" onclick="editOperatorName(this)">--</span>
+  </div>
+  <span class="clock" id="clock"></span>
+  <div class="top-controls">
+    <div class="theme-drop" id="theme-drop">
+      <div class="theme-drop-btn" id="theme-drop-btn">Starfield Dark</div>
+      <div class="theme-drop-menu" id="theme-drop-menu">
+        <div class="theme-drop-item" data-theme="tactical">Tactical</div>
+        <div class="theme-drop-item" data-theme="ghost">Ghost</div>
+        <div class="theme-drop-item" data-theme="phosphor">Phosphor</div>
+        <div class="theme-drop-item" data-theme="thermal">Thermal</div>
+        <div class="theme-drop-item" data-theme="arctic">Arctic</div>
+        <div class="theme-drop-item" data-theme="midnight">Midnight</div>
+        <div class="theme-drop-item active" data-theme="starfield-dark">Starfield Dark</div>
+        <div class="theme-drop-item" data-theme="starfield-light">Starfield Light</div>
+        <div class="theme-drop-item" data-theme="catppuccin-mocha">Catppuccin Mocha</div>
+      </div>
+    </div>
+    <button class="btn" onclick="Periscope.refreshData()">REFRESH</button>
+    <button class="btn" onclick="toggleKB()" title="Keyboard shortcuts (?)">?</button>
+  </div>
+</header>
+
+<div class="stripe"></div>
+<div class="grid" id="widget-grid"></div>
+<div class="status-bar">
+  <span id="status-left">Periscope v0.1.0</span>
+  <span id="status-right">--</span>
+</div>
+
+<script>
+// --- Shared Constants ---
+const TOKEN_WEIGHTS = { input: 1, cache_read: 0, cache_write: 1, output: 5 };
+const MODEL_PRICING = {
+  'opus-4-6':   { input: 5,    cache_read: 0.50, cache_write: 6.25,  output: 25 },
+  'opus-4-5':   { input: 5,    cache_read: 0.50, cache_write: 6.25,  output: 25 },
+  'opus-4-1':   { input: 15,   cache_read: 1.50, cache_write: 18.75, output: 75 },
+  'sonnet-4-5': { input: 3,    cache_read: 0.30, cache_write: 3.75,  output: 15 },
+  'haiku-4-5':  { input: 1,    cache_read: 0.10, cache_write: 1.25,  output: 5  },
+  'haiku-3-5':  { input: 0.80, cache_read: 0.08, cache_write: 1.00,  output: 4  },
+  'default':    { input: 5,    cache_read: 0.50, cache_write: 6.25,  output: 25 }
+};
+const WINDOW_5HR_MS = 5 * 3600000;
+const WINDOW_WEEKLY_MS = 7 * 24 * 3600000;
+const RANGE_MS = { '5h': 5*3600e3, '24h': 24*3600e3, '7d': 7*24*3600e3, '30d': 30*24*3600e3 };
+
+// Disable Chart.js animations globally (prevents flicker on 30s refresh)
+if (typeof Chart !== 'undefined') {
+  Chart.defaults.animation = false;
+  Chart.defaults.transitions.active.animation.duration = 0;
+}
+
+// --- Shared Formatters ---
+function fmt(n) { return typeof n === 'number' ? n.toLocaleString() : '--'; }
+function fmtK(n) { return typeof n === 'number' ? (n >= 1e6 ? (n/1e6).toFixed(1)+'M' : (n >= 1e3 ? (n/1e3).toFixed(0)+'K' : n.toString())) : '--'; }
+function fmtCost(n) { return typeof n === 'number' ? '$'+n.toFixed(2) : '--'; }
+function shortSid(s) { return s ? s.substring(0,8) : '--'; }
+function fmtTime(ts) {
+  if (!ts) return '--';
+  const d = new Date(ts);
+  return d.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) + ' ' + d.toLocaleDateString([], {month:'short',day:'numeric'});
+}
+function fmtHrs(h) {
+  if (h === Infinity || h > 999) return '\u221E';
+  if (h < 1) return Math.round(h * 60) + 'm';
+  if (h >= 24) return (h/24).toFixed(1) + 'd';
+  return h.toFixed(1) + 'h';
+}
+function fmtDateRange(from, to) {
+  const optsDay = { month: 'short', day: 'numeric' };
+  if (to - from <= 25*3600e3) {
+    return from.toLocaleDateString([], optsDay) + ' ' + from.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) +
+      '  \u2192  ' + to.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
+  }
+  return from.toLocaleDateString([], optsDay) + '  \u2192  ' + to.toLocaleDateString([], optsDay);
+}
+
+// --- Shared Calculations ---
+function getModelPricing(modelStr) {
+  if (!modelStr) return MODEL_PRICING['default'];
+  if (MODEL_PRICING[modelStr]) return MODEL_PRICING[modelStr];
+  const m = modelStr.replace('claude-','').replace(/-\d{8}$/,'');
+  for (const key in MODEL_PRICING) { if (m.startsWith(key)) return MODEL_PRICING[key]; }
+  return MODEL_PRICING['default'];
+}
+function weightedTokens(input, cr, cw, output) {
+  return (input||0)*TOKEN_WEIGHTS.input + (cr||0)*TOKEN_WEIGHTS.cache_read + (cw||0)*TOKEN_WEIGHTS.cache_write + (output||0)*TOKEN_WEIGHTS.output;
+}
+function cacheHitRate(input, cacheRead) {
+  const total = (input || 0) + (cacheRead || 0);
+  if (total <= 0) return 0;
+  return cacheRead / total * 100;
+}
+function fmtCacheRate(pct) {
+  return pct >= 95 ? pct.toFixed(1) : Math.round(pct).toString();
+}
+function thresholdColor(pct) {
+  const s = getComputedStyle(document.documentElement);
+  const danger = s.getPropertyValue('--c-danger').trim() || '#ef4444';
+  const warning = s.getPropertyValue('--c-primary').trim() || '#f59e0b';
+  const ok = s.getPropertyValue('--c-secondary').trim() || '#22c55e';
+  if (pct >= 80) return danger;
+  if (pct >= 50) return warning;
+  return ok;
+}
+function projColor(p) {
+  const s = getComputedStyle(document.documentElement);
+  if (p >= 100) return s.getPropertyValue('--c-danger').trim() || '#ef4444';
+  if (p >= 80) return s.getPropertyValue('--c-warm').trim() || '#fb923c';
+  if (p >= 50) return s.getPropertyValue('--c-primary').trim() || '#f59e0b';
+  return s.getPropertyValue('--c-secondary').trim() || '#22c55e';
+}
+function hexToRgb(hex) {
+  hex = hex.replace('#','');
+  if (hex.length === 3) hex = hex[0]+hex[0]+hex[1]+hex[1]+hex[2]+hex[2];
+  const r = parseInt(hex.substring(0,2),16);
+  const g = parseInt(hex.substring(2,4),16);
+  const b = parseInt(hex.substring(4,6),16);
+  return r+','+g+','+b;
+}
+function isSubscription(data) {
+  return data && data.profile && data.profile.subscription && data.profile.subscription.includes('max');
+}
+function costSuffix(data) { return isSubscription(data) ? ' equiv' : ''; }
+
+// --- History Utilities ---
+function deduplicateHistory(history) {
+  if (!history || !history.length) return history || [];
+  const bySid = {};
+  for (const h of history) {
+    if (!bySid[h.sid] || h.ts > bySid[h.sid].ts) bySid[h.sid] = h;
+  }
+  return Object.values(bySid).sort((a,b) => a.ts < b.ts ? -1 : 1);
+}
+function resetBucket(tsOrStr) {
+  if (!tsOrStr) return '';
+  try {
+    const ms = typeof tsOrStr === 'number' ? tsOrStr : new Date(tsOrStr).getTime();
+    return String(Math.round(ms / 300000));
+  } catch(e) { return String(tsOrStr); }
+}
+
+// --- Duty Cycle Estimation ---
+function estimateDutyCycle(history) {
+  const fallback = { activeHrsPerDay: 24, activeDays: 0, totalDays: 0, idleHrs: [] };
+  if (!history || history.length < 5) return fallback;
+  const now = Date.now();
+  const today = new Date().toISOString().slice(0, 10);
+  const weekAgo = now - 7 * 24 * 3600000;
+  const recent = history.filter(h => new Date(h.ts).getTime() > weekAgo);
+  if (recent.length < 5) return fallback;
+  const dayHours = {};
+  for (const h of recent) {
+    const d = new Date(h.ts);
+    const dayKey = d.toISOString().slice(0, 10);
+    if (!dayHours[dayKey]) dayHours[dayKey] = new Set();
+    dayHours[dayKey].add(d.getHours());
+  }
+  const completedDays = Object.keys(dayHours).filter(d => d !== today);
+  const completedActiveHours = completedDays.reduce((sum, d) => sum + dayHours[d].size, 0);
+  const nowDate = new Date();
+  const todayElapsedHrs = nowDate.getHours() + nowDate.getMinutes() / 60;
+  let activeHrsPerDay;
+  if (dayHours[today] && todayElapsedHrs > 2) {
+    const todayActive = dayHours[today].size;
+    const todayEstimated = Math.min(24, todayActive * (24 / todayElapsedHrs));
+    const todayWeight = Math.min(1, todayElapsedHrs / 16);
+    const weightedTotal = completedActiveHours + todayEstimated * todayWeight;
+    const weightedDays = completedDays.length + todayWeight;
+    activeHrsPerDay = weightedDays > 0 ? Math.min(24, weightedTotal / weightedDays) : 24;
+  } else {
+    activeHrsPerDay = completedDays.length > 0 ? Math.min(24, completedActiveHours / completedDays.length) : 24;
+  }
+  const allDays = Object.keys(dayHours);
+  const hourFreq = new Array(24).fill(0);
+  for (const d of allDays) { for (const h of dayHours[d]) hourFreq[h]++; }
+  const idleHrs = [];
+  if (allDays.length >= 2) {
+    for (let h = 0; h < 24; h++) { if (hourFreq[h] === 0) idleHrs.push(h); }
+  }
+  return { activeHrsPerDay: Math.max(1, activeHrsPerDay), activeDays: allDays.length, totalDays: 7, idleHrs };
+}
+function remainingActiveHours(remainingCalendarHrs, dutyCycle) {
+  if (dutyCycle.activeHrsPerDay >= 23) return remainingCalendarHrs;
+  return (remainingCalendarHrs / 24) * dutyCycle.activeHrsPerDay;
+}
+
+// --- Rate Limit Helpers ---
+function computeWeightedRate(points, field, resetKey, resetStr) {
+  const curBucket = resetBucket(resetStr);
+  const validPts = points.filter(p => p[field] != null && (!p[resetKey] || resetBucket(p[resetKey]) === curBucket)).slice(-20);
+  if (validPts.length < 2) return 0;
+  const projNow = new Date();
+  const cutoff30 = new Date(projNow.getTime() - 30*60000);
+  const recent = validPts.filter(p => p.ts >= cutoff30);
+  let recentRate = 0;
+  if (recent.length >= 2) {
+    const dh = (recent[recent.length-1].ts - recent[0].ts) / 3600000;
+    if (dh > 0.01) recentRate = (recent[recent.length-1][field] - recent[0][field]) / dh;
+  }
+  const dAll = (validPts[validPts.length-1].ts - validPts[0].ts) / 3600000;
+  const avgRate = dAll > 0.05 ? (validPts[validPts.length-1][field] - validPts[0][field]) / dAll : 0;
+  return (recentRate > 0 && avgRate > 0) ? 0.6*recentRate + 0.4*avgRate
+    : recentRate > 0 ? recentRate : avgRate > 0 ? avgRate : 0;
+}
+function prepRateLimitData(D) {
+  const lu = D.liveUsage;
+  if (!lu || lu.pct5hr == null) return null;
+  const now = new Date();
+  const reset5hr = lu.reset5hr ? new Date(lu.reset5hr) : null;
+  const resetWeekly = lu.resetWeekly ? new Date(lu.resetWeekly) : null;
+  const start5hr = reset5hr ? new Date(reset5hr.getTime() - WINDOW_5HR_MS) : null;
+  const startWeekly = resetWeekly ? new Date(resetWeekly.getTime() - WINDOW_WEEKLY_MS) : null;
+  const elapsed5hr = start5hr ? Math.max(0, (now - start5hr) / 3600000) : 0;
+  const remaining5hr = reset5hr ? Math.max(0, (reset5hr - now) / 3600000) : 0;
+  const elapsedWeekly = startWeekly ? Math.max(0, (now - startWeekly) / 3600000) : 0;
+  const remainingWeekly = resetWeekly ? Math.max(0, (resetWeekly - now) / 3600000) : 0;
+  const pct5 = lu.pct5hr || 0;
+  const pctW = lu.pctWeekly || 0;
+  const pctS = lu.pctSonnet || 0;
+  const burn5hr = elapsed5hr > 0.05 ? (pct5 / elapsed5hr) : 0;
+  const burnWeekly = elapsedWeekly > 0.5 ? (pctW / elapsedWeekly) : 0;
+  const ttl5hr = burn5hr > 0 ? ((100 - pct5) / burn5hr) : Infinity;
+  const ttlWeekly = burnWeekly > 0 ? ((100 - pctW) / burnWeekly) : Infinity;
+  const lhEarly = (D.limitHistory || []).concat([]);
+  lhEarly.push({ts: now.toISOString(), pct5hr: pct5, pctWeekly: pctW, pctSonnet: pctS,
+    reset5hr: lu.reset5hr || '', resetWeekly: lu.resetWeekly || ''});
+  const allPtsEarly = lhEarly.map(h => ({ts: new Date(h.ts), pct5hr: h.pct5hr, pctWeekly: h.pctWeekly,
+    reset5hr: h.reset5hr || '', resetWeekly: h.resetWeekly || ''})).sort((a,b) => a.ts - b.ts);
+  const rate5hr = lu.reset5hr ? computeWeightedRate(allPtsEarly, 'pct5hr', 'reset5hr', lu.reset5hr) : burn5hr;
+  const rateWeekly = lu.resetWeekly ? computeWeightedRate(allPtsEarly, 'pctWeekly', 'resetWeekly', lu.resetWeekly) : burnWeekly;
+  const proj5hr = Math.round(pct5 + (rate5hr > 0 ? rate5hr : burn5hr) * remaining5hr);
+  const duty = estimateDutyCycle(D.history);
+  const dutyFactor = Math.min(1, duty.activeHrsPerDay / 24);
+  const activeElapsedWk = Math.max(0.5, (elapsedWeekly / 24) * duty.activeHrsPerDay);
+  const remainActiveWk = remainingActiveHours(remainingWeekly, duty);
+  const burnWeeklyActive = pctW / activeElapsedWk;
+  const projWeekly = Math.round(pctW + burnWeeklyActive * remainActiveWk);
+  return { now, lu, reset5hr, resetWeekly, start5hr, startWeekly,
+    elapsed5hr, remaining5hr, elapsedWeekly, remainingWeekly,
+    pct5, pctW, pctS, burn5hr, burnWeekly, ttl5hr, ttlWeekly,
+    allPtsEarly, rate5hr, rateWeekly, proj5hr, projWeekly,
+    duty, dutyFactor, burnWeeklyActive, remainActiveWk };
+}
+
+// --- Visual Helpers ---
+function animateValue(el, target, formatter, duration) {
+  if (!el) return;
+  duration = duration || 800;
+  const start = parseFloat(el.dataset.current || '0');
+  if (Math.abs(start - target) < 0.01) { el.textContent = formatter(target); return; }
+  const startTime = performance.now();
+  el.dataset.current = target;
+  el.classList.add('count-flash');
+  setTimeout(() => el.classList.remove('count-flash'), 300);
+  function tick(now) {
+    const p = Math.min((now - startTime) / duration, 1);
+    const eased = 1 - Math.pow(1 - p, 3);
+    el.textContent = formatter(start + (target - start) * eased);
+    if (p < 1) requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+}
+function makeSpark(containerId, values) {
+  const el = document.getElementById(containerId);
+  if (!el || !values || values.length < 2) { if (el) el.innerHTML = ''; return; }
+  const w = 80, h = 36, pad = 2;
+  const min = Math.min(...values), max = Math.max(...values);
+  const range = max - min || 1;
+  const pts = values.map((v, i) => {
+    const x = pad + (i / (values.length - 1)) * (w - pad * 2);
+    const y = h - pad - ((v - min) / range) * (h - pad * 2);
+    return x.toFixed(1) + ',' + y.toFixed(1);
+  }).join(' ');
+  el.innerHTML = '<svg class="sparkline" viewBox="0 0 '+w+' '+h+'" preserveAspectRatio="none"><polyline points="'+pts+'"/></svg>';
+}
+function deltaHtml(current, previous) {
+  if (typeof current !== 'number' || typeof previous !== 'number' || previous === 0) return '';
+  const pct = ((current - previous) / previous) * 100;
+  if (Math.abs(pct) < 0.5) return '<span class="delta flat">&mdash; 0%</span>';
+  const cls = pct > 0 ? 'up' : 'down';
+  const arrow = pct > 0
+    ? '<svg viewBox="0 0 10 10"><path d="M5 1L9 6H1Z" fill="currentColor"/></svg>'
+    : '<svg viewBox="0 0 10 10"><path d="M5 9L1 4H9Z" fill="currentColor"/></svg>';
+  return '<span class="delta '+cls+'">'+arrow+(pct > 0 ? '+' : '')+pct.toFixed(1)+'%</span>';
+}
+
+// --- Penguin Scene ---
+function penguinScene(opts) {
+  const st = opts.state || 'live';
+  const lg = opts.size !== 'small';
+  const sw = lg ? 120 : 100, sh = lg ? 130 : 110;
+  const scW = lg ? 200 : 150, scH = lg ? 180 : 140;
+  const pb = lg ? '38%' : '40%', pl = lg ? '35%' : '30%';
+  const pos = 'bottom:' + pb + ';left:' + pl;
+  const symbols = ['01','{ }','...','0x','##','++','10','[]','&lt;/&gt;','%','=&gt;','fn','$$','::','~','@','!=','&amp;'];
+  const offsets = lg ?
+    [[90,-100],[-85,-90],[70,-120],[-60,-110],[50,-80],[-40,-95],[80,-75],[-75,-105],[60,-130],[-55,-85],[45,-115],[-95,-70],[35,-125],[-30,-140],[100,-65],[-70,-135],[55,-95],[-50,-75]] :
+    [[65,-75],[-60,-65],[50,-85],[-45,-80],[40,-60],[-35,-70],[55,-55],[-55,-90],[35,-95],[-40,-50],[70,-45],[-70,-60],[5,-110],[-10,-100],[15,-95],[-5,-120],[0,-85]];
+  let particles = '';
+  if (st === 'live') {
+    const count = lg ? 18 : 17;
+    for (let i = 0; i < count; i++) {
+      particles += '<span class="data-particle" style="--dx:' + offsets[i][0] + 'px;--dy:' + offsets[i][1] + 'px;' + pos + '">' + symbols[i] + '</span>';
+    }
+  }
+  const screenLines = st === 'live' ?
+    '<line x1="14" y1="57" x2="32" y2="57" stroke="var(--c-primary)" stroke-width="0.8" opacity="0.5"><animate attributeName="opacity" values="0.3;0.7;0.3" dur="2s" repeatCount="indefinite"/></line>' +
+    '<line x1="14" y1="60" x2="28" y2="60" stroke="var(--c-secondary)" stroke-width="0.8" opacity="0.4"><animate attributeName="opacity" values="0.2;0.6;0.2" dur="2.5s" repeatCount="indefinite"/></line>' +
+    '<line x1="14" y1="63" x2="35" y2="63" stroke="var(--c-tertiary)" stroke-width="0.8" opacity="0.3"><animate attributeName="opacity" values="0.1;0.5;0.1" dur="1.8s" repeatCount="indefinite"/></line>' :
+    '<line x1="18" y1="56" x2="30" y2="66" stroke="var(--c-danger)" stroke-width="1.5" opacity="0.7"/>' +
+    '<line x1="30" y1="56" x2="18" y2="66" stroke="var(--c-danger)" stroke-width="1.5" opacity="0.7"/>';
+  const screenFill = st === 'live' ?
+    '<animate attributeName="fill" values="var(--bg-void);rgba(245,158,11,0.08);var(--bg-void)" dur="3s" repeatCount="indefinite"/>' :
+    st === 'error' ?
+    '<animate attributeName="fill" values="var(--bg-void);rgba(239,68,68,0.06);var(--bg-void)" dur="1.5s" repeatCount="indefinite"/>' :
+    '<animate attributeName="fill" values="var(--bg-void);rgba(245,158,11,0.03);var(--bg-void)" dur="5s" repeatCount="indefinite"/>';
+  const eyeAnim = st === 'live' ?
+    '<animate attributeName="cy" values="46;46;44;46" dur="4s" repeatCount="indefinite"/>' :
+    '<animate attributeName="cx" values="54;54;55;54" dur="3s" repeatCount="indefinite"/>';
+  const monStroke = st === 'error' ? 'var(--c-danger)' : 'var(--text-dim)';
+  return '<div class="penguin-scene" style="width:' + scW + 'px;height:' + scH + 'px">' +
+    particles +
+    '<svg class="penguin-body" width="' + sw + '" height="' + sh + '" viewBox="0 0 80 90">' +
+      '<rect x="8" y="50" width="34" height="24" rx="2" fill="var(--bg-inset)" stroke="' + monStroke + '" stroke-width="1.5"/>' +
+      '<rect x="11" y="53" width="28" height="16" rx="1" fill="var(--bg-void)">' + screenFill + '</rect>' +
+      screenLines +
+      '<rect x="21" y="74" width="8" height="4" fill="var(--text-dim)"/>' +
+      '<rect x="16" y="78" width="18" height="2" rx="1" fill="var(--text-dim)"/>' +
+      '<ellipse cx="58" cy="65" rx="14" ry="18" fill="#252540" stroke="rgba(255,255,255,0.08)" stroke-width="0.5"/>' +
+      '<ellipse cx="56" cy="68" rx="8" ry="12" fill="#3a3a5a"/>' +
+      '<circle cx="58" cy="48" r="10" fill="#252540" stroke="rgba(255,255,255,0.08)" stroke-width="0.5"/>' +
+      '<circle cx="54" cy="46" r="2.5" fill="white"/>' +
+      '<circle cx="54" cy="46" r="1.2" fill="#111">' + eyeAnim + '</circle>' +
+      '<polygon points="50,49 46,51 50,52" fill="var(--c-primary)"/>' +
+      '<ellipse cx="48" cy="62" rx="5" ry="3" fill="#1a1a30" transform="rotate(-20 48 62)">' +
+        (st === 'live' ? '<animate attributeName="ry" values="3;3.5;3" dur="1.5s" repeatCount="indefinite"/>' : '') +
+      '</ellipse>' +
+      '<ellipse cx="68" cy="64" rx="5" ry="3" fill="#1a1a30" transform="rotate(15 68 64)"/>' +
+      '<ellipse cx="52" cy="83" rx="5" ry="2" fill="var(--c-primary)"/>' +
+      '<ellipse cx="62" cy="83" rx="5" ry="2" fill="var(--c-primary)"/>' +
+    '</svg>' +
+  '</div>';
+}
+function penguinEmptyState(title, subtitle) {
+  return '<div class="empty-state">' +
+    penguinScene({ state: 'live', size: 'large' }) +
+    '<div class="empty-msg">' + title + '</div>' +
+    '<div class="empty-sub">' + subtitle + '</div>' +
+  '</div>';
+}
+
+// --- Periscope Runtime ---
+const Periscope = {
+  _widgets: new Map(),
+  _data: null,
+  _ws: null,
+  _wsRetry: 0,
+  _pollTimer: null,
+  _theme: null,
+
+  // Widget API
+  registerWidget(config) {
+    // config: { id, title, size, priority, init(el), render(el, data), destroy() }
+    this._widgets.set(config.id, config);
+    const el = document.querySelector(`[data-widget="${config.id}"]`);
+    if (!el) {
+      // Create container if not present
+      const grid = document.getElementById('widget-grid');
+      const div = document.createElement('div');
+      div.className = 'widget';
+      div.dataset.widget = config.id;
+      if (config.size) div.dataset.size = config.size;
+      div.style.order = config.priority || 50;
+      grid.appendChild(div);
+      if (config.init) config.init(div);
+      if (this._data && config.render) config.render(div, this._data);
+    } else {
+      if (config.init) config.init(el);
+      if (this._data && config.render) config.render(el, this._data);
+    }
+  },
+
+  // Actions
+  async refreshUsage() {
+    try {
+      const res = await fetch('/api/usage', { method: 'POST' });
+      if (res.ok) { const d = await res.json(); if (this._data) { this._data.liveUsage = d; this._update(this._data); } }
+    } catch(e) { console.error('Usage sync failed:', e); }
+  },
+  async refreshData() {
+    try {
+      const res = await fetch('/api/data');
+      if (res.ok) { const d = await res.json(); this._update(d); }
+    } catch(e) { console.error('Data refresh failed:', e); }
+  },
+
+  _updatePending: null,
+  _update(data) {
+    // Attach deduped history for widgets
+    if (data.history) data.historyDeduped = deduplicateHistory(data.history);
+    this._data = data;
+    // Update header badges
+    const sidecars = data.sidecars || [];
+    const nSessions = sidecars.length;
+    const latest = sidecars.length > 0 ? sidecars[sidecars.length - 1] : null;
+    const model = latest && latest.data && latest.data.lastTurn ? latest.data.lastTurn.model : 'unknown';
+    document.getElementById('badge-model').textContent = model.replace('claude-','').replace('-',' ');
+    document.getElementById('badge-sessions').textContent = nSessions + ' sessions';
+    const totalCost = sidecars.reduce((s, sc) => s + (sc.data && sc.data.cumulative ? sc.data.cumulative.cost || 0 : 0), 0);
+    const cs = typeof costSuffix === 'function' ? costSuffix(data) : '';
+    document.getElementById('badge-cost').textContent = fmtCost(totalCost) + cs;
+    if (data.profile) {
+      if (data.profile.subscription) {
+        const sub = data.profile.subscription;
+        const tier = data.profile.tier || '';
+        document.getElementById('badge-sub').textContent = sub.toUpperCase() + (tier.includes('20x') ? ' 20x' : '');
+      }
+      const opEl = document.getElementById('badge-operator');
+      if (!opEl.dataset.editing) {
+        const override = localStorage.getItem('periscope-operator-name');
+        opEl.textContent = override || data.profile.name || '--';
+      }
+    }
+    // Signal LED
+    const sigLed = document.getElementById('signal-led');
+    const sigTxt = document.getElementById('signal-text');
+    if (data.liveUsage && data.liveUsage.fetched_at) {
+      const age = Math.round(Date.now()/1000 - data.liveUsage.fetched_at);
+      sigLed.classList.remove('off');
+      sigTxt.textContent = age < 60 ? 'LIVE ' + age + 's' : 'LIVE ' + Math.round(age/60) + 'm';
+      sigTxt.style.color = '';
+      sigLed.style.background = '';
+      sigLed.style.boxShadow = '';
+    } else {
+      sigLed.classList.add('off');
+      sigTxt.textContent = 'NO SIGNAL';
+      sigTxt.style.color = 'var(--c-danger)';
+    }
+    // Update widgets
+    for (const [id, widget] of this._widgets) {
+      const el = document.querySelector(`[data-widget="${id}"]`);
+      if (el && widget.render) {
+        try { widget.render(el, data); }
+        catch(e) { console.error(`Widget ${id} render error:`, e); }
+      }
+    }
+    document.getElementById('status-right').textContent =
+      `Updated ${new Date().toLocaleTimeString()} | ${this._widgets.size} widgets`;
+  },
+
+  // Theme engine
+  async loadTheme(themeId) {
+    try {
+      const resp = await fetch(`/api/plugins/themes/${themeId}.toml`);
+      if (!resp.ok) return;
+      const toml = await resp.text();
+      const theme = this._parseTOML(toml);
+      this._applyTheme(theme);
+      this._theme = theme;
+      localStorage.setItem('periscope-theme', themeId);
+    } catch(e) { console.error('Theme load error:', e); }
+  },
+
+  _applyTheme(theme) {
+    const root = document.documentElement;
+    if (theme.colors) {
+      for (const [k, v] of Object.entries(theme.colors)) {
+        root.style.setProperty(`--${k}`, v);
+      }
+    }
+    if (theme.meta) {
+      if (theme.meta.font_stack) root.style.setProperty('--font-ui', theme.meta.font_stack);
+      if (theme.meta.mono_stack) root.style.setProperty('--font-mono', theme.meta.mono_stack);
+    }
+    if (theme.stripe && theme.stripe.colors) {
+      theme.stripe.colors.forEach((c, i) => {
+        root.style.setProperty(`--stripe-${i + 1}`, c);
+      });
+    }
+    if (theme.brand) {
+      if (theme.brand.primary) root.style.setProperty('--brand-primary', theme.brand.primary);
+      if (theme.brand.accent) root.style.setProperty('--brand-accent', theme.brand.accent);
+    }
+  },
+
+  _parseTOML(text) {
+    const result = {};
+    let section = result;
+    for (const line of text.split('\n')) {
+      const t = line.trim();
+      if (!t || t.startsWith('#')) continue;
+      const sm = t.match(/^\[([^\]]+)\]$/);
+      if (sm) {
+        const parts = sm[1].split('.');
+        section = result;
+        for (const p of parts) { if (!section[p]) section[p] = {}; section = section[p]; }
+        continue;
+      }
+      const kv = t.match(/^([^\s=]+)\s*=\s*(.+)$/);
+      if (kv) {
+        let v = kv[2].trim();
+        if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'")))
+          v = v.slice(1, -1);
+        else if (v === 'true') v = true;
+        else if (v === 'false') v = false;
+        else if (v.startsWith('[') && v.endsWith(']'))
+          v = v.slice(1,-1).split(',').map(s => { s=s.trim(); return s.startsWith('"')?s.slice(1,-1):s; });
+        else if (!isNaN(Number(v))) v = Number(v);
+        section[kv[1].trim()] = v;
+      }
+    }
+    return result;
+  },
+
+  // WebSocket
+  _connectWS() {
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const ws = new WebSocket(`${proto}//${location.host}/ws`);
+    ws.onopen = () => {
+      this._wsRetry = 0;
+      document.getElementById('signal-text').textContent = 'LIVE';
+    };
+    ws.onmessage = (e) => {
+      try {
+        const msg = JSON.parse(e.data);
+        if (msg.type === 'data') this._update(msg.payload);
+        else if (msg.type === 'reload') this._handleReload(msg.payload);
+        else if (msg.type === 'usage' && this._data) {
+          this._data.liveUsage = msg.payload;
+          this._update(this._data);
+        }
+      } catch(err) { console.error('WS message error:', err); }
+    };
+    ws.onclose = () => {
+      document.getElementById('signal-text').textContent = 'RECONNECTING';
+      const delay = Math.min(1000 * Math.pow(2, this._wsRetry++), 30000);
+      setTimeout(() => this._connectWS(), delay);
+    };
+    ws.onerror = () => ws.close();
+    this._ws = ws;
+  },
+
+  _handleReload(info) {
+    if (info.plugin && info.plugin.startsWith('themes/')) {
+      // Reload active theme
+      const active = localStorage.getItem('periscope-theme') || 'starfield-dark';
+      if (info.plugin === `themes/${active}.toml`) this.loadTheme(active);
+    }
+    if (info.plugin && info.plugin.startsWith('widgets/')) {
+      // Reload specific widget
+      const name = info.plugin.replace('widgets/', '');
+      this._loadWidget(name);
+    }
+  },
+
+  // Widget loading
+  async _loadWidget(filename) {
+    try {
+      const resp = await fetch(`/api/plugins/widgets/${filename}`);
+      if (!resp.ok) return;
+      const html = await resp.text();
+
+      // Extract and inject styles
+      const styleMatch = html.match(/<style>([\s\S]*?)<\/style>/i);
+      if (styleMatch) {
+        let styleEl = document.getElementById(`style-${filename}`);
+        if (!styleEl) {
+          styleEl = document.createElement('style');
+          styleEl.id = `style-${filename}`;
+          document.head.appendChild(styleEl);
+        }
+        styleEl.textContent = styleMatch[1];
+      }
+
+      // Extract and execute script
+      const scriptMatch = html.match(/<script>([\s\S]*?)<\/script>/i);
+      if (scriptMatch) {
+        const fn = new Function(scriptMatch[1]);
+        fn();
+      }
+    } catch(e) { console.error(`Widget load error (${filename}):`, e); }
+  },
+
+  async _loadAllWidgets() {
+    try {
+      const resp = await fetch('/api/plugins/widgets');
+      if (!resp.ok) return;
+      const files = await resp.json();
+      // Sort by name for consistent ordering
+      files.sort();
+      for (const f of files) {
+        if (f.endsWith('.html')) await this._loadWidget(f);
+      }
+    } catch(e) { console.error('Widget discovery error:', e); }
+  },
+
+  // Polling fallback
+  _startPolling() {
+    const poll = async () => {
+      try {
+        const resp = await fetch('/api/data');
+        if (resp.ok) {
+          const data = await resp.json();
+          this._update(data);
+        }
+      } catch(e) { /* silent */ }
+    };
+    poll(); // Initial fetch
+    this._pollTimer = setInterval(poll, 30000);
+  },
+
+  // Boot
+  async init() {
+    document.getElementById('status-left').textContent = 'Periscope v0.1.0 | Loading...';
+
+    // Load theme
+    const themeId = localStorage.getItem('periscope-theme') || 'starfield-dark';
+    await this.loadTheme(themeId);
+
+    // Fetch initial data
+    try {
+      const resp = await fetch('/api/data');
+      if (resp.ok) this._data = await resp.json();
+    } catch(e) { /* will retry via polling */ }
+
+    // Load widgets
+    await this._loadAllWidgets();
+
+    // If we have data, render all widgets
+    if (this._data) this._update(this._data);
+
+    // Connect WebSocket
+    this._connectWS();
+
+    // Start polling as fallback
+    this._startPolling();
+
+    document.getElementById('status-left').textContent = 'Periscope v0.1.0';
+  }
+};
+
+// Boot on DOM ready
+document.addEventListener('DOMContentLoaded', () => Periscope.init());
+
+// Clock — pauses while dropdown is open to prevent DOM mutation closing it
+function updateClock() {
+  if (Periscope._dropdownOpen) return;
+  const el = document.getElementById('clock');
+  if (el) el.textContent = new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'});
+}
+updateClock();
+setInterval(updateClock, 1000);
+
+// Theme dropdown — flag-based guard freezes ALL DOM mutations while open
+(function() {
+  const sel = document.getElementById('dash-theme');
+  const current = localStorage.getItem('periscope-theme') || 'starfield-dark';
+  sel.value = current;
+  sel.addEventListener('mousedown', function() { Periscope._dropdownOpen = true; });
+  sel.addEventListener('focus', function() { Periscope._dropdownOpen = true; });
+  sel.addEventListener('change', function() {
+    Periscope._dropdownOpen = false;
+    Periscope.loadTheme(sel.value);
+    if (Periscope._updatePending) Periscope._update(Periscope._updatePending);
+  });
+  sel.addEventListener('blur', function() {
+    Periscope._dropdownOpen = false;
+    if (Periscope._updatePending) Periscope._update(Periscope._updatePending);
+  });
+})();
+
+// Editable operator name — contentEditable, zero layout change (exact monolith port)
+function editOperatorName(el) {
+  if (el.dataset.editing) return;
+  el.dataset.editing = '1';
+  const current = el.textContent;
+  el.contentEditable = 'true';
+  el.style.outline = '1px solid rgba(139,92,246,0.5)';
+  el.style.boxShadow = '0 0 8px rgba(139,92,246,0.2)';
+  if (current === '--') el.textContent = '';
+  el.classList.remove('editable');
+  const range = document.createRange();
+  range.selectNodeContents(el);
+  const sel = window.getSelection();
+  sel.removeAllRanges(); sel.addRange(range);
+  function save() {
+    el.contentEditable = 'false';
+    el.style.outline = ''; el.style.boxShadow = '';
+    const val = el.textContent.trim();
+    el.textContent = val || (Periscope._data && Periscope._data.profile ? Periscope._data.profile.name : '--') || '--';
+    delete el.dataset.editing;
+    el.classList.add('editable');
+    if (val) {
+      localStorage.setItem('periscope-operator-name', val);
+      el.classList.remove('dim');
+      el.classList.add('saved');
+      setTimeout(() => { el.classList.remove('saved'); el.classList.add('dim'); }, 1500);
+    } else {
+      localStorage.removeItem('periscope-operator-name');
+      el.classList.add('dim');
+    }
+  }
+  el.addEventListener('keydown', function handler(e) {
+    if (e.key === 'Enter') { e.preventDefault(); save(); el.removeEventListener('keydown', handler); }
+    if (e.key === 'Escape') { el.textContent = current; save(); el.removeEventListener('keydown', handler); }
+  });
+  el.addEventListener('blur', function blurHandler() { save(); el.removeEventListener('blur', blurHandler); });
+}
+
+// Keyboard shortcuts overlay
+function toggleKB() {
+  let overlay = document.getElementById('kb-overlay');
+  if (overlay) { overlay.remove(); return; }
+  overlay = document.createElement('div');
+  overlay.id = 'kb-overlay';
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:9999;display:flex;align-items:center;justify-content:center;cursor:pointer';
+  overlay.innerHTML = '<div style="background:var(--bg-panel);border:1px solid var(--rule);border-radius:8px;padding:24px;max-width:400px;font-family:var(--font-mono);font-size:12px;color:var(--text);cursor:default" onclick="event.stopPropagation()">' +
+    '<div style="font-size:14px;font-weight:600;margin-bottom:12px;color:var(--text-bright)">Keyboard Shortcuts</div>' +
+    '<div style="display:grid;grid-template-columns:auto 1fr;gap:6px 16px">' +
+    '<kbd style="color:var(--c-primary)">?</kbd><span>Toggle this overlay</span>' +
+    '<kbd style="color:var(--c-primary)">R</kbd><span>Refresh data</span>' +
+    '</div></div>';
+  overlay.addEventListener('click', () => overlay.remove());
+  document.body.appendChild(overlay);
+}
+document.addEventListener('keydown', (e) => {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+  if (e.key === '?') toggleKB();
+  if (e.key === 'r' || e.key === 'R') Periscope.refreshData();
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,39 @@
+# Claude model pricing — dollars per million tokens
+# Updated: 2026-02-08
+
+[[model]]
+id           = "claude-opus-4-6"
+name         = "Opus 4.6"
+input        = 5.0
+cache_read   = 0.50
+cache_write  = 6.25
+output       = 25.0
+max_input    = 200000
+max_output   = 32000
+
+[[model]]
+id           = "claude-sonnet-4-5-20250929"
+name         = "Sonnet 4.5"
+input        = 3.0
+cache_read   = 0.30
+cache_write  = 3.75
+output       = 15.0
+max_input    = 200000
+max_output   = 16384
+
+[[model]]
+id           = "claude-haiku-4-5-20251001"
+name         = "Haiku 4.5"
+input        = 1.0
+cache_read   = 0.10
+cache_write  = 1.25
+output       = 5.0
+max_input    = 200000
+max_output   = 16384
+
+# Token weights for rate limit calculation
+[weights]
+input       = 1
+cache_read  = 0
+cache_write = 1
+output      = 5

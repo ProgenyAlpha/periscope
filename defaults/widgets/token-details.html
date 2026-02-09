@@ -1,0 +1,119 @@
+<style>
+.w-tokens .grid-2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.w-tokens .token-type{display:flex;flex-direction:column;gap:4px;padding:8px 10px;background:var(--bg-inset);border-radius:4px;border:1px solid var(--rule)}
+.w-tokens .tt-header{display:flex;justify-content:space-between;align-items:baseline}
+.w-tokens .tt-label{font-size:0.58rem;text-transform:uppercase;letter-spacing:1px;color:var(--text-dim);font-weight:600}
+.w-tokens .tt-pct{font-size:0.58rem;font-family:var(--font-mono);color:var(--text-dim)}
+.w-tokens .tt-value{font-size:1.3rem;font-weight:600;font-family:var(--font-mono);line-height:1}
+.w-tokens .tt-cost{font-size:0.58rem;font-family:var(--font-mono);color:var(--text-dim)}
+.w-tokens .tt-bar{height:3px;background:var(--bg-void);border-radius:2px;overflow:hidden;margin-top:2px}
+.w-tokens .tt-fill{height:100%;border-radius:2px;transition:width 0.5s ease}
+.w-tokens .t-input{color:var(--c-tertiary)}
+.w-tokens .t-input .tt-fill{background:var(--c-tertiary)}
+.w-tokens .t-cr{color:var(--c-secondary)}
+.w-tokens .t-cr .tt-fill{background:var(--c-secondary)}
+.w-tokens .t-cw{color:var(--c-danger)}
+.w-tokens .t-cw .tt-fill{background:var(--c-danger)}
+.w-tokens .t-out{color:var(--c-primary)}
+.w-tokens .t-out .tt-fill{background:var(--c-primary)}
+.w-tokens .divider{grid-column:1/-1;height:1px;background:var(--rule);margin:2px 0}
+.w-tokens .totals-row{grid-column:1/-1;display:flex;gap:16px;justify-content:center}
+.w-tokens .tot{display:flex;flex-direction:column;align-items:center;gap:2px}
+.w-tokens .tot-val{font-size:1rem;font-weight:600;font-family:var(--font-mono);color:var(--text-bright)}
+.w-tokens .tot-label{font-size:0.5rem;text-transform:uppercase;letter-spacing:1px;color:var(--text-dim)}
+</style>
+<script>
+Periscope.registerWidget({
+  id: 'token-details',
+  title: 'Tokens',
+  size: 'sm',
+  priority: 18,
+  init(el) {
+    el.innerHTML = `
+      <div class="widget-title">Token Breakdown</div>
+      <div class="w-tokens">
+        <div class="grid-2">
+          <div class="token-type t-input">
+            <div class="tt-header"><span class="tt-label">Input</span><span class="tt-pct" id="td-in-pct">0%</span></div>
+            <div class="tt-value" id="td-in-val">0</div>
+            <div class="tt-cost" id="td-in-cost">$0.00</div>
+            <div class="tt-bar"><div class="tt-fill" id="td-in-bar" style="width:0%"></div></div>
+          </div>
+          <div class="token-type t-cr">
+            <div class="tt-header"><span class="tt-label">Cache Read</span><span class="tt-pct" id="td-cr-pct">0%</span></div>
+            <div class="tt-value" id="td-cr-val">0</div>
+            <div class="tt-cost" id="td-cr-cost">$0.00</div>
+            <div class="tt-bar"><div class="tt-fill" id="td-cr-bar" style="width:0%"></div></div>
+          </div>
+          <div class="token-type t-cw">
+            <div class="tt-header"><span class="tt-label">Cache Write</span><span class="tt-pct" id="td-cw-pct">0%</span></div>
+            <div class="tt-value" id="td-cw-val">0</div>
+            <div class="tt-cost" id="td-cw-cost">$0.00</div>
+            <div class="tt-bar"><div class="tt-fill" id="td-cw-bar" style="width:0%"></div></div>
+          </div>
+          <div class="token-type t-out">
+            <div class="tt-header"><span class="tt-label">Output</span><span class="tt-pct" id="td-out-pct">0%</span></div>
+            <div class="tt-value" id="td-out-val">0</div>
+            <div class="tt-cost" id="td-out-cost">$0.00</div>
+            <div class="tt-bar"><div class="tt-fill" id="td-out-bar" style="width:0%"></div></div>
+          </div>
+          <div class="divider"></div>
+          <div class="totals-row">
+            <div class="tot"><span class="tot-val" id="td-total">0</span><span class="tot-label">Total Tokens</span></div>
+            <div class="tot"><span class="tot-val" id="td-total-cost">$0</span><span class="tot-label">Total Cost</span></div>
+            <div class="tot"><span class="tot-val" id="td-ratio">0:1</span><span class="tot-label">In:Out Ratio</span></div>
+          </div>
+        </div>
+      </div>`;
+  },
+  render(el, data) {
+    let input=0, cr=0, cw=0, output=0, cost=0;
+    (data.sidecars||[]).forEach(s => {
+      const c = s.data?.cumulative; if (!c) return;
+      input += c.input||0; cr += c.cache_read||0;
+      cw += c.cache_write||0; output += c.output||0;
+      cost += c.cost||0;
+    });
+
+    const total = input + cr + cw + output;
+    const fmt = n => n >= 1e9 ? (n/1e9).toFixed(1)+'B' : n >= 1e6 ? (n/1e6).toFixed(1)+'M' : n >= 1e3 ? (n/1e3).toFixed(1)+'K' : n.toString();
+    const fmtC = v => v >= 100 ? '$'+v.toFixed(0) : v >= 10 ? '$'+v.toFixed(1) : '$'+v.toFixed(2);
+    const pct = (v) => total > 0 ? Math.round(v/total*100) : 0;
+
+    // Estimate per-type cost (using Opus 4.6 rates as default)
+    const rates = {input: 5, cr: 0.5, cw: 6.25, output: 25}; // $/MTok
+    const inCost = (input/1e6)*rates.input;
+    const crCost = (cr/1e6)*rates.cr;
+    const cwCost = (cw/1e6)*rates.cw;
+    const outCost = (output/1e6)*rates.output;
+
+    // Set values
+    el.querySelector('#td-in-val').textContent = fmt(input);
+    el.querySelector('#td-cr-val').textContent = fmt(cr);
+    el.querySelector('#td-cw-val').textContent = fmt(cw);
+    el.querySelector('#td-out-val').textContent = fmt(output);
+    el.querySelector('#td-in-pct').textContent = pct(input)+'%';
+    el.querySelector('#td-cr-pct').textContent = pct(cr)+'%';
+    el.querySelector('#td-cw-pct').textContent = pct(cw)+'%';
+    el.querySelector('#td-out-pct').textContent = pct(output)+'%';
+    el.querySelector('#td-in-cost').textContent = fmtC(inCost);
+    el.querySelector('#td-cr-cost').textContent = fmtC(crCost);
+    el.querySelector('#td-cw-cost').textContent = fmtC(cwCost);
+    el.querySelector('#td-out-cost').textContent = fmtC(outCost);
+
+    // Bars (relative to max)
+    const maxT = Math.max(input, cr, cw, output, 1);
+    el.querySelector('#td-in-bar').style.width = (input/maxT*100)+'%';
+    el.querySelector('#td-cr-bar').style.width = (cr/maxT*100)+'%';
+    el.querySelector('#td-cw-bar').style.width = (cw/maxT*100)+'%';
+    el.querySelector('#td-out-bar').style.width = (output/maxT*100)+'%';
+
+    // Totals
+    el.querySelector('#td-total').textContent = fmt(total);
+    el.querySelector('#td-total-cost').textContent = fmtC(cost);
+    const inTotal = input + cr + cw;
+    const ratio = output > 0 ? (inTotal/output).toFixed(1) : '0';
+    el.querySelector('#td-ratio').textContent = ratio+':1';
+  }
+});
+</script>

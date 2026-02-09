@@ -1,0 +1,28 @@
+[meta]
+name       = "Thermal"
+id         = "thermal"
+variant    = "dark"
+font_stack = "'Rajdhani', sans-serif"
+mono_stack = "'Fira Code', monospace"
+
+[colors]
+bg-void    = "#0a0404"
+bg-panel   = "#120808"
+bg-inset   = "#1a0c0c"
+bg-hover   = "#221010"
+primary    = "#ff6b35"
+secondary  = "#ff9f1c"
+tertiary   = "#e07a5f"
+accent     = "#f4845f"
+danger     = "#ff3333"
+warm       = "#ffb627"
+text       = "#ffecd2"
+text-dim   = "#8a6050"
+text-bright = "#fff3e0"
+rule       = "rgba(255,107,53,0.1)"
+glow       = "rgba(255,107,53,0.25)"
+signal     = "#ff9f1c"
+
+[brand]
+primary = "#ff6b35"
+accent  = "#ff9f1c"

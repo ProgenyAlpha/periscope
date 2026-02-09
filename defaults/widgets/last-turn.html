@@ -1,0 +1,87 @@
+<style>
+.w-lastturn .lt-idle{text-align:center;color:var(--text-dim);padding:16px;font-size:0.68rem;font-style:italic}
+.w-lastturn .lt-grid{display:grid;grid-template-columns:auto 1fr;gap:4px 12px;font-size:0.7rem;font-family:var(--font-mono)}
+.w-lastturn .lt-key{color:var(--text-dim);text-transform:uppercase;font-size:0.55rem;letter-spacing:1px;align-self:center}
+.w-lastturn .lt-val{color:var(--text);font-weight:500}
+.w-lastturn .lt-type{display:inline-block;padding:1px 8px;border-radius:3px;font-size:0.6rem;font-weight:600;text-transform:uppercase;letter-spacing:1px}
+.w-lastturn .lt-type-agent{background:rgba(var(--rgb-primary,245,158,11),0.15);color:var(--c-primary)}
+.w-lastturn .lt-type-tool{background:rgba(var(--rgb-secondary,34,197,94),0.15);color:var(--c-secondary)}
+.w-lastturn .lt-type-chat{background:rgba(var(--rgb-tertiary,6,182,212),0.15);color:var(--c-tertiary)}
+.w-lastturn .lt-tools-list{display:flex;gap:4px;flex-wrap:wrap}
+.w-lastturn .lt-tool-tag{padding:1px 6px;background:var(--bg-inset);border-radius:3px;border:1px solid var(--rule);font-size:0.55rem;color:var(--text-dim)}
+.w-lastturn .lt-cost{color:var(--c-primary);font-size:1rem;font-weight:600}
+.w-lastturn .lt-token-row{display:flex;gap:8px;flex-wrap:wrap}
+.w-lastturn .lt-tok{display:flex;flex-direction:column;gap:1px}
+.w-lastturn .lt-tok-val{font-size:0.72rem;color:var(--text-bright)}
+.w-lastturn .lt-tok-label{font-size:0.48rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.5px}
+</style>
+<script>
+Periscope.registerWidget({
+  id: 'last-turn',
+  title: 'Last Turn',
+  size: 'sm',
+  priority: 12,
+  init(el) {
+    el.innerHTML = `
+      <div class="widget-title">Last Turn</div>
+      <div class="w-lastturn">
+        <div class="lt-idle" id="lt-idle">Waiting for data...</div>
+        <div class="lt-grid" id="lt-grid" style="display:none">
+          <span class="lt-key">Type</span><span class="lt-val" id="lt-type">--</span>
+          <span class="lt-key">Cost</span><span class="lt-val lt-cost" id="lt-cost">$0.00</span>
+          <span class="lt-key">Model</span><span class="lt-val" id="lt-model">--</span>
+          <span class="lt-key">Tokens</span>
+          <div class="lt-token-row">
+            <div class="lt-tok"><span class="lt-tok-val" id="lt-in">0</span><span class="lt-tok-label">Input</span></div>
+            <div class="lt-tok"><span class="lt-tok-val" id="lt-cr">0</span><span class="lt-tok-label">Cache R</span></div>
+            <div class="lt-tok"><span class="lt-tok-val" id="lt-cw">0</span><span class="lt-tok-label">Cache W</span></div>
+            <div class="lt-tok"><span class="lt-tok-val" id="lt-out">0</span><span class="lt-tok-label">Output</span></div>
+          </div>
+          <span class="lt-key">Tools</span><div class="lt-tools-list" id="lt-tools">--</div>
+        </div>
+      </div>`;
+  },
+  render(el, data) {
+    // Find the most recently updated sidecar
+    const sidecars = data.sidecars || [];
+    if (sidecars.length === 0) return;
+
+    // First sidecar is most recent (ordered by updated_at DESC)
+    const latest = sidecars[0];
+    const lt = latest?.data?.lastTurn;
+    if (!lt) return;
+
+    el.querySelector('#lt-idle').style.display = 'none';
+    el.querySelector('#lt-grid').style.display = '';
+
+    const fmt = n => n >= 1e6 ? (n/1e6).toFixed(1)+'M' : n >= 1e3 ? (n/1e3).toFixed(1)+'K' : n.toString();
+    const fmtC = v => v >= 10 ? '$'+v.toFixed(1) : v >= 1 ? '$'+v.toFixed(2) : '$'+v.toFixed(3);
+
+    // Type badge
+    const typeEl = el.querySelector('#lt-type');
+    const typeClass = lt.type === 'agent' ? 'lt-type-agent' : lt.type === 'tool' ? 'lt-type-tool' : 'lt-type-chat';
+    typeEl.innerHTML = `<span class="lt-type ${typeClass}">${lt.type||'unknown'}</span>`;
+
+    el.querySelector('#lt-cost').textContent = fmtC(lt.cost||0);
+
+    // Model - shorten
+    let model = lt.model || '--';
+    model = model.replace('claude-', '').replace(/-20\d{6}$/, '');
+    el.querySelector('#lt-model').textContent = model;
+
+    el.querySelector('#lt-in').textContent = fmt(lt.input||0);
+    el.querySelector('#lt-cr').textContent = fmt(lt.cache_read||0);
+    el.querySelector('#lt-cw').textContent = fmt(lt.cache_write||0);
+    el.querySelector('#lt-out').textContent = fmt(lt.output||0);
+
+    // Tools
+    const toolsEl = el.querySelector('#lt-tools');
+    const tools = lt.tools || [];
+    if (tools.length === 0) {
+      toolsEl.innerHTML = '<span style="color:var(--text-dim);font-size:0.6rem">none</span>';
+    } else {
+      toolsEl.innerHTML = tools.map(t => `<span class="lt-tool-tag">${t}</span>`).join('');
+    }
+  }
+});
+</script>

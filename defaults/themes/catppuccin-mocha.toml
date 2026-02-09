@@ -1,0 +1,28 @@
+[meta]
+name       = "Catppuccin Mocha"
+id         = "catppuccin-mocha"
+variant    = "dark"
+font_stack = "'Rajdhani', sans-serif"
+mono_stack = "'Fira Code', monospace"
+
+[colors]
+bg-void    = "#1e1e2e"
+bg-panel   = "rgba(30,30,46,0.95)"
+bg-inset   = "rgba(24,24,37,0.95)"
+bg-hover   = "rgba(49,50,68,0.6)"
+primary    = "#cba6f7"
+secondary  = "#f5c2e7"
+tertiary   = "#89b4fa"
+accent     = "#f38ba8"
+danger     = "#f38ba8"
+warm       = "#fab387"
+text       = "#cdd6f4"
+text-dim   = "#585b70"
+text-bright = "#f5e0dc"
+rule       = "rgba(203,166,247,0.08)"
+glow       = "rgba(203,166,247,0.15)"
+signal     = "#a6e3a1"
+
+[brand]
+primary = "#cba6f7"
+accent  = "#f5c2e7"

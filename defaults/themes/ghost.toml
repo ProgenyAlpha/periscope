@@ -1,0 +1,28 @@
+[meta]
+name       = "Ghost"
+id         = "ghost"
+variant    = "dark"
+font_stack = "'Rajdhani', sans-serif"
+mono_stack = "'Fira Code', monospace"
+
+[colors]
+bg-void    = "#050505"
+bg-panel   = "#0a0a0a"
+bg-inset   = "#111111"
+bg-hover   = "#181818"
+primary    = "#9ca3af"
+secondary  = "#6b7280"
+tertiary   = "#71717a"
+accent     = "#a1a1aa"
+danger     = "#6b7280"
+warm       = "#9ca3af"
+text       = "#d1d5db"
+text-dim   = "#4b5563"
+text-bright = "#e5e7eb"
+rule       = "rgba(156,163,175,0.1)"
+glow       = "rgba(156,163,175,0.15)"
+signal     = "#9ca3af"
+
+[brand]
+primary = "#9ca3af"
+accent  = "#6b7280"

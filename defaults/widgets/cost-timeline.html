@@ -1,0 +1,127 @@
+<style>
+.w-timeline .chart-area{position:relative;height:100px;margin-top:6px}
+.w-timeline canvas{width:100%;height:100%;display:block}
+.w-timeline .tl-stats{display:flex;gap:16px;margin-top:8px}
+.w-timeline .tl-stat{display:flex;flex-direction:column;gap:2px}
+.w-timeline .tl-val{font-size:0.85rem;font-weight:600;font-family:var(--font-mono);color:var(--text-bright)}
+.w-timeline .tl-label{font-size:0.55rem;text-transform:uppercase;letter-spacing:1px;color:var(--text-dim)}
+.w-timeline .tl-empty{text-align:center;color:var(--text-dim);padding:20px;font-size:0.68rem;font-style:italic}
+.w-timeline .tl-axis{display:flex;justify-content:space-between;font-size:0.5rem;color:var(--text-dim);font-family:var(--font-mono);margin-top:2px}
+</style>
+<script>
+Periscope.registerWidget({
+  id: 'cost-timeline',
+  title: 'Cost Timeline',
+  size: 'md',
+  priority: 35,
+  init(el) {
+    el.innerHTML = `
+      <div class="widget-title">Cost Timeline</div>
+      <div class="w-timeline">
+        <div class="chart-area"><canvas id="tl-canvas"></canvas></div>
+        <div class="tl-axis"><span id="tl-start">--</span><span id="tl-end">--</span></div>
+        <div class="tl-stats">
+          <div class="tl-stat"><span class="tl-val" id="tl-total">$0</span><span class="tl-label">Total</span></div>
+          <div class="tl-stat"><span class="tl-val" id="tl-today">$0</span><span class="tl-label">Today</span></div>
+          <div class="tl-stat"><span class="tl-val" id="tl-avg">$0</span><span class="tl-label">Avg/Day</span></div>
+          <div class="tl-stat"><span class="tl-val" id="tl-peak">$0</span><span class="tl-label">Peak Day</span></div>
+        </div>
+      </div>`;
+  },
+  render(el, data) {
+    const history = data.history || [];
+    if (history.length === 0) return;
+
+    // Group by day, accumulate cost
+    const byDay = {};
+    history.forEach(h => {
+      if (!h.ts || !h.cost) return;
+      const day = h.ts.substring(0, 10);
+      if (!byDay[day]) byDay[day] = 0;
+      byDay[day] += h.cost;
+    });
+
+    const days = Object.keys(byDay).sort();
+    if (days.length === 0) return;
+
+    const values = days.map(d => byDay[d]);
+    const totalCost = values.reduce((a,b) => a+b, 0);
+    const peakCost = Math.max(...values);
+    const avgCost = totalCost / days.length;
+
+    // Today's cost
+    const todayStr = new Date().toISOString().substring(0, 10);
+    const todayCost = byDay[todayStr] || 0;
+
+    const fmtC = v => v >= 100 ? '$'+v.toFixed(0) : v >= 10 ? '$'+v.toFixed(1) : '$'+v.toFixed(2);
+    el.querySelector('#tl-total').textContent = fmtC(totalCost);
+    el.querySelector('#tl-today').textContent = fmtC(todayCost);
+    el.querySelector('#tl-avg').textContent = fmtC(avgCost);
+    el.querySelector('#tl-peak').textContent = fmtC(peakCost);
+
+    // Axis labels
+    const fmtDay = d => { const p = d.split('-'); return `${p[1]}/${p[2]}`; };
+    el.querySelector('#tl-start').textContent = fmtDay(days[0]);
+    el.querySelector('#tl-end').textContent = fmtDay(days[days.length-1]);
+
+    // Draw chart
+    const canvas = el.querySelector('#tl-canvas');
+    const rect = canvas.parentElement.getBoundingClientRect();
+    canvas.width = rect.width * (window.devicePixelRatio || 1);
+    canvas.height = rect.height * (window.devicePixelRatio || 1);
+    const ctx = canvas.getContext('2d');
+    ctx.scale(window.devicePixelRatio || 1, window.devicePixelRatio || 1);
+
+    const w = rect.width, h = rect.height;
+    const pad = {t:4, b:4, l:0, r:0};
+    const cw = w - pad.l - pad.r, ch = h - pad.t - pad.b;
+    const maxVal = peakCost * 1.1 || 1;
+    const n = values.length;
+
+    ctx.clearRect(0, 0, w, h);
+
+    // Gradient fill
+    const grad = ctx.createLinearGradient(0, pad.t, 0, h - pad.b);
+    const style = getComputedStyle(document.documentElement);
+    const primary = style.getPropertyValue('--c-primary').trim() || '#f59e0b';
+    grad.addColorStop(0, primary + '40');
+    grad.addColorStop(1, primary + '05');
+
+    // Draw area
+    ctx.beginPath();
+    values.forEach((v, i) => {
+      const x = pad.l + (n > 1 ? (i / (n-1)) * cw : cw/2);
+      const y = pad.t + ch - (v / maxVal) * ch;
+      i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    });
+    // Close for fill
+    ctx.lineTo(pad.l + cw, pad.t + ch);
+    ctx.lineTo(pad.l, pad.t + ch);
+    ctx.closePath();
+    ctx.fillStyle = grad;
+    ctx.fill();
+
+    // Draw line
+    ctx.beginPath();
+    values.forEach((v, i) => {
+      const x = pad.l + (n > 1 ? (i / (n-1)) * cw : cw/2);
+      const y = pad.t + ch - (v / maxVal) * ch;
+      i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    });
+    ctx.strokeStyle = primary;
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+
+    // Dots for last 3 points
+    const last3 = Math.max(0, n - 3);
+    for (let i = last3; i < n; i++) {
+      const x = pad.l + (n > 1 ? (i / (n-1)) * cw : cw/2);
+      const y = pad.t + ch - (values[i] / maxVal) * ch;
+      ctx.beginPath();
+      ctx.arc(x, y, 2.5, 0, Math.PI*2);
+      ctx.fillStyle = primary;
+      ctx.fill();
+    }
+  }
+});
+</script>

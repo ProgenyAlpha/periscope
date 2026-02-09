@@ -1,0 +1,28 @@
+[meta]
+name       = "Tactical"
+id         = "tactical"
+variant    = "dark"
+font_stack = "'Rajdhani', sans-serif"
+mono_stack = "'Fira Code', monospace"
+
+[colors]
+bg-void    = "#060a12"
+bg-panel   = "#0b1120"
+bg-inset   = "#101828"
+bg-hover   = "#151f30"
+primary    = "#f59e0b"
+secondary  = "#22c55e"
+tertiary   = "#06b6d4"
+accent     = "#a78bfa"
+danger     = "#ef4444"
+warm       = "#fb923c"
+text       = "#c9d1d9"
+text-dim   = "#4a5568"
+text-bright = "#f0f4f8"
+rule       = "rgba(245,158,11,0.10)"
+glow       = "rgba(245,158,11,0.25)"
+signal     = "#22c55e"
+
+[brand]
+primary = "#f59e0b"
+accent  = "#a78bfa"

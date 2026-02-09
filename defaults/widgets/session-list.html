@@ -1,0 +1,365 @@
+<style>
+/* ── Session List Widget ── */
+.w-sessions .controls{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
+.w-sessions .count{font-size:0.65rem;color:var(--text-dim);font-family:var(--font-mono)}
+
+.w-sessions .table-wrap{max-height:400px;overflow-y:auto;overflow-x:auto;border:1px solid var(--rule);border-radius:4px}
+.w-sessions table{width:100%;border-collapse:collapse;font-size:0.72rem;font-family:var(--font-mono);min-width:600px}
+.w-sessions thead{position:sticky;top:0;z-index:1}
+.w-sessions th{text-align:left;font-size:0.58rem;text-transform:uppercase;letter-spacing:1px;color:var(--text-dim);padding:6px 8px;background:var(--bg-inset);border-bottom:1px solid var(--rule);cursor:pointer;user-select:none;white-space:nowrap}
+.w-sessions th:hover{color:var(--text)}
+.w-sessions th .sort-arrow{margin-left:3px;font-size:0.5rem;opacity:0.4}
+.w-sessions th.sort-active .sort-arrow{opacity:1;color:var(--c-primary)}
+
+.w-sessions td{padding:6px 8px;border-bottom:1px solid var(--rule);color:var(--text);vertical-align:top}
+.w-sessions tbody tr.row-data{cursor:pointer;transition:background 0.1s ease}
+.w-sessions tbody tr.row-data:hover td{background:var(--bg-hover)}
+.w-sessions tbody tr.row-data:nth-child(4n+1) td{background:rgba(255,255,255,0.015)}
+.w-sessions tbody tr.row-data:nth-child(4n+1):hover td{background:var(--bg-hover)}
+.w-sessions tbody tr.row-expanded td{border-left:3px solid var(--c-primary);background:rgba(var(--rgb-primary,245,158,11),0.04)}
+
+.w-sessions .sid{color:var(--text-dim);font-weight:500;font-size:0.65rem}
+.w-sessions .proj{font-family:var(--font-ui);font-size:0.68rem;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.w-sessions .cost-val{color:var(--c-primary);font-weight:500}
+.w-sessions .cost-high{color:var(--c-danger,#ef4444)}
+.w-sessions .cache-hi{color:var(--c-secondary,#22c55e)}
+.w-sessions .cache-lo{color:var(--text-dim)}
+.w-sessions .model-val{font-size:0.62rem;color:var(--text-dim)}
+.w-sessions .num-col{color:var(--text-dim);font-size:0.6rem;text-align:right;width:24px}
+.w-sessions .empty{text-align:center;color:var(--text-dim);padding:24px;font-style:italic;font-family:var(--font-ui)}
+.w-sessions .null-val{color:var(--text-dim)}
+
+/* ── Detail Panel ── */
+.w-sessions tr.row-detail td{padding:0;border-bottom:1px solid var(--rule);border-left:3px solid var(--c-primary)}
+.w-sessions .detail-panel{background:var(--bg-inset);padding:12px 16px;display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px 20px;font-size:0.65rem}
+.w-sessions .detail-section{display:flex;flex-direction:column;gap:4px}
+.w-sessions .detail-heading{font-size:0.55rem;text-transform:uppercase;letter-spacing:1px;color:var(--text-dim);font-weight:600;margin-bottom:2px;font-family:var(--font-ui)}
+.w-sessions .detail-row{display:flex;justify-content:space-between;gap:8px}
+.w-sessions .detail-label{color:var(--text-dim)}
+.w-sessions .detail-val{color:var(--text);font-weight:500}
+.w-sessions .detail-val-primary{color:var(--c-primary);font-weight:500}
+
+.w-sessions .detail-tools{grid-column:1 / -1}
+.w-sessions .detail-tools .tool-tags{display:flex;flex-wrap:wrap;gap:4px;margin-top:4px}
+.w-sessions .detail-tools .tool-tag{padding:2px 8px;background:var(--bg-card,var(--bg-base));border:1px solid var(--rule);border-radius:3px;font-size:0.58rem;color:var(--text-dim);font-family:var(--font-mono)}
+.w-sessions .detail-tools .tool-tag .tc{color:var(--c-primary);margin-left:4px}
+
+.w-sessions .detail-last{grid-column:1 / -1;border-top:1px solid var(--rule);padding-top:8px;margin-top:4px}
+.w-sessions .lt-badge{display:inline-block;padding:1px 6px;border-radius:3px;font-size:0.55rem;font-weight:600;text-transform:uppercase;letter-spacing:0.5px}
+.w-sessions .lt-agent{background:rgba(var(--rgb-primary,245,158,11),0.15);color:var(--c-primary)}
+.w-sessions .lt-tool{background:rgba(var(--rgb-secondary,34,197,94),0.15);color:var(--c-secondary)}
+.w-sessions .lt-chat{background:rgba(var(--rgb-tertiary,6,182,212),0.15);color:var(--c-tertiary)}
+.w-sessions .lt-info{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:4px}
+.w-sessions .lt-info span{font-size:0.6rem;color:var(--text-dim)}
+.w-sessions .lt-info .lt-cost{color:var(--c-primary);font-weight:500}
+.w-sessions .lt-info .lt-tool-list{display:flex;gap:3px;flex-wrap:wrap}
+.w-sessions .lt-info .lt-tool-item{padding:1px 5px;background:var(--bg-card,var(--bg-base));border:1px solid var(--rule);border-radius:2px;font-size:0.52rem;color:var(--text-dim)}
+
+@media (max-width: 640px) {
+  .w-sessions .col-proj,
+  .w-sessions .col-model{display:none}
+  .w-sessions .detail-panel{grid-template-columns:1fr 1fr}
+  .w-sessions table{min-width:400px}
+}
+</style>
+<script>
+Periscope.registerWidget({
+  id: 'session-list',
+  title: 'Sessions',
+  size: 'xl',
+  priority: 50,
+
+  init(el) {
+    el.innerHTML = `
+      <div class="w-sessions">
+        <div class="controls">
+          <div class="widget-title" style="margin:0">Sessions</div>
+          <span class="count" id="sl-count">0 sessions</span>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr>
+              <th class="num-col" data-col="num">#</th>
+              <th data-col="id">Session<span class="sort-arrow"></span></th>
+              <th class="col-proj" data-col="project">Summary<span class="sort-arrow"></span></th>
+              <th data-col="cost">Cost<span class="sort-arrow"></span></th>
+              <th data-col="turns">Turns<span class="sort-arrow"></span></th>
+              <th data-col="tokens">Tokens<span class="sort-arrow"></span></th>
+              <th data-col="cache">Cache<span class="sort-arrow"></span></th>
+              <th class="col-model" data-col="model">Model<span class="sort-arrow"></span></th>
+            </tr></thead>
+            <tbody id="sl-body"></tbody>
+          </table>
+        </div>
+      </div>`;
+
+    // Sort state
+    el._slSort = { col: 'cost', asc: false };
+    el._slExpanded = null;
+    el._slData = [];
+
+    // Bind header clicks
+    el.querySelectorAll('thead th[data-col]').forEach(th => {
+      if (th.dataset.col === 'num') return;
+      th.addEventListener('click', () => {
+        const col = th.dataset.col;
+        if (el._slSort.col === col) {
+          el._slSort.asc = !el._slSort.asc;
+        } else {
+          el._slSort.col = col;
+          el._slSort.asc = false;
+        }
+        el._slExpanded = null;
+        _slRender(el);
+      });
+    });
+  },
+
+  render(el, data) {
+    const sidecars = data.sidecars || [];
+    const meta = data.sessionMeta || {};
+    el.querySelector('#sl-count').textContent = sidecars.length + ' session' + (sidecars.length !== 1 ? 's' : '');
+
+    // Pre-process rows
+    el._slData = sidecars.map(s => {
+      const c = s.data?.cumulative || null;
+      const lt = s.data?.lastTurn || null;
+      const proj = s.data?.project || '';
+      const input = c?.input || 0;
+      const cr = c?.cache_read || 0;
+      const cw = c?.cache_write || 0;
+      const output = c?.output || 0;
+      const cost = c?.cost || 0;
+      const turns = (c?.agent_calls || 0) + (c?.tool_calls || 0) + (c?.chat_calls || 0);
+      const totalTok = input + cr + cw + output;
+      const cacheHit = (typeof cacheHitRate === 'function') ? cacheHitRate(input, cr) : ((input + cr) > 0 ? Math.round(cr / (input + cr) * 100) : 0);
+      let model = lt?.model || '';
+      const modelShort = model.replace(/^claude-/, '').replace(/-20\d{6}$/, '');
+      // Session summary via meta priority: customTitle > summary > firstPrompt > heuristic
+      const sm = meta[s.id] || Object.values(meta).find(m => s.id.startsWith(Object.keys(meta).find(k => k.startsWith(s.id.substring(0,8))) || '___')) || null;
+      let summary = '';
+      if (sm && sm.customTitle) summary = '\u2605 ' + sm.customTitle;
+      else if (sm && sm.summary) summary = sm.summary.length > 60 ? sm.summary.substring(0,57) + '...' : sm.summary;
+      else if (sm && sm.firstPrompt) { let fp = sm.firstPrompt.replace(/<[^>]+>/g, '').trim(); if (fp.length > 55) fp = fp.substring(0,52) + '...'; summary = fp; }
+      // Duration from history
+      let duration = '';
+      const hist = (data.history || []).filter(h => h.sid === s.id);
+      if (hist.length >= 2) {
+        const first = new Date(hist[0].ts), last = new Date(hist[hist.length-1].ts);
+        const mins = Math.round((last - first) / 60000);
+        if (mins < 1) duration = '<1m';
+        else if (mins < 60) duration = mins + 'm';
+        else { const hrs = Math.floor(mins/60); const rm = mins%60; duration = hrs + 'h' + (rm > 0 ? rm + 'm' : ''); }
+      }
+      // Heuristic fallback for summary
+      if (!summary && c && c.tools) {
+        const sorted = Object.entries(c.tools).sort((a,b) => (b[1].calls||0) - (a[1].calls||0));
+        const top = sorted.slice(0,3).map(t => t[0]);
+        const has = n => top.includes(n);
+        if (has('Write') && has('Edit')) summary = 'Build & Refactor';
+        else if (has('Write') && has('Bash')) summary = 'Build & Deploy';
+        else if (has('Edit') && has('Read')) summary = 'Refactor';
+        else if (has('Edit') && has('Bash')) summary = 'Fix & Test';
+        else if (has('WebSearch') || has('WebFetch')) summary = 'Research';
+        else if (has('Read') && has('Glob')) summary = 'Code Review';
+        else if (has('Read') && has('Grep')) summary = 'Investigate';
+        else if (has('Bash')) summary = 'System Ops';
+        else if (has('Read')) summary = 'Analysis';
+        else if (top.length) summary = top.slice(0,2).join('+');
+      }
+      if (summary && duration) summary = summary + ' \u00b7 ' + duration;
+      else if (duration) summary = duration;
+      return { id: s.id, proj, cost, turns, totalTok, cacheHit, modelShort, input, cr, cw, output, c, lt, summary };
+    });
+
+    _slRender(el);
+  }
+});
+
+function _slRender(el) {
+  const rows = el._slData;
+  const tbody = el.querySelector('#sl-body');
+  const sort = el._slSort;
+
+  if (rows.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="8" class="empty">No sessions</td></tr>';
+    _slUpdateHeaders(el, sort);
+    return;
+  }
+
+  // Sort
+  const sorted = [...rows];
+  const dir = sort.asc ? 1 : -1;
+  sorted.sort((a, b) => {
+    let va, vb;
+    switch (sort.col) {
+      case 'id':       va = a.id; vb = b.id; return va < vb ? -dir : va > vb ? dir : 0;
+      case 'project':  va = a.proj.toLowerCase(); vb = b.proj.toLowerCase(); return va < vb ? -dir : va > vb ? dir : 0;
+      case 'cost':     return (a.cost - b.cost) * dir;
+      case 'turns':    return (a.turns - b.turns) * dir;
+      case 'tokens':   return (a.totalTok - b.totalTok) * dir;
+      case 'cache':    return (a.cacheHit - b.cacheHit) * dir;
+      case 'model':    va = a.modelShort.toLowerCase(); vb = b.modelShort.toLowerCase(); return va < vb ? -dir : va > vb ? dir : 0;
+      default:         return (a.cost - b.cost) * dir;
+    }
+  });
+
+  const fmtK = Periscope.fmtK || (n => n >= 1e6 ? (n/1e6).toFixed(1)+'M' : n >= 1e3 ? (n/1e3).toFixed(1)+'K' : n.toString());
+  const fmtCost = Periscope.fmtCost || (v => v >= 10 ? '$'+v.toFixed(1) : '$'+v.toFixed(2));
+  const fmtPlain = n => n >= 1e6 ? (n/1e6).toFixed(1)+'M' : n >= 1e3 ? (n/1e3).toFixed(1)+'K' : n.toLocaleString();
+
+  // Determine cost threshold for highlighting (top 20% get danger color)
+  const costs = sorted.map(r => r.cost).filter(c => c > 0);
+  const costThreshold = costs.length > 0 ? costs.sort((a,b) => b-a)[Math.floor(costs.length * 0.2)] || 0 : Infinity;
+
+  // Project path shortener
+  const shortProj = p => {
+    if (!p) return '--';
+    const segs = p.replace(/\\/g, '/').split('/').filter(Boolean);
+    return segs.length > 0 ? segs[segs.length - 1] : p;
+  };
+
+  let html = '';
+  sorted.forEach((r, i) => {
+    const rowNum = i + 1;
+    const sid = r.id.substring(0, 8);
+    const costClass = r.cost >= costThreshold && r.cost > 0 ? 'cost-val cost-high' : 'cost-val';
+    const cacheClass = r.cacheHit >= 80 ? 'cache-hi' : 'cache-lo';
+    const isExpanded = el._slExpanded === r.id;
+    const expandedClass = isExpanded ? ' row-expanded' : '';
+
+    html += `<tr class="row-data${expandedClass}" data-sid="${r.id}">
+      <td class="num-col">${rowNum}</td>
+      <td class="sid">${sid}</td>
+      <td class="col-proj proj" title="${r.proj.replace(/"/g,'&quot;')}">${r.summary || shortProj(r.proj) || '--'}</td>
+      <td class="${costClass}">${r.c ? fmtCost(r.cost) : '<span class="null-val">--</span>'}</td>
+      <td>${r.c ? r.turns : '<span class="null-val">--</span>'}</td>
+      <td>${r.c ? fmtK(r.totalTok) : '<span class="null-val">--</span>'}</td>
+      <td class="${cacheClass}">${r.c ? r.cacheHit + '%' : '<span class="null-val">--</span>'}</td>
+      <td class="col-model model-val">${r.modelShort || '<span class="null-val">--</span>'}</td>
+    </tr>`;
+
+    if (isExpanded) {
+      html += _slDetailRow(r, fmtK, fmtCost, fmtPlain);
+    }
+  });
+
+  tbody.innerHTML = html;
+  _slUpdateHeaders(el, sort);
+
+  // Bind row clicks
+  tbody.querySelectorAll('tr.row-data').forEach(tr => {
+    tr.addEventListener('click', () => {
+      const sid = tr.dataset.sid;
+      el._slExpanded = (el._slExpanded === sid) ? null : sid;
+      _slRender(el);
+    });
+  });
+}
+
+function _slDetailRow(r, fmtK, fmtCost, fmtPlain) {
+  const c = r.c || {};
+  const lt = r.lt;
+
+  // Token breakdown
+  const tokSection = `
+    <div class="detail-section">
+      <div class="detail-heading">Token Breakdown</div>
+      <div class="detail-row"><span class="detail-label">Input</span><span class="detail-val">${fmtPlain(r.input)}</span></div>
+      <div class="detail-row"><span class="detail-label">Cache Read</span><span class="detail-val">${fmtPlain(r.cr)}</span></div>
+      <div class="detail-row"><span class="detail-label">Cache Write</span><span class="detail-val">${fmtPlain(r.cw)}</span></div>
+      <div class="detail-row"><span class="detail-label">Output</span><span class="detail-val">${fmtPlain(r.output)}</span></div>
+      <div class="detail-row" style="border-top:1px solid var(--rule);padding-top:3px;margin-top:2px"><span class="detail-label">Total</span><span class="detail-val-primary">${fmtK(r.totalTok)}</span></div>
+    </div>`;
+
+  // Cost breakdown
+  const agentCost = c.agent_cost || 0;
+  const toolCost = c.tool_cost || 0;
+  const chatCost = c.chat_cost || 0;
+  const costFmt = v => v >= 10 ? '$'+v.toFixed(1) : v >= 1 ? '$'+v.toFixed(2) : '$'+v.toFixed(3);
+  const costSection = `
+    <div class="detail-section">
+      <div class="detail-heading">Cost Breakdown</div>
+      <div class="detail-row"><span class="detail-label">Agent</span><span class="detail-val">${costFmt(agentCost)}</span></div>
+      <div class="detail-row"><span class="detail-label">Tool</span><span class="detail-val">${costFmt(toolCost)}</span></div>
+      <div class="detail-row"><span class="detail-label">Chat</span><span class="detail-val">${costFmt(chatCost)}</span></div>
+      <div class="detail-row" style="border-top:1px solid var(--rule);padding-top:3px;margin-top:2px"><span class="detail-label">Total</span><span class="detail-val-primary">${costFmt(c.cost || 0)}</span></div>
+    </div>`;
+
+  // Turn breakdown
+  const agentCalls = c.agent_calls || 0;
+  const toolCalls = c.tool_calls || 0;
+  const chatCalls = c.chat_calls || 0;
+  const turnSection = `
+    <div class="detail-section">
+      <div class="detail-heading">Turn Breakdown</div>
+      <div class="detail-row"><span class="detail-label">Agent</span><span class="detail-val">${agentCalls}</span></div>
+      <div class="detail-row"><span class="detail-label">Tool</span><span class="detail-val">${toolCalls}</span></div>
+      <div class="detail-row"><span class="detail-label">Chat</span><span class="detail-val">${chatCalls}</span></div>
+      <div class="detail-row" style="border-top:1px solid var(--rule);padding-top:3px;margin-top:2px"><span class="detail-label">Total</span><span class="detail-val-primary">${r.turns}</span></div>
+    </div>`;
+
+  // Top tools
+  const tools = c.tools || {};
+  const toolEntries = Object.entries(tools).sort((a, b) => (b[1].calls || 0) - (a[1].calls || 0));
+  let toolsHtml;
+  if (toolEntries.length === 0) {
+    toolsHtml = '<span class="detail-label">none</span>';
+  } else {
+    toolsHtml = '<div class="tool-tags">' + toolEntries.map(([name, stat]) =>
+      `<span class="tool-tag">${name}<span class="tc">${stat.calls || 0}</span></span>`
+    ).join('') + '</div>';
+  }
+  const toolSection = `
+    <div class="detail-section detail-tools">
+      <div class="detail-heading">Tools Used</div>
+      ${toolsHtml}
+    </div>`;
+
+  // Last turn
+  let lastTurnHtml = '<span class="detail-label">No data</span>';
+  if (lt) {
+    const ltType = lt.type || 'unknown';
+    const badgeClass = ltType === 'agent' ? 'lt-agent' : ltType === 'tool' ? 'lt-tool' : 'lt-chat';
+    let ltModel = lt.model || '--';
+    ltModel = ltModel.replace(/^claude-/, '').replace(/-20\d{6}$/, '');
+    const ltCost = lt.cost || 0;
+    const ltTools = lt.tools || [];
+    const ltToolTags = ltTools.length > 0
+      ? '<span class="lt-tool-list">' + ltTools.map(t => `<span class="lt-tool-item">${t}</span>`).join('') + '</span>'
+      : '<span style="color:var(--text-dim)">none</span>';
+
+    lastTurnHtml = `
+      <span class="lt-badge ${badgeClass}">${ltType}</span>
+      <div class="lt-info">
+        <span class="lt-cost">${ltCost >= 1 ? '$'+ltCost.toFixed(2) : '$'+ltCost.toFixed(3)}</span>
+        <span>${ltModel}</span>
+        ${ltToolTags}
+      </div>`;
+  }
+  const lastSection = `
+    <div class="detail-section detail-last">
+      <div class="detail-heading">Last Turn</div>
+      ${lastTurnHtml}
+    </div>`;
+
+  return `<tr class="row-detail"><td colspan="8"><div class="detail-panel">
+    ${tokSection}${costSection}${turnSection}${toolSection}${lastSection}
+  </div></td></tr>`;
+}
+
+function _slUpdateHeaders(el, sort) {
+  el.querySelectorAll('thead th[data-col]').forEach(th => {
+    const col = th.dataset.col;
+    const arrow = th.querySelector('.sort-arrow');
+    if (!arrow) return;
+    if (col === sort.col) {
+      th.classList.add('sort-active');
+      arrow.textContent = sort.asc ? ' \u25B2' : ' \u25BC';
+    } else {
+      th.classList.remove('sort-active');
+      arrow.textContent = '';
+    }
+  });
+}
+</script>

@@ -1,0 +1,33 @@
+[meta]
+name       = "Starfield Dark"
+id         = "starfield"
+variant    = "dark"
+font_stack = "'Space Grotesk', 'Rajdhani', sans-serif"
+mono_stack = "'Fira Code', monospace"
+
+[colors]
+bg-void    = "#14181e"
+bg-panel   = "rgba(10,14,20,0.90)"
+bg-inset   = "rgba(16,20,28,0.92)"
+bg-hover   = "rgba(24,28,36,0.88)"
+primary    = "#E06236"
+secondary  = "#D7AB61"
+tertiary   = "#2F4C79"
+accent     = "#E06236"
+danger     = "#C82337"
+warm       = "#E06236"
+text       = "#e8e0d4"
+text-dim   = "#5a6270"
+text-bright = "#f4f0e8"
+rule       = "rgba(224,98,54,0.12)"
+glow       = "rgba(224,98,54,0.18)"
+sf-metal   = "#6a747e"
+signal     = "#22c55e"
+
+[stripe]
+colors = ["#C82337", "#E06236", "#D7AB61", "#2F4C79"]
+width  = "equal"
+
+[brand]
+primary = "#D7AB61"
+accent  = "#E06236"

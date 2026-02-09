@@ -1,0 +1,320 @@
+<style>
+/* Rate Limit HUD — .w-rlhud namespace */
+.w-rlhud{display:flex;gap:24px;align-items:stretch;background:var(--bg-inset);border:1px solid var(--rule);border-radius:12px;padding:24px}
+.w-rlhud:hover{border-color:color-mix(in srgb,var(--rule) 50%,var(--text-dim));box-shadow:0 0 20px var(--glow)}
+
+/* Gauges column */
+.w-rlhud .hud-gauges{display:flex;flex-direction:column;align-items:center;gap:8px;flex-shrink:0}
+.w-rlhud .hud-gauges-row{display:flex;gap:20px;align-items:center}
+.w-rlhud .hud-gauge{display:flex;flex-direction:column;align-items:center;gap:6px}
+.w-rlhud .hud-gauge svg{filter:drop-shadow(0 0 8px var(--glow));transition:filter 0.3s}
+.w-rlhud .hud-gauge:hover svg{filter:drop-shadow(0 0 14px var(--glow))}
+.w-rlhud .gauge-ring-bg{fill:none;stroke:var(--rule);stroke-width:8;opacity:0.4}
+.w-rlhud .gauge-ring-fill{fill:none;stroke-width:8;stroke-linecap:round;transition:stroke-dashoffset 0.8s cubic-bezier(0.4,0,0.2,1),stroke 0.4s}
+.w-rlhud .gauge-ring-glow{fill:none;stroke-width:12;stroke-linecap:round;opacity:0.15;transition:stroke-dashoffset 0.8s cubic-bezier(0.4,0,0.2,1)}
+.w-rlhud .gauge-center-val{font-family:var(--font-mono);font-size:18px;font-weight:700;fill:var(--text-bright,var(--text));text-anchor:middle;dominant-baseline:central;font-variant-numeric:tabular-nums}
+.w-rlhud .gauge-center-label{font-family:var(--font-ui,var(--font-mono));font-size:10px;font-weight:700;fill:var(--text-dim);text-anchor:middle;letter-spacing:1.5px;text-transform:uppercase}
+.w-rlhud .hud-gauge-reset{font-family:var(--font-mono);font-size:9px;color:var(--text-dim);min-height:14px;text-align:center}
+
+/* Sync area under gauges */
+.w-rlhud .hud-gauge-sync{display:flex;flex-direction:column;align-items:center;gap:4px;margin-top:6px}
+.w-rlhud .sync-btn{font-family:var(--font-ui,var(--font-mono));font-weight:600;font-size:11px;letter-spacing:1.5px;text-transform:uppercase;padding:5px 14px;border:1px solid var(--rule);background:var(--bg-void,var(--bg-inset));color:var(--text);cursor:pointer;transition:all .15s;border-radius:4px}
+.w-rlhud .sync-btn:hover{border-color:var(--c-primary);color:var(--c-primary);box-shadow:0 0 12px var(--glow)}
+.w-rlhud .data-age{font-family:var(--font-mono);font-size:10px;color:var(--text-dim)}
+
+/* Intel cards 2x2 grid */
+.w-rlhud .hud-intel{flex:1;display:grid;grid-template-columns:repeat(2,1fr);gap:10px;min-width:0}
+.w-rlhud .hud-intel-card{background:color-mix(in srgb,var(--bg-inset) 60%,transparent);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);border:1px solid var(--rule);border-radius:8px;padding:12px 14px;transition:transform .2s,border-color .2s}
+.w-rlhud .hud-intel-card:hover{transform:translateY(-2px);border-color:color-mix(in srgb,var(--rule) 50%,var(--text-dim));box-shadow:0 0 12px var(--glow)}
+.w-rlhud .ic-label{font-family:var(--font-mono);font-size:9px;color:var(--text-dim);text-transform:uppercase;letter-spacing:1px;margin-bottom:4px}
+.w-rlhud .ic-val{font-family:var(--font-ui,var(--font-mono));font-size:18px;font-weight:700;color:var(--text-bright,var(--text));line-height:1.1;font-variant-numeric:tabular-nums}
+.w-rlhud .ic-sub{font-family:var(--font-mono);font-size:9px;margin-top:3px;color:var(--text-dim)}
+.w-rlhud .ic-val-row{display:flex;gap:4px;align-items:baseline;flex-wrap:wrap}
+.w-rlhud .ic-tag{font-size:12px;color:var(--text-dim)}
+.w-rlhud .ic-timing-line{font-size:14px;line-height:1.6}
+
+/* Penguin column */
+.w-rlhud .hud-penguin-wrap{display:flex;flex-direction:column;align-items:center;justify-content:center;min-width:150px;flex-shrink:0}
+.w-rlhud .hud-penguin-wrap .penguin-scene{width:150px;height:140px;margin-bottom:4px}
+.w-rlhud .hud-penguin-wrap .penguin-body{width:100px;height:110px}
+.w-rlhud .hud-penguin-wrap .data-particle{font-size:7px}
+.w-rlhud .hud-penguin-status{font-family:var(--font-mono);font-size:9px;text-align:center;letter-spacing:0.5px;margin-top:2px}
+.w-rlhud .hud-penguin-status.live{color:var(--c-secondary)}
+.w-rlhud .hud-penguin-status.live::after{content:'...';display:inline-block;width:1.2em;text-align:left;animation:rlhud-dots 1.5s steps(4,end) infinite}
+@keyframes rlhud-dots{0%{content:''}25%{content:'.'}50%{content:'..'}75%{content:'...'}}
+.w-rlhud .hud-penguin-status.error{color:var(--c-danger)}
+.w-rlhud .hud-penguin-status.stale{color:var(--c-primary)}
+
+/* Responsive */
+@media(max-width:1024px){
+  .w-rlhud{flex-direction:column;align-items:center}
+  .w-rlhud .hud-gauges-row svg{width:90px;height:90px}
+  .w-rlhud .hud-penguin-wrap{min-width:unset}
+  .w-rlhud .gauge-center-val{font-size:14px}
+}
+@media(max-width:640px){
+  .w-rlhud{padding:14px;gap:16px}
+  .w-rlhud .hud-gauges-row svg{width:70px;height:70px}
+  .w-rlhud .gauge-center-val{font-size:12px}
+  .w-rlhud .hud-intel{grid-template-columns:1fr}
+}
+@media(max-width:460px){
+  .w-rlhud .hud-gauges-row{flex-direction:column}
+}
+</style>
+<script>
+Periscope.registerWidget({
+  id: 'rate-limits',
+  title: 'Rate Limit HUD',
+  size: 'xl',
+  priority: 1,
+
+  init(el) {
+    var CIRC = (2 * Math.PI * 48).toFixed(1); // r=48 -> ~301.6
+    el.innerHTML =
+      '<div class="widget-title">Rate Limit HUD</div>' +
+      '<div class="w-rlhud">' +
+
+        /* --- Gauges column --- */
+        '<div class="hud-gauges">' +
+          '<div class="hud-gauges-row">' +
+            /* 5-Hour gauge */
+            '<div class="hud-gauge" data-gauge="5hr">' +
+              '<svg width="120" height="120" viewBox="0 0 120 120">' +
+                '<circle class="gauge-ring-bg" cx="60" cy="60" r="48"/>' +
+                '<circle class="gauge-ring-glow" cx="60" cy="60" r="48" stroke-dasharray="' + CIRC + '" stroke-dashoffset="' + CIRC + '" transform="rotate(-90 60 60)"/>' +
+                '<circle class="gauge-ring-fill" cx="60" cy="60" r="48" stroke-dasharray="' + CIRC + '" stroke-dashoffset="' + CIRC + '" transform="rotate(-90 60 60)"/>' +
+                '<text class="gauge-center-val" x="60" y="55">--%</text>' +
+                '<text class="gauge-center-label" x="60" y="72">5-HOUR</text>' +
+              '</svg>' +
+              '<div class="hud-gauge-reset" data-reset="5hr"></div>' +
+            '</div>' +
+            /* Weekly gauge */
+            '<div class="hud-gauge" data-gauge="weekly">' +
+              '<svg width="120" height="120" viewBox="0 0 120 120">' +
+                '<circle class="gauge-ring-bg" cx="60" cy="60" r="48"/>' +
+                '<circle class="gauge-ring-glow" cx="60" cy="60" r="48" stroke-dasharray="' + CIRC + '" stroke-dashoffset="' + CIRC + '" transform="rotate(-90 60 60)"/>' +
+                '<circle class="gauge-ring-fill" cx="60" cy="60" r="48" stroke-dasharray="' + CIRC + '" stroke-dashoffset="' + CIRC + '" transform="rotate(-90 60 60)"/>' +
+                '<text class="gauge-center-val" x="60" y="55">--%</text>' +
+                '<text class="gauge-center-label" x="60" y="72">WEEKLY</text>' +
+              '</svg>' +
+              '<div class="hud-gauge-reset" data-reset="weekly"></div>' +
+            '</div>' +
+            /* Sonnet gauge */
+            '<div class="hud-gauge" data-gauge="sonnet">' +
+              '<svg width="120" height="120" viewBox="0 0 120 120">' +
+                '<circle class="gauge-ring-bg" cx="60" cy="60" r="48"/>' +
+                '<circle class="gauge-ring-glow" cx="60" cy="60" r="48" stroke-dasharray="' + CIRC + '" stroke-dashoffset="' + CIRC + '" transform="rotate(-90 60 60)"/>' +
+                '<circle class="gauge-ring-fill" cx="60" cy="60" r="48" stroke-dasharray="' + CIRC + '" stroke-dashoffset="' + CIRC + '" transform="rotate(-90 60 60)"/>' +
+                '<text class="gauge-center-val" x="60" y="55">--%</text>' +
+                '<text class="gauge-center-label" x="60" y="72">SONNET</text>' +
+              '</svg>' +
+              '<div class="hud-gauge-reset" data-reset="sonnet"></div>' +
+            '</div>' +
+          '</div>' +
+          /* Sync button + data age */
+          '<div class="hud-gauge-sync">' +
+            '<button class="sync-btn" data-action="sync">SYNC</button>' +
+            '<span class="data-age">--</span>' +
+          '</div>' +
+        '</div>' +
+
+        /* --- Intel cards 2x2 --- */
+        '<div class="hud-intel">' +
+          '<div class="hud-intel-card" data-card="burn"></div>' +
+          '<div class="hud-intel-card" data-card="ttl"></div>' +
+          '<div class="hud-intel-card" data-card="proj"></div>' +
+          '<div class="hud-intel-card" data-card="window"></div>' +
+        '</div>' +
+
+        /* --- Penguin mascot --- */
+        '<div class="hud-penguin-wrap"></div>' +
+
+      '</div>';
+
+    // Wire SYNC button
+    el.querySelector('[data-action="sync"]').addEventListener('click', function() {
+      if (typeof Periscope.refreshUsage === 'function') Periscope.refreshUsage();
+    });
+  },
+
+  render(el, data) {
+    var CIRC = 2 * Math.PI * 48; // ~301.593
+
+    // --- Resolve runtime globals with safe fallbacks ---
+    var tColor = typeof thresholdColor === 'function' ? thresholdColor
+      : function(p) { return p < 50 ? '#22c55e' : p < 80 ? '#d7ab61' : '#c82337'; };
+    var pColor = typeof projColor === 'function' ? projColor
+      : function(p) { if (p >= 100) return 'var(--c-danger)'; if (p >= 80) return 'var(--c-warm)'; if (p >= 50) return 'var(--c-primary)'; return 'var(--c-secondary)'; };
+    var fH = typeof fmtHrs === 'function' ? fmtHrs
+      : function(h) { if (h === Infinity || h > 999) return '\u221E'; if (h < 1) return Math.round(h*60)+'m'; if (h >= 24) return (h/24).toFixed(1)+'d'; return h.toFixed(1)+'h'; };
+    var pScene = typeof penguinScene === 'function' ? penguinScene : null;
+    var prep = typeof prepRateLimitData === 'function' ? prepRateLimitData : null;
+
+    // --- Ring gauge updater ---
+    function setRing(key, pct, resetIso) {
+      var cell = el.querySelector('[data-gauge="' + key + '"]');
+      if (!cell) return;
+      var fill = cell.querySelector('.gauge-ring-fill');
+      var glow = cell.querySelector('.gauge-ring-glow');
+      var valEl = cell.querySelector('.gauge-center-val');
+      var resetEl = cell.querySelector('[data-reset="' + key + '"]');
+
+      if (pct == null || !isFinite(pct)) {
+        fill.style.strokeDashoffset = CIRC;
+        fill.style.stroke = 'var(--text-dim)';
+        if (glow) { glow.style.strokeDashoffset = CIRC; glow.style.stroke = 'var(--text-dim)'; }
+        if (valEl) valEl.textContent = '--%';
+        if (resetEl) resetEl.textContent = '';
+        return;
+      }
+      var clamped = Math.min(Math.max(pct, 0), 100);
+      var color = tColor(clamped);
+      var offset = CIRC * (1 - clamped / 100);
+      fill.style.strokeDashoffset = offset;
+      fill.style.stroke = color;
+      if (glow) { glow.style.strokeDashoffset = offset; glow.style.stroke = color; }
+      if (valEl) valEl.textContent = Math.round(clamped) + '%';
+      // Reset countdown
+      if (resetEl) {
+        if (!resetIso) { resetEl.textContent = ''; return; }
+        var diffMin = Math.round((new Date(resetIso) - Date.now()) / 60000);
+        if (diffMin <= 0) { resetEl.textContent = 'resets now'; return; }
+        if (diffMin < 60) { resetEl.textContent = 'resets ' + diffMin + 'm'; return; }
+        var hrs = Math.floor(diffMin / 60);
+        var mins = diffMin % 60;
+        resetEl.textContent = 'resets ' + hrs + 'h' + (mins > 0 ? mins + 'm' : '');
+      }
+    }
+
+    // --- Data extraction ---
+    var lu = data && data.liveUsage;
+    var pct5 = lu && lu.pct5hr >= 0 ? lu.pct5hr : null;
+    var pctW = lu && lu.pctWeekly >= 0 ? lu.pctWeekly : null;
+    var pctS = lu && lu.pctSonnet >= 0 ? lu.pctSonnet : null;
+
+    // Set ring gauges
+    setRing('5hr', pct5, lu ? lu.reset5hr : null);
+    setRing('weekly', pctW, lu ? lu.resetWeekly : null);
+    setRing('sonnet', pctS, lu ? lu.resetSonnet : null);
+
+    // --- Data age + signal state ---
+    var ageEl = el.querySelector('.data-age');
+    var isLive = lu && lu.fetched_at;
+    var ageSec = isLive ? Math.round(Date.now() / 1000 - lu.fetched_at) : Infinity;
+    var isStale = ageSec > 120;
+    var isError = !isLive;
+    if (ageEl) {
+      if (isError) ageEl.textContent = 'no data';
+      else if (ageSec < 60) ageEl.textContent = ageSec + 's ago';
+      else ageEl.textContent = Math.round(ageSec / 60) + 'm ago';
+    }
+
+    // --- Intel cards via prepRateLimitData ---
+    var rd = prep ? prep(data) : null;
+    var burnCard = el.querySelector('[data-card="burn"]');
+    var ttlCard = el.querySelector('[data-card="ttl"]');
+    var projCard = el.querySelector('[data-card="proj"]');
+    var winCard = el.querySelector('[data-card="window"]');
+
+    if (!rd) {
+      var emptyMsg = '<div class="ic-label">--</div><div class="ic-sub">Sync rate limits to populate</div>';
+      if (burnCard) burnCard.innerHTML = emptyMsg;
+      if (ttlCard) ttlCard.innerHTML = emptyMsg;
+      if (projCard) projCard.innerHTML = emptyMsg;
+      if (winCard) winCard.innerHTML = emptyMsg;
+    } else {
+      // Burn Rate card
+      if (burnCard) {
+        var burnWkVal = rd.burnWeeklyActive != null ? rd.burnWeeklyActive : rd.burnWeekly;
+        burnCard.innerHTML =
+          '<div class="ic-label">Burn Rate</div>' +
+          '<div class="ic-val-row">' +
+            '<span class="ic-val" style="color:var(--c-primary)">' + rd.burn5hr.toFixed(1) + '%/h</span>' +
+            '<span class="ic-tag">5hr</span>' +
+          '</div>' +
+          '<div class="ic-val-row">' +
+            '<span class="ic-val" style="color:var(--c-secondary)">' + (burnWkVal || 0).toFixed(2) + '%/h</span>' +
+            '<span class="ic-tag">wk(active)</span>' +
+          '</div>' +
+          '<div class="ic-sub">5hr: per calendar hr | Wk: per active hr</div>';
+      }
+
+      // Time to Limit card
+      if (ttlCard) {
+        ttlCard.innerHTML =
+          '<div class="ic-label">Time to Limit</div>' +
+          '<div class="ic-val-row">' +
+            '<span class="ic-val" style="color:var(--c-primary)">' + fH(rd.ttl5hr) + '</span>' +
+            '<span class="ic-tag">5hr</span>' +
+          '</div>' +
+          '<div class="ic-val-row">' +
+            '<span class="ic-val" style="color:var(--c-secondary)">' + fH(rd.ttlWeekly) + '</span>' +
+            '<span class="ic-tag">wk</span>' +
+          '</div>' +
+          '<div class="ic-sub">At current burn rate until 100%</div>';
+      }
+
+      // Projected at Window End card
+      if (projCard) {
+        var dutyLabel = rd.duty ? rd.duty.activeHrsPerDay.toFixed(0) + 'h/day)' : 'n/a)';
+        projCard.innerHTML =
+          '<div class="ic-label">Projected at Window End</div>' +
+          '<div class="ic-val-row">' +
+            '<span class="ic-val" style="color:' + pColor(rd.proj5hr) + '">' + rd.proj5hr + '%</span>' +
+            '<span class="ic-tag">5hr</span>' +
+          '</div>' +
+          '<div class="ic-val-row">' +
+            '<span class="ic-val" style="color:' + pColor(rd.projWeekly) + '">' + rd.projWeekly + '%</span>' +
+            '<span class="ic-tag">wk</span>' +
+          '</div>' +
+          '<div class="ic-sub">5hr: rate-based | Wk: duty-adjusted (' + dutyLabel + '</div>';
+      }
+
+      // Window Timing card
+      if (winCard) {
+        var r5time = rd.reset5hr ? rd.reset5hr.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}) : '--';
+        var rWdate = rd.resetWeekly
+          ? rd.resetWeekly.toLocaleDateString([], {month:'short', day:'numeric'}) + ' ' +
+            rd.resetWeekly.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})
+          : '--';
+        winCard.innerHTML =
+          '<div class="ic-label">Window Timing</div>' +
+          '<div class="ic-timing-line">' +
+            '<span style="color:var(--c-primary)">5hr</span> resets in <strong>' + fH(rd.remaining5hr) + '</strong>' +
+            '<span class="ic-tag"> (' + r5time + ')</span>' +
+          '</div>' +
+          '<div class="ic-timing-line">' +
+            '<span style="color:var(--c-secondary)">Wk</span> resets in <strong>' + fH(rd.remainingWeekly) + '</strong>' +
+            '<span class="ic-tag"> (' + rWdate + ')</span>' +
+          '</div>';
+      }
+    }
+
+    // --- Penguin mascot ---
+    var penguinWrap = el.querySelector('.hud-penguin-wrap');
+    if (penguinWrap && pScene) {
+      var pState, statusText, statusClass;
+      if (isError) {
+        pState = 'error'; statusText = 'NO SIGNAL'; statusClass = 'error';
+      } else if (isStale) {
+        pState = 'stale'; statusText = 'STALE ' + (ageSec < 60 ? ageSec + 's' : Math.round(ageSec / 60) + 'm'); statusClass = 'stale';
+      } else {
+        pState = 'live'; statusText = 'RETRIEVING DATA'; statusClass = 'live';
+      }
+
+      // Only rebuild on state change, otherwise just update text
+      var prevState = penguinWrap.dataset.pstate;
+      if (prevState === pState) {
+        var stEl = penguinWrap.querySelector('.hud-penguin-status');
+        if (stEl) stEl.textContent = statusText;
+      } else {
+        penguinWrap.dataset.pstate = pState;
+        penguinWrap.innerHTML =
+          pScene({ state: pState, size: 'small' }) +
+          '<div class="hud-penguin-status ' + statusClass + '">' + statusText + '</div>';
+      }
+    }
+  }
+});
+</script>

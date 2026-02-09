@@ -1,0 +1,33 @@
+[meta]
+name       = "Starfield Light"
+id         = "starfield-light"
+variant    = "light"
+font_stack = "'Space Grotesk', 'Rajdhani', sans-serif"
+mono_stack = "'Fira Code', monospace"
+
+[colors]
+bg-void    = "#a8b0b8"
+bg-panel   = "rgba(253,248,243,0.90)"
+bg-inset   = "rgba(245,237,227,0.92)"
+bg-hover   = "rgba(253,248,243,0.80)"
+primary    = "#C04020"
+secondary  = "#B08838"
+tertiary   = "#2F4C79"
+accent     = "#C04020"
+danger     = "#A01C2C"
+warm       = "#C05030"
+text       = "#1a1e24"
+text-dim   = "#5a6270"
+text-bright = "#0e1218"
+rule       = "rgba(192,64,32,0.12)"
+glow       = "rgba(192,64,32,0.15)"
+sf-metal   = "#6a747e"
+signal     = "#22c55e"
+
+[stripe]
+colors = ["#C82337", "#E06236", "#D7AB61", "#2F4C79"]
+width  = "equal"
+
+[brand]
+primary = "#B08838"
+accent  = "#C04020"

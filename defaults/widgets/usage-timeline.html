@@ -1,0 +1,382 @@
+<style>
+.w-ut-controls{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px;flex-wrap:wrap}
+.w-ut-controls .tog-group{display:inline-flex;border:1px solid var(--rule);border-radius:var(--radius);overflow:hidden}
+.w-ut-controls .tog{padding:3px 9px;border:none;background:var(--bg-inset);color:var(--text-dim);font-family:var(--font-mono);font-size:0.6rem;cursor:pointer;transition:all .15s;letter-spacing:0.5px}
+.w-ut-controls .tog:not(:last-child){border-right:1px solid var(--rule)}
+.w-ut-controls .tog.active{background:var(--c-primary);color:var(--bg-void);font-weight:600}
+.w-ut-controls .tog:hover:not(.active){background:var(--bg-hover);color:var(--text)}
+.w-ut-controls .tog-nav{min-width:28px;text-align:center;font-weight:700}
+.w-ut-controls .tog-now{font-size:9px;letter-spacing:1px}
+.w-ut-controls input[type="datetime-local"]{font-size:10px;padding:3px 6px;font-family:var(--font-mono);background:var(--bg-inset);border:1px solid var(--rule);border-radius:var(--radius);color:var(--text);cursor:pointer}
+.w-ut-controls input[type="datetime-local"]::-webkit-calendar-picker-indicator{filter:invert(0.7)}
+.w-ut-timeframe{font-family:var(--font-mono);font-size:0.65rem;color:var(--text-dim);letter-spacing:0.5px;margin-bottom:6px;min-height:1.2em}
+.w-ut-chart{position:relative;height:200px}
+.w-ut-chart canvas{width:100%!important;height:100%!important;display:block}
+</style>
+<script>
+Periscope.registerWidget({
+  id: 'usage-timeline',
+  title: 'Usage Timeline',
+  size: 'xl',
+  priority: 10,
+
+  init(el) {
+    el.innerHTML =
+      '<div class="widget-title">Usage Timeline</div>' +
+      '<div class="w-ut-controls">' +
+        '<div class="tog-group" data-group="metric">' +
+          '<button class="tog active" data-val="tokens">Tokens</button>' +
+          '<button class="tog" data-val="cost">Cost</button>' +
+        '</div>' +
+        '<div class="tog-group" data-group="range">' +
+          '<button class="tog active" data-val="5h">5h</button>' +
+          '<button class="tog" data-val="24h">24h</button>' +
+          '<button class="tog" data-val="7d">7d</button>' +
+          '<button class="tog" data-val="30d">30d</button>' +
+        '</div>' +
+        '<div class="tog-group" data-group="nav">' +
+          '<button class="tog tog-nav" data-nav="-1">&larr;</button>' +
+          '<button class="tog tog-now" data-nav="0">NOW</button>' +
+          '<button class="tog tog-nav" data-nav="1">&rarr;</button>' +
+        '</div>' +
+        '<input type="datetime-local" class="w-ut-datetime">' +
+      '</div>' +
+      '<div class="w-ut-timeframe"></div>' +
+      '<div class="w-ut-chart"><canvas></canvas></div>';
+
+    el._utState = { metric: 'tokens', range: '5h', chartOffset: 0, chart: null };
+
+    var self = this;
+
+    // Wire metric/range toggles
+    el.querySelectorAll('.tog-group[data-group="metric"], .tog-group[data-group="range"]').forEach(function(grp) {
+      grp.querySelectorAll('.tog').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+          var group = grp.dataset.group;
+          var val = btn.dataset.val;
+          grp.querySelectorAll('.tog').forEach(function(b) { b.classList.remove('active'); });
+          btn.classList.add('active');
+          if (group === 'metric') el._utState.metric = val;
+          else if (group === 'range') {
+            el._utState.range = val;
+            el._utState.chartOffset = 0;
+          }
+          self._rerender(el);
+        });
+      });
+    });
+
+    // Wire nav buttons
+    el.querySelectorAll('[data-nav]').forEach(function(btn) {
+      btn.addEventListener('click', function() {
+        var dir = parseInt(btn.dataset.nav, 10);
+        if (dir === 0) {
+          el._utState.chartOffset = 0;
+        } else {
+          el._utState.chartOffset += dir;
+          if (el._utState.chartOffset > 0) el._utState.chartOffset = 0;
+        }
+        self._rerender(el);
+      });
+    });
+
+    // Wire datetime picker
+    var dtInput = el.querySelector('.w-ut-datetime');
+    dtInput.addEventListener('change', function() {
+      if (!dtInput.value) return;
+      var target = new Date(dtInput.value).getTime();
+      var rangeMs = RANGE_MS[el._utState.range];
+      var diff = target - Date.now();
+      el._utState.chartOffset = Math.round(diff / rangeMs);
+      if (el._utState.chartOffset > 0) el._utState.chartOffset = 0;
+      self._rerender(el);
+    });
+  },
+
+  _rerender(el) {
+    if (Periscope._data) {
+      var w = Periscope._widgets.get('usage-timeline');
+      if (w && w.render) w.render(el, Periscope._data);
+    }
+  },
+
+  render(el, data) {
+    var st = el._utState;
+    if (!st) return;
+
+    var history = data.history || [];
+    var historyDeduped = data.historyDeduped || [];
+    var chartWrap = el.querySelector('.w-ut-chart');
+    var tfEl = el.querySelector('.w-ut-timeframe');
+
+    // --- No data at all ---
+    if (history.length === 0) {
+      if (st.chart) { st.chart.destroy(); st.chart = null; }
+      tfEl.textContent = '';
+      chartWrap.innerHTML = penguinEmptyState('COLLECTING TELEMETRY', 'Your penguin analyst is gathering data. Check back soon.');
+      return;
+    }
+
+    // --- Resolve CSS colors ---
+    var cs = getComputedStyle(document.documentElement);
+    var textDim = cs.getPropertyValue('--text-dim').trim() || '#5a6270';
+    var gridColor = 'rgba(245,158,11,0.04)';
+    var monoFont = cs.getPropertyValue('--font-mono').trim() || 'Fira Code';
+
+    var palette = [
+      cs.getPropertyValue('--c-primary').trim()   || '#E06236',
+      cs.getPropertyValue('--c-tertiary').trim()   || '#2F4C79',
+      cs.getPropertyValue('--c-accent').trim()     || '#8B5CF6',
+      cs.getPropertyValue('--c-secondary').trim()  || '#D7AB61',
+      cs.getPropertyValue('--c-danger').trim()     || '#C82337',
+      cs.getPropertyValue('--c-warm').trim()        || '#fb923c'
+    ];
+
+    var rangeMs = RANGE_MS[st.range];
+
+    // --- Coverage check for 7d/30d ---
+    if (st.range === '7d' || st.range === '30d') {
+      var wEnd = Date.now();
+      var wStart = wEnd - rangeMs;
+      var inWindowCheck = history.filter(function(h) { return new Date(h.ts).getTime() >= wStart; });
+      var daySet = {};
+      inWindowCheck.forEach(function(h) { daySet[new Date(h.ts).toISOString().slice(0,10)] = 1; });
+      var distinctDays = Object.keys(daySet).length;
+      var minDays = st.range === '7d' ? 1.5 : 14;
+      if (distinctDays < minDays) {
+        if (st.chart) { st.chart.destroy(); st.chart = null; }
+        tfEl.textContent = '';
+        var pct = Math.round(distinctDays / minDays * 100);
+        chartWrap.innerHTML = penguinEmptyState(
+          'COLLECTING DATA',
+          distinctDays + ' of ' + Math.ceil(minDays) + ' days needed for ' + st.range + ' view (' + pct + '% coverage)'
+        );
+        return;
+      }
+    }
+
+    // --- Restore canvas if penguin was showing ---
+    if (!chartWrap.querySelector('canvas')) {
+      chartWrap.innerHTML = '<canvas></canvas>';
+    }
+
+    // --- Compute window ---
+    var windowEnd = new Date(Date.now() + st.chartOffset * rangeMs);
+    var windowStart = new Date(windowEnd.getTime() - rangeMs);
+
+    // Update timeframe display
+    tfEl.textContent = fmtDateRange(windowStart, windowEnd);
+
+    // Sync datetime picker to window center
+    var dtPicker = el.querySelector('.w-ut-datetime');
+    if (dtPicker) {
+      var center = new Date((windowStart.getTime() + windowEnd.getTime()) / 2);
+      var local = new Date(center.getTime() - center.getTimezoneOffset() * 60000).toISOString().slice(0,16);
+      dtPicker.value = local;
+    }
+
+    // --- Metric value function ---
+    function metricVal(h) {
+      if (st.metric === 'cost') return h.cost || 0;
+      return weightedTokens(h.input, h.cr, h.cw, h.out);
+    }
+
+    // --- Filter data into window ---
+    var inWindow = history.filter(function(h) {
+      var t = new Date(h.ts).getTime();
+      return t >= windowStart.getTime() && t <= windowEnd.getTime();
+    });
+    var inWindowDeduped = historyDeduped.filter(function(h) {
+      var t = new Date(h.ts).getTime();
+      return t >= windowStart.getTime() && t <= windowEnd.getTime();
+    });
+
+    // --- Build datasets ---
+    var datasets = [];
+
+    if (st.range === '5h') {
+      // Session-colored lines, no fill
+      var sessions = {};
+      for (var i = 0; i < inWindow.length; i++) {
+        var h = inWindow[i];
+        if (!sessions[h.sid]) sessions[h.sid] = [];
+        sessions[h.sid].push({ x: new Date(h.ts), y: metricVal(h) });
+      }
+      var si = 0;
+      var sids = Object.keys(sessions);
+      for (var j = 0; j < sids.length; j++) {
+        var sid = sids[j];
+        datasets.push({
+          label: sid.substring(0, 8),
+          data: sessions[sid],
+          borderColor: palette[si % palette.length],
+          backgroundColor: 'transparent',
+          tension: 0.3,
+          pointRadius: 2,
+          borderWidth: 2
+        });
+        si++;
+      }
+
+    } else if (st.range === '24h') {
+      // Session-colored lines with light fill
+      var sessions24 = {};
+      for (var k = 0; k < inWindow.length; k++) {
+        var h2 = inWindow[k];
+        if (!sessions24[h2.sid]) sessions24[h2.sid] = [];
+        sessions24[h2.sid].push({ x: new Date(h2.ts), y: metricVal(h2) });
+      }
+      var si2 = 0;
+      var sids2 = Object.keys(sessions24);
+      for (var l = 0; l < sids2.length; l++) {
+        var sid2 = sids2[l];
+        var c = palette[si2 % palette.length];
+        datasets.push({
+          label: sid2.substring(0, 8),
+          data: sessions24[sid2],
+          borderColor: c,
+          backgroundColor: c + '18',
+          tension: 0.3,
+          pointRadius: 2,
+          borderWidth: 2,
+          fill: true
+        });
+        si2++;
+      }
+
+    } else if (st.range === '7d') {
+      // Daily averages from deduped history
+      var buckets7 = {};
+      for (var m = 0; m < inWindowDeduped.length; m++) {
+        var h3 = inWindowDeduped[m];
+        var d = new Date(h3.ts);
+        var key = d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
+        if (!buckets7[key]) buckets7[key] = { sum: 0, count: 0 };
+        buckets7[key].sum += metricVal(h3);
+        buckets7[key].count++;
+      }
+      var pts7 = Object.keys(buckets7).map(function(key) {
+        var b = buckets7[key];
+        return { x: new Date(key + 'T12:00:00'), y: b.sum / b.count, count: b.count };
+      }).sort(function(a, b) { return a.x - b.x; });
+
+      var accentColor = palette[2] || '#8B5CF6';
+      datasets.push({
+        label: 'Daily Avg',
+        data: pts7,
+        borderColor: accentColor,
+        backgroundColor: accentColor + '33',
+        tension: 0.3,
+        pointRadius: 5,
+        borderWidth: 2,
+        fill: true
+      });
+
+    } else if (st.range === '30d') {
+      // Weekly averages from deduped history
+      var buckets30 = {};
+      for (var n = 0; n < inWindowDeduped.length; n++) {
+        var h4 = inWindowDeduped[n];
+        var d2 = new Date(h4.ts);
+        var day = d2.getDay() || 7;
+        var monday = new Date(d2);
+        monday.setDate(d2.getDate() - day + 1);
+        var key2 = monday.getFullYear() + '-' + String(monday.getMonth()+1).padStart(2,'0') + '-' + String(monday.getDate()).padStart(2,'0');
+        if (!buckets30[key2]) buckets30[key2] = { sum: 0, count: 0 };
+        buckets30[key2].sum += metricVal(h4);
+        buckets30[key2].count++;
+      }
+      var pts30 = Object.keys(buckets30).map(function(key) {
+        var b = buckets30[key];
+        return { x: new Date(key + 'T12:00:00'), y: b.sum / b.count, count: b.count };
+      }).sort(function(a, b) { return a.x - b.x; });
+
+      var tertiaryColor = palette[1] || '#2F4C79';
+      datasets.push({
+        label: 'Weekly Avg',
+        data: pts30,
+        borderColor: tertiaryColor,
+        backgroundColor: tertiaryColor + '33',
+        tension: 0.3,
+        pointRadius: 5,
+        borderWidth: 2,
+        fill: true
+      });
+    }
+
+    // --- Y-axis formatter ---
+    var yFmt = st.metric === 'cost'
+      ? function(v) { return '$' + v.toFixed(0); }
+      : function(v) { return fmtK(v); };
+
+    // --- Tooltip label ---
+    var tooltipLabel = function(tip) {
+      var v = st.metric === 'cost' ? '$' + tip.raw.y.toFixed(2) : fmtK(tip.raw.y);
+      var extra = tip.raw.count ? ' (' + tip.raw.count + ' pts)' : '';
+      return tip.dataset.label + ': ' + v + extra;
+    };
+
+    // --- Chart config ---
+    var canvas = chartWrap.querySelector('canvas');
+    if (typeof Chart === 'undefined') {
+      chartWrap.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:200px;color:var(--text-dim);font-size:0.72rem;font-style:italic;font-family:var(--font-mono)">Chart.js not loaded</div>';
+      return;
+    }
+
+    var ctx = canvas.getContext('2d');
+
+    // Destroy previous chart instance
+    if (st.chart) { st.chart.destroy(); st.chart = null; }
+
+    st.chart = new Chart(ctx, {
+      type: 'line',
+      data: { datasets: datasets },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: { mode: 'nearest', intersect: false },
+        scales: {
+          x: {
+            type: 'time',
+            min: windowStart,
+            max: windowEnd,
+            ticks: {
+              color: textDim,
+              font: { family: monoFont, size: 10 }
+            },
+            grid: { color: gridColor }
+          },
+          y: {
+            position: 'left',
+            ticks: {
+              color: textDim,
+              callback: yFmt,
+              font: { family: monoFont, size: 10 }
+            },
+            grid: { color: gridColor }
+          }
+        },
+        plugins: {
+          legend: {
+            position: 'top',
+            align: 'center',
+            labels: {
+              color: textDim,
+              font: { family: monoFont, size: 10 },
+              padding: 14,
+              usePointStyle: true,
+              pointStyle: 'circle',
+              boxWidth: 8
+            }
+          },
+          tooltip: {
+            callbacks: {
+              label: tooltipLabel
+            }
+          }
+        }
+      }
+    });
+  }
+});
+</script>

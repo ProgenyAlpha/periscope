@@ -1,0 +1,28 @@
+[meta]
+name       = "Phosphor"
+id         = "phosphor"
+variant    = "dark"
+font_stack = "'Fira Code', 'Rajdhani', monospace"
+mono_stack = "'Fira Code', monospace"
+
+[colors]
+bg-void    = "#000800"
+bg-panel   = "#001000"
+bg-inset   = "#001800"
+bg-hover   = "#002000"
+primary    = "#00ff41"
+secondary  = "#00cc33"
+tertiary   = "#33ff77"
+accent     = "#00ff41"
+danger     = "#ff3333"
+warm       = "#66ff88"
+text       = "#00ff41"
+text-dim   = "#008f11"
+text-bright = "#33ff77"
+rule       = "rgba(0,255,65,0.1)"
+glow       = "rgba(0,255,65,0.25)"
+signal     = "#00ff41"
+
+[brand]
+primary = "#00ff41"
+accent  = "#00cc33"
