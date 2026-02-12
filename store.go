@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"log"
+	"math"
 	"strings"
 	"time"
 
@@ -248,6 +250,7 @@ type DashboardData struct {
 	Profile          json.RawMessage  `json:"profile"`
 	SessionMeta      json.RawMessage  `json:"sessionMeta"`
 	LimitHistory     []json.RawMessage `json:"limitHistory"`
+	Layout           json.RawMessage  `json:"layout"`
 }
 
 type SidecarEntry struct {
@@ -292,11 +295,23 @@ func buildDashboardData(app *App) (*DashboardData, error) {
 		d.History = []json.RawMessage{}
 	}
 
-	// Limit history from DB
-	if rows, err := app.DB.Query("SELECT data FROM limit_history ORDER BY ts ASC"); err == nil {
+	// Limit history from DB — inject ts from SQL column if missing from JSON data
+	if rows, err := app.DB.Query("SELECT ts, data FROM limit_history ORDER BY ts ASC"); err == nil {
 		for rows.Next() {
-			var data string
-			if rows.Scan(&data) == nil {
+			var ts, data string
+			if rows.Scan(&ts, &data) == nil {
+				// Check if data has ts field; if not, inject it
+				if !strings.Contains(data[:min(len(data), 30)], `"ts"`) {
+					var m map[string]any
+					if json.Unmarshal([]byte(data), &m) == nil {
+						if _, ok := m["ts"]; !ok {
+							m["ts"] = ts
+							if patched, err := json.Marshal(m); err == nil {
+								data = string(patched)
+							}
+						}
+					}
+				}
 				d.LimitHistory = append(d.LimitHistory, json.RawMessage(data))
 			}
 		}
@@ -312,10 +327,10 @@ func buildDashboardData(app *App) (*DashboardData, error) {
 	d.LiveUsage = kvGet(app.DB, "cache:usage-api")
 	d.Profile = kvGet(app.DB, "cache:profile")
 	d.SessionMeta = kvGet(app.DB, "cache:session-meta")
+	d.Layout = kvGet(app.DB, "config:layout")
 
-	// Side effects: refresh profile if stale, append limit history
+	// Side effects: refresh profile if stale
 	go refreshProfileIfStale(app)
-	go appendLimitSnapshot(app, d.LiveUsage)
 
 	return d, nil
 }
@@ -384,11 +399,20 @@ func fetchUsage(app *App) (json.RawMessage, error) {
 		return nil, fmt.Errorf("API returned %d: %s", resp.StatusCode, string(body))
 	}
 
-	// Parse the API response: { five_hour: {utilization, resets_at}, seven_day: {...}, seven_day_sonnet: {...} }
+	// Parse the API response
 	var apiResp struct {
-		FiveHour       *usageWindow `json:"five_hour"`
-		SevenDay       *usageWindow `json:"seven_day"`
-		SevenDaySonnet *usageWindow `json:"seven_day_sonnet"`
+		FiveHour          *usageWindow `json:"five_hour"`
+		SevenDay          *usageWindow `json:"seven_day"`
+		SevenDaySonnet    *usageWindow `json:"seven_day_sonnet"`
+		SevenDayOpus      *usageWindow `json:"seven_day_opus"`
+		SevenDayOauthApps *usageWindow `json:"seven_day_oauth_apps"`
+		SevenDayCowork    *usageWindow `json:"seven_day_cowork"`
+		ExtraUsage *struct {
+			IsEnabled    bool     `json:"is_enabled"`
+			MonthlyLimit *float64 `json:"monthly_limit"`
+			UsedCredits  float64  `json:"used_credits"`
+			Utilization  *float64 `json:"utilization"`
+		} `json:"extra_usage"`
 	}
 	if err := json.Unmarshal(body, &apiResp); err != nil {
 		return nil, err
@@ -415,6 +439,31 @@ func fetchUsage(app *App) (json.RawMessage, error) {
 		usage["resetSonnet"] = apiResp.SevenDaySonnet.ResetsAt
 	} else {
 		usage["pctSonnet"] = -1
+	}
+	if apiResp.SevenDayOpus != nil {
+		usage["pctOpus"] = int(apiResp.SevenDayOpus.Utilization + 0.5)
+		usage["resetOpus"] = apiResp.SevenDayOpus.ResetsAt
+	}
+	if apiResp.SevenDayOauthApps != nil {
+		usage["pctOauthApps"] = int(apiResp.SevenDayOauthApps.Utilization + 0.5)
+		usage["resetOauthApps"] = apiResp.SevenDayOauthApps.ResetsAt
+	}
+	if apiResp.SevenDayCowork != nil {
+		usage["pctCowork"] = int(apiResp.SevenDayCowork.Utilization + 0.5)
+		usage["resetCowork"] = apiResp.SevenDayCowork.ResetsAt
+	}
+	if apiResp.ExtraUsage != nil {
+		eu := map[string]any{
+			"is_enabled":   apiResp.ExtraUsage.IsEnabled,
+			"used_credits": apiResp.ExtraUsage.UsedCredits / 100, // API returns cents
+		}
+		if apiResp.ExtraUsage.MonthlyLimit != nil {
+			eu["monthly_limit"] = *apiResp.ExtraUsage.MonthlyLimit / 100 // API returns cents
+		}
+		if apiResp.ExtraUsage.Utilization != nil {
+			eu["utilization"] = *apiResp.ExtraUsage.Utilization
+		}
+		usage["extra_usage"] = eu
 	}
 
 	result, _ := json.Marshal(usage)
@@ -466,12 +515,33 @@ func fetchProfile(app *App) (json.RawMessage, error) {
 	if acct, ok := apiResp["account"].(map[string]any); ok {
 		profile["name"], _ = acct["full_name"]
 		profile["email"], _ = acct["email"]
+		if v, ok := acct["has_claude_max"].(bool); ok {
+			profile["has_claude_max"] = v
+		}
+		if v, ok := acct["has_claude_pro"].(bool); ok {
+			profile["has_claude_pro"] = v
+		}
+		if v, ok := acct["created_at"].(string); ok {
+			profile["created_at"] = v
+		}
+		if v, ok := acct["display_name"].(string); ok {
+			profile["display_name"] = v
+		}
 	}
 	if org, ok := apiResp["organization"].(map[string]any); ok {
 		profile["subscription"], _ = org["organization_type"]
 		profile["tier"], _ = org["rate_limit_tier"]
 		profile["org"], _ = org["name"]
 		profile["status"], _ = org["subscription_status"]
+		if v, ok := org["has_extra_usage_enabled"].(bool); ok {
+			profile["has_extra_usage_enabled"] = v
+		}
+		if v, ok := org["billing_type"].(string); ok {
+			profile["billing_type"] = v
+		}
+		if v, ok := org["uuid"].(string); ok {
+			profile["org_uuid"] = v
+		}
 	}
 
 	result, _ := json.Marshal(profile)
@@ -496,37 +566,234 @@ func refreshProfileIfStale(app *App) {
 	fetchProfile(app)
 }
 
+// snapshotSidecarsToHistory reads all current sidecar states and inserts a history
+// entry for each active session. This runs every 30s so the usage timeline has
+// continuous data even when no hooks are firing.
+func snapshotSidecarsToHistory(app *App) {
+	rows, err := app.DB.Query("SELECT id, data FROM sessions")
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+
+	now := time.Now().UTC().Format("2006-01-02T15:04:05Z")
+
+	for rows.Next() {
+		var sid, raw string
+		if rows.Scan(&sid, &raw) != nil {
+			continue
+		}
+		var sc struct {
+			Cumulative *struct {
+				Input      int64   `json:"input"`
+				CacheRead  int64   `json:"cache_read"`
+				CacheWrite int64   `json:"cache_write"`
+				Output     int64   `json:"output"`
+				Cost       float64 `json:"cost"`
+				AgentCalls int     `json:"agent_calls"`
+				ToolCalls  int     `json:"tool_calls"`
+				ChatCalls  int     `json:"chat_calls"`
+			} `json:"cumulative"`
+		}
+		if json.Unmarshal([]byte(raw), &sc) != nil || sc.Cumulative == nil {
+			continue
+		}
+		c := sc.Cumulative
+		shortSid := sid
+		if len(shortSid) > 8 {
+			shortSid = shortSid[:8]
+		}
+		entry := map[string]any{
+			"ts":    now,
+			"sid":   shortSid,
+			"input": c.Input,
+			"cr":    c.CacheRead,
+			"cw":    c.CacheWrite,
+			"out":   c.Output,
+			"cost":  math.Round(c.Cost*100) / 100,
+			"turns": c.AgentCalls + c.ToolCalls + c.ChatCalls,
+		}
+		data, _ := json.Marshal(entry)
+		app.DB.Exec("INSERT INTO history(ts, data) VALUES(?, ?)", now, string(data))
+	}
+}
+
 func appendLimitSnapshot(app *App, liveUsage json.RawMessage) {
 	if liveUsage == nil {
 		return
 	}
 
-	// Check last snapshot time
-	var lastTS string
-	app.DB.QueryRow("SELECT ts FROM limit_history ORDER BY id DESC LIMIT 1").Scan(&lastTS)
+	var current map[string]any
+	if json.Unmarshal(liveUsage, &current) != nil {
+		return
+	}
+
+	// Check last snapshot: time dedup + value dedup
+	var lastTS, lastData string
+	app.DB.QueryRow("SELECT ts, data FROM limit_history ORDER BY id DESC LIMIT 1").Scan(&lastTS, &lastData)
+
 	if lastTS != "" {
 		if t, err := time.Parse(time.RFC3339, lastTS); err == nil {
-			if time.Since(t) < 5*time.Minute {
-				return // Too recent
+			elapsed := time.Since(t)
+
+			// Always enforce minimum 1-minute gap
+			if elapsed < 1*time.Minute {
+				return
+			}
+
+			// Value dedup: skip if pct values haven't changed
+			// (reset timestamps have varying sub-second precision so we only compare pct)
+			// Allow heartbeat every 15 min even if unchanged (for chart continuity)
+			if lastData != "" && elapsed < 15*time.Minute {
+				var last map[string]any
+				if json.Unmarshal([]byte(lastData), &last) == nil {
+					same := fmt.Sprintf("%v", current["pct5hr"]) == fmt.Sprintf("%v", last["pct5hr"]) &&
+						fmt.Sprintf("%v", current["pctWeekly"]) == fmt.Sprintf("%v", last["pctWeekly"]) &&
+						fmt.Sprintf("%v", current["pctSonnet"]) == fmt.Sprintf("%v", last["pctSonnet"])
+					if same {
+						return // No change — skip
+					}
+				}
 			}
 		}
 	}
 
 	now := time.Now().Format(time.RFC3339)
-	app.DB.Exec("INSERT INTO limit_history(ts, data) VALUES(?, ?)", now, string(liveUsage))
+	current["ts"] = now
+	dataWithTS, _ := json.Marshal(current)
+	app.DB.Exec("INSERT INTO limit_history(ts, data) VALUES(?, ?)", now, string(dataWithTS))
 
 	// Also append to JSONL for backward compat with statusline/hooks
-	var usage map[string]any
-	if json.Unmarshal(liveUsage, &usage) == nil {
-		usage["ts"] = now
-		line, _ := json.Marshal(usage)
-		f, err := os.OpenFile(filepath.Join(app.DataDir, "limit-history.jsonl"),
-			os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-		if err == nil {
-			f.Write(append(line, '\n'))
-			f.Close()
+	f, err := os.OpenFile(filepath.Join(app.DataDir, "limit-history.jsonl"),
+		os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err == nil {
+		f.Write(append(dataWithTS, '\n'))
+		f.Close()
+	}
+}
+
+// --- Limit History Compaction ---
+// Tiered dedup: <24h keep all, 24h-7d keep 5min, 7d-30d keep 60min, 30d+ keep 4hr
+func compactLimitHistory(app *App) {
+	rows, err := app.DB.Query("SELECT id, ts, data FROM limit_history ORDER BY ts ASC")
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+
+	type entry struct {
+		id   int64
+		ts   time.Time
+		data string
+	}
+	var all []entry
+	for rows.Next() {
+		var e entry
+		var tsStr string
+		if rows.Scan(&e.id, &tsStr, &e.data) != nil {
+			continue
+		}
+		if t, err := time.Parse(time.RFC3339, tsStr); err == nil {
+			e.ts = t
+		} else if t, err := time.Parse(time.RFC3339Nano, tsStr); err == nil {
+			e.ts = t
+		} else {
+			continue
+		}
+		all = append(all, e)
+	}
+
+	if len(all) < 100 {
+		return // Not worth compacting
+	}
+
+	// Fix ts-less entries permanently (from old appendLimitSnapshot bug)
+	for _, e := range all {
+		if !strings.Contains(e.data[:min(len(e.data), 30)], `"ts"`) {
+			var m map[string]any
+			if json.Unmarshal([]byte(e.data), &m) == nil {
+				if _, ok := m["ts"]; !ok {
+					m["ts"] = e.ts.Format(time.RFC3339)
+					if patched, err := json.Marshal(m); err == nil {
+						app.DB.Exec("UPDATE limit_history SET data = ? WHERE id = ?", string(patched), e.id)
+					}
+				}
+			}
 		}
 	}
+
+	now := time.Now()
+	var deleteIDs []int64
+	var lastKept time.Time
+
+	for _, e := range all {
+		age := now.Sub(e.ts)
+		var minGap time.Duration
+		switch {
+		case age < 24*time.Hour:
+			minGap = 0 // Keep all
+		case age < 7*24*time.Hour:
+			minGap = 5 * time.Minute
+		case age < 30*24*time.Hour:
+			minGap = 60 * time.Minute
+		default:
+			minGap = 4 * time.Hour
+		}
+
+		if minGap > 0 && !lastKept.IsZero() && e.ts.Sub(lastKept) < minGap {
+			deleteIDs = append(deleteIDs, e.id)
+		} else {
+			lastKept = e.ts
+		}
+	}
+
+	if len(deleteIDs) == 0 {
+		return
+	}
+
+	// Delete pruned entries
+	tx, err := app.DB.Begin()
+	if err != nil {
+		return
+	}
+	for _, id := range deleteIDs {
+		tx.Exec("DELETE FROM limit_history WHERE id = ?", id)
+	}
+	tx.Commit()
+
+	// Rewrite JSONL from surviving entries (inject ts if missing)
+	surviving, err := app.DB.Query("SELECT ts, data FROM limit_history ORDER BY ts ASC")
+	if err != nil {
+		return
+	}
+	defer surviving.Close()
+
+	jsonlPath := filepath.Join(app.DataDir, "limit-history.jsonl")
+	f, err := os.Create(jsonlPath)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	for surviving.Next() {
+		var ts, data string
+		if surviving.Scan(&ts, &data) == nil {
+			// Inject ts if missing from JSON data
+			if !strings.Contains(data[:min(len(data), 30)], `"ts"`) {
+				var m map[string]any
+				if json.Unmarshal([]byte(data), &m) == nil {
+					if _, ok := m["ts"]; !ok {
+						m["ts"] = ts
+						if patched, err := json.Marshal(m); err == nil {
+							data = string(patched)
+						}
+					}
+				}
+			}
+			f.WriteString(data + "\n")
+		}
+	}
+
+	log.Printf("compaction: pruned %d of %d limit_history entries", len(deleteIDs), len(all))
 }
 
 // --- Pricing (LiteLLM) ---

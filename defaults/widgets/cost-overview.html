@@ -1,248 +1,163 @@
 <style>
-.w-metrics .m-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
-@media(max-width:900px){.w-metrics .m-grid{grid-template-columns:repeat(2,1fr)}}
-.w-metrics .m-card{background:var(--bg-inset);border:1px solid var(--rule);border-radius:var(--radius,6px);padding:12px 14px;position:relative;transition:border-color 0.2s;overflow:hidden}
-.w-metrics .m-card:hover{border-color:color-mix(in srgb,var(--rule) 50%,var(--text-dim))}
-.w-metrics .m-card::before{content:'';position:absolute;left:0;top:8px;bottom:8px;width:2px;border-radius:1px}
-.w-metrics .m-card[data-accent="primary"]::before{background:var(--c-primary)}
-.w-metrics .m-card[data-accent="secondary"]::before{background:var(--c-secondary)}
-.w-metrics .m-card[data-accent="tertiary"]::before{background:var(--c-tertiary)}
-.w-metrics .m-card[data-accent="accent"]::before{background:var(--c-accent)}
-.w-metrics .m-card[data-accent="danger"]::before{background:var(--c-danger)}
-.w-metrics .m-card[data-accent="warm"]::before{background:var(--c-warm)}
-.w-metrics .m-label{font-size:0.55rem;text-transform:uppercase;letter-spacing:1.2px;color:var(--text-dim);margin-bottom:6px;line-height:1}
-.w-metrics .m-value{font-size:1.4rem;font-weight:600;font-family:var(--font-mono);color:var(--text-bright);line-height:1.1;display:flex;align-items:baseline;gap:6px}
-.w-metrics .m-sub{font-size:0.58rem;color:var(--text-dim);font-family:var(--font-mono);margin-top:4px;line-height:1.2}
-.w-metrics .m-value.count-flash{transition:color 0.3s;color:var(--c-primary)}
-.w-metrics .m-spark{position:absolute;right:8px;top:8px;opacity:0.5}
+.w-metrics .m-windows{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
+@media(max-width:900px){.w-metrics .m-windows{grid-template-columns:repeat(2,1fr)}}
+.w-metrics .m-win{background:var(--bg-inset);border:1px solid var(--rule);border-radius:var(--radius,6px);padding:8px 10px;position:relative;transition:border-color 0.2s;overflow:hidden}
+.w-metrics .m-win:hover{border-color:color-mix(in srgb,var(--rule) 50%,var(--text-dim))}
+.w-metrics .m-win::before{content:'';position:absolute;left:0;top:0;bottom:0;width:3px;border-radius:1px 0 0 1px}
+.w-metrics .m-win.w-1h::before{background:var(--c-tertiary)}
+.w-metrics .m-win.w-5h::before{background:var(--c-primary)}
+.w-metrics .m-win.w-24h::before{background:var(--c-warm)}
+.w-metrics .m-win.w-life::before{background:var(--c-accent)}
+.w-metrics .m-win-label{font-size:0.52rem;text-transform:uppercase;letter-spacing:1.5px;color:var(--text-dim);margin-bottom:6px;line-height:1;display:flex;justify-content:space-between;align-items:center}
+.w-metrics .m-win-sessions{font-size:0.48rem;color:var(--text-dim);font-family:var(--font-mono);letter-spacing:0}
+.w-metrics .m-win-cost{font-size:1.5rem;font-weight:600;font-family:var(--font-mono);color:var(--text-bright);line-height:1.1}
+.w-metrics .m-win-tokens{font-size:0.62rem;color:var(--text-dim);font-family:var(--font-mono);margin-top:4px}
+.w-metrics .m-win-turns{font-size:0.52rem;color:var(--text-dim);font-family:var(--font-mono);margin-top:2px}
+
+.w-metrics .m-stats{display:flex;gap:8px;margin-top:8px;flex-wrap:wrap}
+.w-metrics .m-stat{flex:1;min-width:100px;background:var(--bg-inset);border:1px solid var(--rule);border-radius:var(--radius,6px);padding:6px 10px;display:flex;align-items:center;gap:8px}
+.w-metrics .m-stat-icon{font-size:0.65rem;font-family:var(--font-mono);color:var(--text-dim);width:14px;text-align:center;flex-shrink:0}
+.w-metrics .m-stat-body{min-width:0}
+.w-metrics .m-stat-val{font-size:1rem;font-weight:600;font-family:var(--font-mono);color:var(--text-bright);line-height:1}
+.w-metrics .m-stat-label{font-size:0.48rem;text-transform:uppercase;letter-spacing:1px;color:var(--text-dim);margin-top:2px}
 </style>
 <script>
 Periscope.registerWidget({
   id: 'cost-overview',
   title: 'Key Metrics',
-  size: 'xl',
+  size: 'lg',
   priority: 5,
 
   init(el) {
-    const cards = [
-      { id: 'km-cost',     accent: 'primary',   label: 'Total Cost',      spark: true },
-      { id: 'km-turns',    accent: 'secondary',  label: 'Total Turns',     spark: true },
-      { id: 'km-cache',    accent: 'tertiary',   label: 'Cache Hit Rate',  spark: true },
-      { id: 'km-weighted', accent: 'accent',     label: 'Weighted Tokens', spark: true },
-      { id: 'km-burn',     accent: 'warm',       label: 'Burn Rate',       spark: false },
-      { id: 'km-avgturn',  accent: 'warm',       label: 'Avg Turn Cost',   spark: false },
-      { id: 'km-model',    accent: 'primary',    label: 'Active Model',    spark: false },
-      { id: 'km-sessions', accent: 'secondary',  label: 'Sessions Today',  spark: false },
-    ];
     el.innerHTML =
       '<div class="widget-title">Key Metrics</div>' +
-      '<div class="w-metrics"><div class="m-grid">' +
-      cards.map(c =>
-        '<div class="m-card" data-accent="' + c.accent + '" id="' + c.id + '-card">' +
-          (c.spark ? '<div class="m-spark" id="' + c.id + '-spark"></div>' : '') +
-          '<div class="m-label">' + c.label + '</div>' +
-          '<div class="m-value" id="' + c.id + '"><span class="m-num">--</span></div>' +
-          '<div class="m-sub" id="' + c.id + '-sub">&nbsp;</div>' +
-        '</div>'
-      ).join('') +
-      '</div></div>';
+      '<div class="w-metrics">' +
+        '<div class="m-windows">' +
+          '<div class="m-win w-1h" id="km-1h"><div class="m-win-label">Last Hour<span class="m-win-sessions" id="km-1h-s"></span></div><div class="m-win-cost" id="km-1h-cost">--</div><div class="m-win-tokens" id="km-1h-tok"></div><div class="m-win-turns" id="km-1h-turns"></div></div>' +
+          '<div class="m-win w-5h" id="km-5h"><div class="m-win-label">Last 5 Hours<span class="m-win-sessions" id="km-5h-s"></span></div><div class="m-win-cost" id="km-5h-cost">--</div><div class="m-win-tokens" id="km-5h-tok"></div><div class="m-win-turns" id="km-5h-turns"></div></div>' +
+          '<div class="m-win w-24h" id="km-24h"><div class="m-win-label">Last 24 Hours<span class="m-win-sessions" id="km-24h-s"></span></div><div class="m-win-cost" id="km-24h-cost">--</div><div class="m-win-tokens" id="km-24h-tok"></div><div class="m-win-turns" id="km-24h-turns"></div></div>' +
+          '<div class="m-win w-life" id="km-life"><div class="m-win-label">Lifetime<span class="m-win-sessions" id="km-life-s"></span></div><div class="m-win-cost" id="km-life-cost">--</div><div class="m-win-tokens" id="km-life-tok"></div><div class="m-win-turns" id="km-life-turns"></div></div>' +
+        '</div>' +
+        '<div class="m-stats">' +
+          '<div class="m-stat" id="km-burn-stat"><span class="m-stat-icon">\u26A1</span><div class="m-stat-body"><div class="m-stat-val" id="km-burn-val">--</div><div class="m-stat-label">Burn Rate</div></div></div>' +
+          '<div class="m-stat" id="km-cache-stat"><span class="m-stat-icon">\u21BB</span><div class="m-stat-body"><div class="m-stat-val" id="km-cache-val">--</div><div class="m-stat-label">Cache Hit</div></div></div>' +
+          '<div class="m-stat" id="km-avg-stat"><span class="m-stat-icon">\u00F7</span><div class="m-stat-body"><div class="m-stat-val" id="km-avg-val">--</div><div class="m-stat-label">Avg Turn</div></div></div>' +
+        '</div>' +
+      '</div>';
   },
 
   render(el, data) {
-    const sidecars = data.sidecars || [];
-    const nSessions = sidecars.length;
+    var sidecars = data.sidecars || [];
+    var history = data.history || [];
+    var cs = costSuffix(data);
+    var now = Date.now();
 
-    // --- Aggregate sidecar data ---
-    let totalIn = 0, totalCR = 0, totalCW = 0, totalOut = 0, totalCost = 0;
-    let agentCalls = 0, toolCalls = 0, chatCalls = 0;
+    // --- Window cost/token calculator ---
+    // History entries are cumulative per session. Delta = max - min within window per sid.
+    function windowStats(windowMs) {
+      var cutoff = windowMs ? now - windowMs : 0;
+      var bySid = {};
+      for (var i = 0; i < history.length; i++) {
+        var h = history[i];
+        var t = new Date(h.ts).getTime();
+        if (t < cutoff) continue;
+        var sid = h.sid;
+        if (!bySid[sid]) bySid[sid] = {
+          minCost: h.cost||0, maxCost: h.cost||0,
+          minIn: h.input||0, maxIn: h.input||0,
+          minCR: h.cr||0, maxCR: h.cr||0,
+          minCW: h.cw||0, maxCW: h.cw||0,
+          minOut: h.out||0, maxOut: h.out||0,
+          minTurns: h.turns||0, maxTurns: h.turns||0,
+          first: h.ts, last: h.ts
+        };
+        var s = bySid[sid];
+        var c = h.cost||0;
+        if (c < s.minCost) s.minCost = c;
+        if (c > s.maxCost) s.maxCost = c;
+        var inp = h.input||0; if (inp < s.minIn) s.minIn = inp; if (inp > s.maxIn) s.maxIn = inp;
+        var cr = h.cr||0; if (cr < s.minCR) s.minCR = cr; if (cr > s.maxCR) s.maxCR = cr;
+        var cw = h.cw||0; if (cw < s.minCW) s.minCW = cw; if (cw > s.maxCW) s.maxCW = cw;
+        var out = h.out||0; if (out < s.minOut) s.minOut = out; if (out > s.maxOut) s.maxOut = out;
+        var turns = h.turns||0; if (turns < s.minTurns) s.minTurns = turns; if (turns > s.maxTurns) s.maxTurns = turns;
+        if (h.ts < s.first) s.first = h.ts;
+        if (h.ts > s.last) s.last = h.ts;
+      }
+      var cost = 0, tokens = 0, turns = 0, sessions = 0;
+      var earliest = null, latest = null;
+      for (var sid in bySid) {
+        var sv = bySid[sid];
+        cost += sv.maxCost - sv.minCost;
+        tokens += (sv.maxIn - sv.minIn) + (sv.maxCR - sv.minCR) + (sv.maxCW - sv.minCW) + (sv.maxOut - sv.minOut);
+        turns += sv.maxTurns - sv.minTurns;
+        sessions++;
+        if (!earliest || sv.first < earliest) earliest = sv.first;
+        if (!latest || sv.last > latest) latest = sv.last;
+      }
+      var spanHrs = (earliest && latest) ? Math.max((new Date(latest) - new Date(earliest)) / 3600e3, 0.05) : 0;
+      return { cost: cost, tokens: tokens, turns: turns, sessions: sessions, spanHrs: spanHrs };
+    }
 
-    for (const s of sidecars) {
-      const c = s.data && s.data.cumulative;
+    // --- Lifetime from sidecars (more accurate than history deltas) ---
+    var lifeCost = 0, lifeTokens = 0, lifeTurns = 0;
+    var lifeCR = 0, lifeIn = 0;
+    for (var i = 0; i < sidecars.length; i++) {
+      var c = sidecars[i].data && sidecars[i].data.cumulative;
       if (!c) continue;
-      totalIn   += c.input || 0;
-      totalCR   += c.cache_read || 0;
-      totalCW   += c.cache_write || 0;
-      totalOut  += c.output || 0;
-      totalCost += c.cost || 0;
-      agentCalls += c.agent_calls || 0;
-      toolCalls  += c.tool_calls || 0;
-      chatCalls  += c.chat_calls || 0;
+      lifeCost += c.cost||0;
+      lifeTokens += (c.input||0)+(c.cache_read||0)+(c.cache_write||0)+(c.output||0);
+      lifeTurns += (c.agent_calls||0)+(c.tool_calls||0)+(c.chat_calls||0);
+      lifeCR += c.cache_read||0;
+      lifeIn += c.input||0;
     }
 
-    const totalTurns = agentCalls + toolCalls + chatCalls;
-    const totalRawTokens = totalIn + totalCR + totalCW + totalOut;
-    const totalWeighted = weightedTokens(totalIn, totalCR, totalCW, totalOut);
-    const cacheRate = cacheHitRate(totalIn, totalCR);
-    const cs = costSuffix(data);
+    // --- Compute windows ---
+    var w1h = windowStats(3600e3);
+    var w5h = windowStats(5*3600e3);
+    var w24h = windowStats(24*3600e3);
 
-    // --- Deduped history for sparklines & deltas ---
-    const deduped = data.historyDeduped || [];
-    const recent20 = deduped.slice(-20);
-    // Previous session = second-to-last deduped entry (current = last)
-    const prev = deduped.length >= 2 ? deduped[deduped.length - 2] : null;
-    const curr = deduped.length >= 1 ? deduped[deduped.length - 1] : null;
+    // --- Render window cards ---
+    var windows = [
+      { pfx: '1h', data: w1h },
+      { pfx: '5h', data: w5h },
+      { pfx: '24h', data: w24h },
+      { pfx: 'life', data: { cost: lifeCost, tokens: lifeTokens, turns: lifeTurns, sessions: sidecars.length } }
+    ];
 
-    // ---- 1. Total Cost ----
-    const costEl = el.querySelector('#km-cost .m-num');
-    animateValue(costEl, totalCost, v => fmtCost(v) + cs, 900);
-    const costPerMTok = totalRawTokens > 0 ? (totalCost / (totalRawTokens / 1e6)).toFixed(2) : '0';
-    const costDelta = (curr && prev) ? deltaHtml(curr.cost || 0, prev.cost || 0) : '';
-    el.querySelector('#km-cost').innerHTML =
-      '<span class="m-num" id="km-cost-num">' + (fmtCost(totalCost) + cs) + '</span>' + costDelta;
-    animateValue(el.querySelector('#km-cost-num'), totalCost, v => fmtCost(v) + cs, 900);
-    el.querySelector('#km-cost-sub').textContent = nSessions + ' sessions \u00b7 $' + costPerMTok + '/MTok';
+    for (var j = 0; j < windows.length; j++) {
+      var w = windows[j];
+      var d = w.data;
+      var costEl = el.querySelector('#km-' + w.pfx + '-cost');
+      costEl.textContent = fmtCost(d.cost) + cs;
+      // Color cost based on magnitude
+      if (d.cost > 50) costEl.style.color = 'var(--c-danger)';
+      else if (d.cost > 10) costEl.style.color = 'var(--c-warm)';
+      else if (d.cost > 0) costEl.style.color = 'var(--text-bright)';
+      else costEl.style.color = 'var(--text-dim)';
 
-    // ---- 2. Total Turns ----
-    const turnsDelta = (curr && prev) ? deltaHtml(curr.turns || 0, prev.turns || 0) : '';
-    el.querySelector('#km-turns').innerHTML =
-      '<span class="m-num" id="km-turns-num">--</span>' + turnsDelta;
-    animateValue(el.querySelector('#km-turns-num'), totalTurns, v => fmt(Math.round(v)), 900);
-    el.querySelector('#km-turns-sub').textContent = agentCalls + ' agent \u00b7 ' + toolCalls + ' tool \u00b7 ' + chatCalls + ' chat';
-
-    // ---- 3. Cache Hit Rate ----
-    const prevCacheRate = prev ? cacheHitRate(prev.input || 0, prev.cr || 0) : null;
-    const cacheDelta = (prevCacheRate !== null && cacheRate > 0) ? deltaHtml(cacheRate, prevCacheRate) : '';
-    el.querySelector('#km-cache').innerHTML =
-      '<span class="m-num" id="km-cache-num">--</span>' + cacheDelta;
-    animateValue(el.querySelector('#km-cache-num'), cacheRate, v => fmtCacheRate(v) + '%', 900);
-    el.querySelector('#km-cache-sub').textContent = fmtK(totalCR) + ' cache reads \u00b7 lifetime';
-
-    // ---- 4. Weighted Tokens ----
-    const currWt = curr ? weightedTokens(curr.input || 0, curr.cr || 0, curr.cw || 0, curr.out || 0) : 0;
-    const prevWt = prev ? weightedTokens(prev.input || 0, prev.cr || 0, prev.cw || 0, prev.out || 0) : 0;
-    const wtDelta = (currWt > 0 && prevWt > 0) ? deltaHtml(currWt, prevWt) : '';
-    el.querySelector('#km-weighted').innerHTML =
-      '<span class="m-num" id="km-weighted-num">--</span>' + wtDelta;
-    animateValue(el.querySelector('#km-weighted-num'), totalWeighted, v => fmtK(Math.round(v)), 900);
-    const weightMultiplier = totalRawTokens > 0 ? (totalWeighted / totalRawTokens).toFixed(1) : '0';
-    el.querySelector('#km-weighted-sub').textContent = fmtK(totalRawTokens) + ' raw \u00b7 ' + weightMultiplier + 'x weight';
-
-    // ---- 5. Burn Rate (session-based delta calculation) ----
-    let burnPerHr = 0;
-    let tokenBurnPerHr = 0;
-    const history = data.history || [];
-    if (history.length > 1) {
-      const now = Date.now();
-      const recent = history.filter(h => (now - new Date(h.ts).getTime()) < WINDOW_5HR_MS);
-      if (recent.length > 1) {
-        // Cost burn: group by sid, compute cost delta (max - min) within window per session
-        const bySid = {};
-        for (const h of recent) {
-          if (!bySid[h.sid]) bySid[h.sid] = { minCost: h.cost || 0, maxCost: h.cost || 0, first: h.ts, last: h.ts };
-          const s = bySid[h.sid];
-          const c = h.cost || 0;
-          if (c < s.minCost) s.minCost = c;
-          if (c > s.maxCost) s.maxCost = c;
-          if (h.ts < s.first) s.first = h.ts;
-          if (h.ts > s.last) s.last = h.ts;
-        }
-        let windowCost = 0, earliest = null, latest = null;
-        for (const s of Object.values(bySid)) {
-          windowCost += s.maxCost - s.minCost;
-          if (!earliest || s.first < earliest) earliest = s.first;
-          if (!latest || s.last > latest) latest = s.last;
-        }
-        const spanHrs = Math.max((new Date(latest) - new Date(earliest)) / 3600e3, 0.1);
-        burnPerHr = windowCost / spanHrs;
-
-        // Token burn: same approach with weighted tokens
-        const bySid2 = {};
-        for (const h of recent) {
-          const wt = weightedTokens(h.input || 0, h.cr || 0, h.cw || 0, h.output || 0);
-          if (!bySid2[h.sid]) bySid2[h.sid] = { min: wt, max: wt, first: h.ts, last: h.ts };
-          const s2 = bySid2[h.sid];
-          if (wt < s2.min) s2.min = wt;
-          if (wt > s2.max) s2.max = wt;
-          if (h.ts < s2.first) s2.first = h.ts;
-          if (h.ts > s2.last) s2.last = h.ts;
-        }
-        let wDelta = 0, e2 = null, l2 = null;
-        for (const s2 of Object.values(bySid2)) {
-          wDelta += s2.max - s2.min;
-          if (!e2 || s2.first < e2) e2 = s2.first;
-          if (!l2 || s2.last > l2) l2 = s2.last;
-        }
-        const sp2 = Math.max((new Date(l2) - new Date(e2)) / 3600e3, 0.1);
-        tokenBurnPerHr = wDelta / sp2;
-      }
+      el.querySelector('#km-' + w.pfx + '-tok').textContent = fmtK(d.tokens) + ' tokens';
+      el.querySelector('#km-' + w.pfx + '-turns').textContent = d.turns + ' turns';
+      el.querySelector('#km-' + w.pfx + '-s').textContent = d.sessions + 's';
     }
-    const burnEl = el.querySelector('#km-burn');
-    const burnCard = el.querySelector('#km-burn-card');
-    burnEl.innerHTML = '<span class="m-num" id="km-burn-num">--</span>';
-    const burnNumEl = el.querySelector('#km-burn-num');
-    if (burnPerHr > 0) {
-      animateValue(burnNumEl, burnPerHr, v => '$' + v.toFixed(2) + '/hr' + cs, 900);
-      if (burnPerHr > 15) {
-        burnNumEl.style.color = 'var(--c-danger)';
-        burnCard.dataset.accent = 'danger';
-      } else {
-        burnNumEl.style.color = '';
-        burnCard.dataset.accent = 'warm';
-      }
-      el.querySelector('#km-burn-sub').textContent =
-        fmtK(Math.round(tokenBurnPerHr)) + ' wt/hr \u00b7 $' + (burnPerHr * 24).toFixed(0) + '/day';
+
+    // --- Burn rate (from 5h window) ---
+    var burnVal = el.querySelector('#km-burn-val');
+    if (w5h.spanHrs > 0.05 && w5h.cost > 0) {
+      var rate = w5h.cost / w5h.spanHrs;
+      burnVal.textContent = '$' + rate.toFixed(2) + '/hr' + cs;
+      burnVal.style.color = rate > 15 ? 'var(--c-danger)' : rate > 5 ? 'var(--c-warm)' : '';
     } else {
-      burnNumEl.textContent = '--';
-      el.querySelector('#km-burn-sub').textContent = 'no recent data';
+      burnVal.textContent = '--';
+      burnVal.style.color = '';
     }
 
-    // ---- 6. Avg Turn Cost ----
-    const avgTurn = totalTurns > 0 ? totalCost / totalTurns : 0;
-    const rawPerTurn = totalTurns > 0 ? fmtK(Math.round(totalRawTokens / totalTurns)) : '--';
-    const wtPerTurn = totalTurns > 0 ? fmtK(Math.round(totalWeighted / totalTurns)) : '--';
-    el.querySelector('#km-avgturn').innerHTML = '<span class="m-num" id="km-avgturn-num">--</span>';
-    animateValue(el.querySelector('#km-avgturn-num'), avgTurn, v => '$' + v.toFixed(4) + cs, 900);
-    el.querySelector('#km-avgturn-sub').textContent = rawPerTurn + ' raw \u00b7 ' + wtPerTurn + ' wt/turn';
+    // --- Cache hit ---
+    var cacheRate = cacheHitRate(lifeIn, lifeCR);
+    el.querySelector('#km-cache-val').textContent = fmtCacheRate(cacheRate) + '%';
 
-    // ---- 7. Active Model ----
-    const modelCounts = {};
-    for (const sc of sidecars) {
-      const m = sc.data.lastTurn ? (sc.data.lastTurn.model || 'unknown') : 'unknown';
-      const short = m.replace('claude-', '').replace(/-\d{8}$/, '');
-      modelCounts[short] = (modelCounts[short] || 0) + 1;
-    }
-    const topModel = Object.entries(modelCounts).sort((a, b) => b[1] - a[1]);
-    const activeModel = topModel.length > 0 ? topModel[0][0] : '--';
-    const modelEl = el.querySelector('#km-model');
-    modelEl.innerHTML = '<span class="m-num">' + activeModel + '</span>';
-    const modelSubEl = el.querySelector('#km-model-sub');
-    if (topModel.length > 0) {
-      // Find raw model name for pricing lookup
-      let rawModel = '';
-      for (const sc of sidecars) {
-        if (sc.data.lastTurn && sc.data.lastTurn.model) { rawModel = sc.data.lastTurn.model; break; }
-      }
-      const pricing = rawModel ? getModelPricing(rawModel) : getModelPricing();
-      const modelInfo = topModel.length > 1
-        ? topModel.length + ' models \u00b7 in:$' + pricing.input + '/out:$' + pricing.output
-        : 'in:$' + pricing.input + ' / out:$' + pricing.output + ' /MTok';
-      modelSubEl.textContent = modelInfo;
-    } else {
-      modelSubEl.textContent = '--';
-    }
-
-    // ---- 8. Sessions Today ----
-    const todayStart = new Date();
-    todayStart.setHours(0, 0, 0, 0);
-    let sessionsToday = 0;
-    if (history.length > 0) {
-      const todaySids = new Set();
-      for (const h of history) {
-        if (new Date(h.ts) >= todayStart) todaySids.add(h.sid);
-      }
-      sessionsToday = todaySids.size;
-    }
-    el.querySelector('#km-sessions').innerHTML = '<span class="m-num" id="km-sessions-num">--</span>';
-    animateValue(el.querySelector('#km-sessions-num'), sessionsToday, v => Math.round(v).toString(), 900);
-    el.querySelector('#km-sessions-sub').textContent = nSessions + ' total tracked';
-
-    // ---- Sparklines (deduped history, last 20 sessions) ----
-    if (recent20.length > 1) {
-      makeSpark('km-cost-spark', recent20.map(h => h.cost || 0));
-      makeSpark('km-turns-spark', recent20.map(h => h.turns || 0));
-      makeSpark('km-cache-spark', recent20.map(h => cacheHitRate(h.input || 0, h.cr || 0)));
-      makeSpark('km-weighted-spark', recent20.map(h => weightedTokens(h.input || 0, h.cr || 0, h.cw || 0, h.out || 0)));
-    }
+    // --- Avg turn cost ---
+    var avgCost = lifeTurns > 0 ? lifeCost / lifeTurns : 0;
+    el.querySelector('#km-avg-val').textContent = avgCost > 0 ? '$' + avgCost.toFixed(4) + cs : '--';
   }
 });
 </script>

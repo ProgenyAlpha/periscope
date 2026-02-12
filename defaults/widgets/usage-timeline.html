@@ -10,14 +10,14 @@
 .w-ut-controls input[type="datetime-local"]{font-size:10px;padding:3px 6px;font-family:var(--font-mono);background:var(--bg-inset);border:1px solid var(--rule);border-radius:var(--radius);color:var(--text);cursor:pointer}
 .w-ut-controls input[type="datetime-local"]::-webkit-calendar-picker-indicator{filter:invert(0.7)}
 .w-ut-timeframe{font-family:var(--font-mono);font-size:0.65rem;color:var(--text-dim);letter-spacing:0.5px;margin-bottom:6px;min-height:1.2em}
-.w-ut-chart{position:relative;height:200px}
+.w-ut-chart{position:relative;height:180px}
 .w-ut-chart canvas{width:100%!important;height:100%!important;display:block}
 </style>
 <script>
 Periscope.registerWidget({
   id: 'usage-timeline',
   title: 'Usage Timeline',
-  size: 'xl',
+  size: 'md',
   priority: 10,
 
   init(el) {
@@ -120,7 +120,7 @@ Periscope.registerWidget({
     // --- Resolve CSS colors ---
     var cs = getComputedStyle(document.documentElement);
     var textDim = cs.getPropertyValue('--text-dim').trim() || '#5a6270';
-    var gridColor = 'rgba(245,158,11,0.04)';
+    var gridColor = 'rgba(' + (cs.getPropertyValue('--rgb-primary').trim() || '245,158,11') + ',0.04)';
     var monoFont = cs.getPropertyValue('--font-mono').trim() || 'Fira Code';
 
     var palette = [
@@ -207,7 +207,7 @@ Periscope.registerWidget({
       for (var j = 0; j < sids.length; j++) {
         var sid = sids[j];
         datasets.push({
-          label: sid.substring(0, 8),
+          label: sessionLabel(sid, data),
           data: sessions[sid],
           borderColor: palette[si % palette.length],
           backgroundColor: 'transparent',
@@ -232,7 +232,7 @@ Periscope.registerWidget({
         var sid2 = sids2[l];
         var c = palette[si2 % palette.length];
         datasets.push({
-          label: sid2.substring(0, 8),
+          label: sessionLabel(sid2, data),
           data: sessions24[sid2],
           borderColor: c,
           backgroundColor: c + '18',
@@ -319,7 +319,7 @@ Periscope.registerWidget({
     // --- Chart config ---
     var canvas = chartWrap.querySelector('canvas');
     if (typeof Chart === 'undefined') {
-      chartWrap.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:200px;color:var(--text-dim);font-size:0.72rem;font-style:italic;font-family:var(--font-mono)">Chart.js not loaded</div>';
+      chartWrap.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:180px;color:var(--text-dim);font-size:0.72rem;font-style:italic;font-family:var(--font-mono)">Chart.js not loaded</div>';
       return;
     }
 

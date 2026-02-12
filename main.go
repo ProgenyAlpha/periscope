@@ -50,6 +50,8 @@ func main() {
 		cmdUninstall()
 	case "hook":
 		cmdHook()
+	case "statusline":
+		cmdStatusline()
 	case "version":
 		fmt.Println("periscope v0.1.0")
 	default:
@@ -67,6 +69,7 @@ Usage:
   periscope status        Check if server is running
   periscope hook stop     Process transcript (StopTurn hook)
   periscope hook display  Output telemetry context (UserPromptSubmit hook)
+  periscope statusline    Render terminal statusline (reads JSON from stdin)
   periscope uninstall     Remove hooks and clean up
   periscope version       Print version`)
 }
@@ -114,7 +117,6 @@ func cmdInit() {
 	if err := install(app); err != nil {
 		log.Fatal(err)
 	}
-	fmt.Println("Periscope initialized. Run 'periscope serve' to start.")
 }
 
 func cmdServe() {
@@ -143,6 +145,9 @@ func cmdServe() {
 	if err := importFileData(app); err != nil {
 		log.Printf("warning: data import: %v", err)
 	}
+
+	// Compact limit history (tiered dedup: recent=dense, old=sparse)
+	compactLimitHistory(app)
 
 	// Start WebSocket hub
 	app.Hub = newHub()
@@ -202,5 +207,4 @@ func cmdUninstall() {
 	if err := uninstall(app); err != nil {
 		log.Fatal(err)
 	}
-	fmt.Println("Periscope uninstalled.")
 }

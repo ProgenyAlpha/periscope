@@ -7,7 +7,7 @@
 ╚═╝     ╚══════╝╚═╝  ╚═╝╚═╝╚══════╝ ╚═════╝ ╚═════╝╚═╝     ╚══════╝
 ```
 
-**Real-time telemetry for Claude Code.** Rate limits, cost tracking, burn rate intelligence, and duty-cycle-aware pacing — injected directly into the AI's context before every prompt.
+**Real-time telemetry for Claude Code.** Rate limits, cost tracking, burn rate intelligence, extra usage monitoring, and duty-cycle-aware pacing — injected directly into the AI's context before every prompt.
 
 Vanilla Claude has zero awareness of your rate limits. PERISCOPE gives the AI a fuel gauge before takeoff.
 
@@ -15,22 +15,16 @@ Vanilla Claude has zero awareness of your rate limits. PERISCOPE gives the AI a 
 
 ## What It Does
 
-PERISCOPE is a hook-based telemetry system for [Claude Code](https://docs.anthropic.com/en/docs/claude-code) that:
+PERISCOPE is a single Go binary that hooks into [Claude Code](https://docs.anthropic.com/en/docs/claude-code) to:
 
-- **Tracks token usage** per session with per-model pricing (Opus, Sonnet, Haiku)
-- **Monitors rate limits** via the Anthropic OAuth API (real data, not estimates)
-- **Calculates burn rate** with duty-cycle-aware pacing that accounts for sleep/idle time
-- **Projects limit hits** before they happen with configurable alert thresholds
-- **Injects telemetry into every prompt** so the AI knows its own resource state
-- **Renders a statusline** showing rate limits, cost, and pace directly in your terminal
-
-```
-                 ┃o┃
-                 ┃ ┃
-    ▄▄▄▄▄▄▄▄▄▄▄▄▄┃ ┃▄▄▄▄▄▄▄▄▄▄▄▄▄
-    █ PERISCOPE ░░░░░ TELEMETRY █
-    ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
-```
+- **Track token usage** per session with per-model pricing (Opus, Sonnet, Haiku)
+- **Monitor rate limits** via the Anthropic OAuth API (5hr, weekly, sonnet, opus windows)
+- **Track extra usage** credits and monthly limits when enabled
+- **Calculate burn rate** with duty-cycle-aware pacing that accounts for sleep/idle time
+- **Project limit hits** before they happen with configurable alert thresholds
+- **Inject telemetry into every prompt** so the AI knows its own resource state
+- **Render a statusline** showing rate limits, cost, and pace directly in your terminal
+- **Serve a real-time dashboard** with WebSocket push, themeable plugin widgets, and limit history charts
 
 ## Architecture
 
@@ -39,72 +33,124 @@ PERISCOPE is a hook-based telemetry system for [Claude Code](https://docs.anthro
 │                   Claude Code                       │
 │                                                     │
 │  ┌──────────────┐  ┌──────────────┐  ┌───────────┐ │
-│  │ UserPrompt   │  │ Stop Hook    │  │ Statusline│ │
-│  │ Submit Hook  │  │              │  │           │ │
+│  │ UserPrompt   │  │ StopTurn     │  │ Statusline│ │
+│  │ Submit Hook  │  │ Hook         │  │           │ │
 │  └──────┬───────┘  └──────┬───────┘  └─────┬─────┘ │
 └─────────┼──────────────────┼────────────────┼───────┘
           │                  │                │
           ▼                  ▼                ▼
-  ┌───────────────┐  ┌──────────────┐  ┌───────────────┐
-  │ cost-tracker  │  │ cost-tracker │  │ statusline.ps1│
-  │ -display.ps1  │  │ -stop.ps1    │  │               │
-  │               │  │              │  │ Reads sidecar │
-  │ Calls OAuth   │  │ Parses JSONL │  │ + API cache   │
-  │ API, injects  │  │ transcript,  │  │ Renders rate  │
-  │ telemetry as  │  │ writes per-  │  │ segments in   │
-  │ system-       │  │ session      │  │ terminal      │
-  │ reminder      │  │ sidecar JSON │  │               │
-  └───────┬───────┘  └──────┬───────┘  └───────┬───────┘
-          │                  │                  │
-          ▼                  ▼                  ▼
-  ┌─────────────────────────────────────────────────┐
-  │              ~/.claude/hooks/cost-state/         │
-  │                                                 │
-  │  {session-id}.json    Sidecar (per-session)     │
-  │  usage-history.jsonl  Cross-session log         │
-  │  limit-history.jsonl  Rate limit snapshots      │
-  │  usage-api-cache.json OAuth API cache (30s TTL) │
-  │  profile-cache.json   Account tier cache        │
-  └─────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────┐
+│              periscope (single Go binary)            │
+│                                                      │
+│  periscope hook display  │  periscope hook stop      │
+│  Reads sidecar + API     │  Parses transcript,       │
+│  cache, injects          │  computes cost, writes    │
+│  telemetry as system-    │  per-session sidecar      │
+│  reminder                │                           │
+│──────────────────────────┤──────────────────────────│
+│  periscope statusline    │  periscope serve          │
+│  Reads sidecar + API     │  HTTP + WebSocket server  │
+│  cache, renders ANSI     │  Plugin runtime, themes,  │
+│  powerline segments      │  widgets, live data push  │
+└──────────────────────────┴──────────────────────────┘
           │
           ▼
-  ┌─────────────────────────────────────────────────┐
-  │  telemetry-dashboard.ps1  →  localhost:8384     │
-  │  telemetry-dashboard.html    Single-file SPA    │
-  └─────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────┐
+│              ~/.claude/hooks/cost-state/             │
+│                                                     │
+│  {session-id}.json    Sidecar (per-session)         │
+│  usage-history.jsonl  Cross-session log             │
+│  limit-history.jsonl  Rate limit snapshots          │
+│  usage-api-cache.json OAuth API cache (30s TTL)     │
+│  profile-cache.json   Account + extra usage cache   │
+└─────────────────────────────────────────────────────┘
+          │
+          ▼
+┌─────────────────────────────────────────────────────┐
+│  periscope serve  →  localhost:8384                  │
+│  Plugin runtime with themeable widgets               │
+│  WebSocket push for live rate limit updates          │
+└─────────────────────────────────────────────────────┘
 ```
 
-## Components
+## Setup
 
-### Hooks
+### Prerequisites
 
-| File | Hook Event | Purpose |
-|------|-----------|---------|
-| `cost-tracker-display.ps1` | `UserPromptSubmit` | Calls Anthropic OAuth API, caches response, injects rate limits + cost + forecast into the prompt as a `<system-reminder>` |
-| `cost-tracker-stop.ps1` | `Stop` | Parses the session transcript JSONL, computes per-turn token usage and cost with model-specific pricing, writes cumulative stats to the session sidecar |
+- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) CLI
+- OAuth token with `user:profile` scope (auto-provisioned by Claude Code login)
 
-### Statusline
+### Installation
 
-| File | Purpose |
-|------|---------|
-| `statusline/statusline.ps1` | Renders rate limit gauges, cost, pace, and reset timers in the Claude Code terminal statusline |
-| `statusline/statusline-config.json` | Configures which segments to show, order, and thresholds |
+1. **Build the binary:**
+   ```bash
+   git clone https://github.com/ProgenyAlpha/periscope.git
+   cd periscope
+   go build .
+   ```
 
-### Dashboard
+2. **Initialize plugins and config:**
+   ```bash
+   periscope init
+   ```
+   This creates `~/.periscope/` with themes, widgets, and a default config.
 
-| File | Purpose |
-|------|---------|
-| `cost-state/telemetry-dashboard.ps1` | PowerShell HTTP server on `:8384`. Aggregates all sidecars + history files into a single JSON payload. Hot-reloads the HTML on every request. |
-| `cost-state/telemetry-dashboard.html` | Single-file SPA (CSS + HTML + JS). All filtering/charting is client-side. Submarine command bridge aesthetic. |
+3. **Register hooks in `~/.claude/settings.json`:**
+   ```json
+   {
+     "hooks": {
+       "StopTurn": [{"matcher": "", "hooks": [{"type": "command", "command": "periscope hook stop", "timeout": 10}]}],
+       "UserPromptSubmit": [{"matcher": "", "hooks": [{"type": "command", "command": "periscope hook display", "timeout": 5}]}]
+     },
+     "statusLine": {"type": "command", "command": "periscope statusline"}
+   }
+   ```
+   Replace `periscope` with the full path to the binary if it's not on your PATH.
 
-### Data Files
+4. **Start the dashboard:**
+   ```bash
+   periscope serve
+   ```
+   Open `http://localhost:8384` in your browser.
 
-| File | Format | Lifecycle |
-|------|--------|-----------|
-| `{session-id}.json` | JSON | Created per session, updated every turn |
-| `usage-history.jsonl` | JSONL | Append-only, compacted weekly (>7 days pruned) |
-| `limit-history.jsonl` | JSONL | Rate limit snapshots from OAuth API, compacted weekly |
-| `usage-api-cache.json` | JSON | 30-second TTL cache for OAuth API responses |
+### Commands
+
+| Command | Purpose |
+|---------|---------|
+| `periscope init` | Set up plugins, database, and hooks |
+| `periscope serve` | Start the dashboard server |
+| `periscope status` | Check if server is running |
+| `periscope hook stop` | Process transcript (StopTurn hook) |
+| `periscope hook display` | Output telemetry context (UserPromptSubmit hook) |
+| `periscope statusline` | Render terminal statusline (reads JSON from stdin) |
+| `periscope uninstall` | Remove hooks and clean up |
+| `periscope version` | Print version |
+
+### Repo Structure
+
+```
+periscope/
+├── main.go                 # Subcommand router + app initialization
+├── store.go                # Database, file import, API clients
+├── hooks.go                # Hook implementations (stop, display)
+├── statusline.go           # Terminal statusline renderer
+├── server.go               # HTTP server, WebSocket hub
+├── installer.go            # Installation + hook registration
+├── watcher.go              # File watcher for live reload
+├── embed.go                # Embedded asset manifest
+├── defaults/
+│   ├── themes/             # Theme TOMLs (colors + terminal ANSI)
+│   ├── widgets/            # HTML widget panels
+│   ├── pricing/            # Model pricing data
+│   ├── forecasters/        # Forecast algorithm configs
+│   └── runtime.html        # Plugin runtime shell
+├── statusline/
+│   └── statusline-config.json  # Segment order and thresholds
+└── legacy/                 # Original PowerShell implementation (reference)
+    ├── hooks/
+    ├── dashboard/
+    └── statusline/
+```
 
 ## Key Concepts
 
@@ -125,127 +171,62 @@ output:       5x    (OTPM limits ~5x tighter than ITPM)
 | Sonnet 4.5 | $3.00 | $0.30 | $3.75 | $15.00 |
 | Haiku 4.5 | $1.00 | $0.10 | $1.25 | $5.00 |
 
-### Duty Cycle
+### Rate Limit Windows
 
-PERISCOPE analyzes `usage-history.jsonl` to detect your active hours per day (excluding the current incomplete day). This prevents naive burn rate projections that assume 24/7 usage.
+| Window | Field | Description |
+|--------|-------|-------------|
+| 5-hour | `pct5hr` | Rolling 5-hour token budget utilization |
+| Weekly | `pctWeekly` | 7-day overall limit |
+| Sonnet | `pctSonnet` | 7-day Sonnet-specific limit |
+| Opus | `pctOpus` | 7-day Opus-specific limit (when available) |
+| OAuth Apps | `pctOauthApps` | 7-day OAuth app limit (when available) |
+| Cowork | `pctCowork` | 7-day cowork limit (when available) |
 
-Example: If you work 10 hours/day, a weekly projection that shows "OVER LIMIT" based on calendar hours might actually be fine when adjusted for your duty cycle.
+### Extra Usage
 
-### Pace Calculation
+When enabled on your account, periscope tracks:
+- `is_enabled` — whether extra usage is active
+- `monthly_limit` — your spending cap (e.g. $50)
+- `used_credits` — credits consumed this month
+- `utilization` — percentage of monthly limit used
 
-```
-sustainable_rate = remaining_budget / remaining_active_hours
-pace = actual_active_rate / sustainable_rate
+The display hook shows this as: `Extra usage: ON ($0.00/$50.00)`
 
-≤ 85%   → ON PACE    (green)
-85-99%  → TIGHT      (amber)
-≥ 100%  → OVER LIMIT (red)
-```
+### Statusline Segments
 
-### Heavy Burn Detection
+14 configurable segments rendered in your terminal:
 
-Triggers a fire-animated overlay on the rate limit chart when:
-- **Session**: 5hr burn rate exceeds 15%/h
-- **Weekly**: Projected weekly usage exceeds 100%
-- Scope shown: `[SESSION]`, `[WEEKLY]`, or `[SESSION + WEEKLY]`
+| Segment | Shows | Priority |
+|---------|-------|----------|
+| `dir` | Current directory | 1 |
+| `git` | Branch + dirty state | 2 |
+| `model` | Active model (opus/sonnet/haiku) | 3 |
+| `turns` | Turn count this session | 4 |
+| `rate-5hr` | 5-hour rate limit % | 5 |
+| `rate-weekly` | Weekly rate limit % | 5 |
+| `rate-sonnet` | Sonnet rate limit % | 5 |
+| `cost` | Session cost in USD | 6 |
+| `reset` | Time until nearest limit reset | 6 |
+| `proj` | Projected 5hr utilization at current pace | 6 |
+| `cache` | Cache hit rate % | 7 |
+| `tools` | Tools used in last turn | 8 |
+| `context` | Context window usage bar | 8 |
+| `vim` | Vim mode indicator | 9 |
 
-## Dashboard Panels
+Segments are filtered by terminal width using priority thresholds. Configure in `statusline-config.json`.
 
-The dashboard at `localhost:8384` shows:
+Three render styles: **powerline** (ANSI backgrounds + arrow separators), **plain** (pipe-separated), **minimal** (space-separated).
 
-1. **Rate Limit Intelligence** — Chart with 5hr/weekly utilization over time, projection lines, window boundaries, and a 3-column intel grid:
-   - **Session** — Current 5hr pace with LCD readout (ON PACE / TIGHT / OVER LIMIT)
-   - **Weekly** — Weekly pace with duty-cycle-aware projections
-   - **Capacity** — Estimated token limits and cross-window capacity trends
+Themes are loaded from `~/.periscope/plugins/themes/*.toml` — each theme has a `[terminal]` section with ANSI 256-color values.
 
-2. **Key Metrics** — Session cost, turns, cache hit rate, tokens in/out
+### Themes
 
-3. **Usage Timeline** — Stacked bar chart of token flow over time with range controls
+Each theme TOML has three sections:
+- `[colors]` — CSS hex values for the dashboard
+- `[terminal]` — ANSI 256-color codes for the statusline
+- `[brand]` — Brand accent colors
 
-4. **Deep Dive Panels** — Token breakdown, tool usage, cost by category, cache efficiency, activity heatmap, session log
-
-## Setup
-
-### Prerequisites
-
-- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) CLI
-- PowerShell 5.1+ (Windows) or PowerShell Core (cross-platform)
-- OAuth token with `user:profile` scope (auto-provisioned by Claude Code login)
-
-### Installation
-
-1. **Clone the repo:**
-   ```bash
-   git clone https://github.com/ProgenyAlpha/periscope.git
-   cd periscope
-   ```
-
-2. **Copy files into your Claude Code config:**
-   ```powershell
-   # Hooks (token tracking + telemetry injection)
-   Copy-Item hooks\cost-tracker-display.ps1 ~/.claude/hooks/
-   Copy-Item hooks\cost-tracker-stop.ps1    ~/.claude/hooks/
-
-   # Dashboard (web UI + server)
-   New-Item -ItemType Directory -Force ~/.claude/hooks/cost-state/
-   Copy-Item dashboard\telemetry-dashboard.html ~/.claude/hooks/cost-state/
-   Copy-Item dashboard\telemetry-dashboard.ps1  ~/.claude/hooks/cost-state/
-
-   # Statusline (terminal rate display)
-   New-Item -ItemType Directory -Force ~/.claude/statusline/
-   Copy-Item statusline\statusline.ps1         ~/.claude/statusline/
-   Copy-Item statusline\statusline-config.json ~/.claude/statusline/
-   ```
-
-3. **Register hooks in `~/.claude/settings.json`:**
-   ```json
-   {
-     "hooks": {
-       "UserPromptSubmit": [{
-         "matcher": "",
-         "hooks": [{
-           "type": "command",
-           "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"~/.claude/hooks/cost-tracker-display.ps1\"",
-           "timeout": 5
-         }]
-       }],
-       "Stop": [{
-         "matcher": "",
-         "hooks": [{
-           "type": "command",
-           "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"~/.claude/hooks/cost-tracker-stop.ps1\"",
-           "timeout": 10
-         }]
-       }]
-     },
-     "statusLine": {
-       "type": "command",
-       "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"~/.claude/statusline/statusline.ps1\""
-     }
-   }
-   ```
-
-4. **Start the dashboard:**
-   ```powershell
-   powershell -File ~/.claude/hooks/cost-state/telemetry-dashboard.ps1
-   ```
-   Open `http://localhost:8384` in your browser.
-
-### Repo Structure
-
-```
-periscope/
-├── hooks/
-│   ├── cost-tracker-display.ps1   # UserPromptSubmit hook — injects telemetry
-│   └── cost-tracker-stop.ps1      # Stop hook — tracks token usage per turn
-├── dashboard/
-│   ├── telemetry-dashboard.ps1    # HTTP server on :8384
-│   └── telemetry-dashboard.html   # Single-file SPA (CSS + HTML + JS)
-├── statusline/
-│   ├── statusline.ps1             # Terminal statusline renderer
-│   └── statusline-config.json     # Segment order and thresholds
-└── README.md
-```
+Available themes: catppuccin-mocha, tactical, arctic, ghost, midnight, phosphor, starfield-dark, starfield-light, thermal.
 
 ## How It Works
 
@@ -253,21 +234,21 @@ periscope/
 
 Every time you send a message to Claude Code:
 
-1. `UserPromptSubmit` hook fires → `cost-tracker-display.ps1` runs
-2. Script reads OAuth token from `~/.claude/.credentials.json`
-3. Calls `https://api.anthropic.com/api/oauth/usage` for real utilization percentages
-4. Reads the latest session sidecar for cost/token data
-5. Computes burn rates, projections, pace
-6. Injects everything as a `<system-reminder>` block into the prompt
-7. Claude sees its own rate limits before reading your message
+1. `UserPromptSubmit` hook fires → `periscope hook display` runs
+2. Reads the latest session sidecar for cost/token data
+3. Reads cached rate limits from `usage-api-cache.json`
+4. Injects telemetry as a `<system-reminder>` block into the prompt
+5. Claude sees its own rate limits before reading your message
 
 After Claude responds:
 
-8. `Stop` hook fires → `cost-tracker-stop.ps1` runs
-9. Script reads new entries from the session transcript JSONL (incremental — seeks to last offset)
-10. Computes per-turn cost using model-specific pricing
-11. Updates the session sidecar with cumulative totals
-12. Appends a snapshot to `usage-history.jsonl`
+6. `StopTurn` hook fires → `periscope hook stop` runs
+7. Reads new entries from the session transcript (incremental seek)
+8. Computes per-turn cost using model-specific pricing
+9. Updates the session sidecar with cumulative totals
+10. Appends a snapshot to `usage-history.jsonl`
+
+Meanwhile, `periscope serve` fetches fresh rate limits from the Anthropic OAuth API every 30 seconds and pushes updates via WebSocket to the dashboard.
 
 ### Cache Hit Rate
 
@@ -275,21 +256,21 @@ After Claude responds:
 cache_hit_rate = cache_read / (input + cache_read)
 ```
 
-Cache writes are excluded from both numerator and denominator — they represent the cost of building the cache, not cache utilization.
+Cache writes are excluded — they represent the cost of building the cache, not utilization.
 
 ## FAQ
 
 **Q: Does this slow down Claude Code?**
-A: The display hook has a 5-second timeout and typically completes in <1s. The OAuth API response is cached for 30 seconds.
+A: The hooks are compiled Go — sub-100ms execution. The display hook has a 5-second timeout. Rate data is read from a local cache file, not fetched live.
 
 **Q: Does this work on Mac/Linux?**
-A: The PowerShell scripts use `$env:USERPROFILE` and Windows paths. Porting to bash/zsh would require rewriting the hooks but the architecture is the same.
+A: Yes. The Go binary is cross-platform. Build with `GOOS=linux go build .` or `GOOS=darwin go build .`.
 
 **Q: Where does the OAuth token come from?**
 A: Claude Code stores it at `~/.claude/.credentials.json` after you log in. PERISCOPE reads it — no additional auth setup needed.
 
 **Q: What if the API is down?**
-A: Every script has `$ErrorActionPreference = 'SilentlyContinue'` and graceful fallbacks. A failed API call means the statusline shows stale cached data. Claude Code itself is unaffected.
+A: All data paths have graceful fallbacks. A failed API call means stale cached data is shown. Claude Code itself is unaffected.
 
 ---
 

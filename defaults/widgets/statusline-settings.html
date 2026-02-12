@@ -1,0 +1,315 @@
+<style>
+.w-slcfg{display:flex;flex-direction:column;gap:10px}
+
+/* Terminal emulator */
+.w-slcfg .sl-term{border-radius:8px;overflow:hidden;border:1px solid var(--rule);box-shadow:0 4px 24px rgba(0,0,0,0.4)}
+.w-slcfg .sl-term-bar{height:28px;display:flex;align-items:center;padding:0 12px;gap:7px;background:color-mix(in srgb,var(--bg-inset) 80%,#000)}
+.w-slcfg .sl-term-dot{width:10px;height:10px;border-radius:50%}
+.w-slcfg .sl-term-dot.r{background:#ff5f57}
+.w-slcfg .sl-term-dot.y{background:#febc2e}
+.w-slcfg .sl-term-dot.g{background:#28c840}
+.w-slcfg .sl-term-title{flex:1;text-align:center;font-family:var(--font-mono);font-size:10px;color:var(--text-dim);letter-spacing:0.5px}
+.w-slcfg .sl-term-body{padding:10px 14px 12px;position:relative;min-height:56px}
+.w-slcfg .sl-term-body::after{content:'';position:absolute;inset:0;pointer-events:none;background:repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(0,0,0,0.03) 2px,rgba(0,0,0,0.03) 4px);z-index:1}
+.w-slcfg .sl-term-row{font-family:'Fira Code','Cascadia Code','JetBrains Mono','Consolas',monospace;font-size:13px;line-height:22px;white-space:nowrap;display:flex;align-items:center;height:22px}
+.w-slcfg .sl-term-row+.sl-term-row{margin-top:2px}
+/* Powerline */
+.w-slcfg .sl-t-seg{padding:0 8px;display:inline-flex;align-items:center;height:22px;line-height:22px}
+.w-slcfg .sl-t-seg.ghost{opacity:0.12;text-decoration:line-through}
+.w-slcfg .sl-t-pw{display:inline-flex;align-items:stretch;width:11px;height:22px;flex-shrink:0;overflow:hidden}
+.w-slcfg .sl-t-pw-inner{width:100%;height:100%;clip-path:polygon(0 0,100% 50%,0 100%)}
+/* Plain / Minimal */
+.w-slcfg .sl-t-pipe{padding:0 5px;opacity:0.35;height:22px;line-height:22px;display:inline-flex;align-items:center}
+.w-slcfg .sl-t-space{width:6px;display:inline-block}
+/* Cursor blink */
+.w-slcfg .sl-cursor{display:inline-block;width:8px;height:15px;background:currentColor;opacity:0.7;vertical-align:middle;margin-left:4px;animation:slcfg-blink 1s step-end infinite}
+@keyframes slcfg-blink{50%{opacity:0}}
+
+/* Controls */
+.w-slcfg .sl-controls{display:flex;flex-direction:column;gap:8px}
+.w-slcfg .sl-ctrl-row{display:grid;grid-template-columns:1fr 1fr;gap:8px 12px}
+.w-slcfg .sl-ctrl-row.sl-3{grid-template-columns:1fr 1fr 1fr}
+.w-slcfg .sl-ctrl{display:flex;flex-direction:column;gap:2px}
+.w-slcfg .sl-ctrl-label{font-family:var(--font-mono);font-size:8px;text-transform:uppercase;letter-spacing:1.5px;color:var(--text-dim)}
+.w-slcfg .sl-ctrl-hint{font-family:var(--font-mono);font-size:7px;color:var(--text-dim);opacity:0.6;line-height:1.3}
+.w-slcfg .sl-ctrl select,.w-slcfg .sl-ctrl input{font-family:var(--font-mono);font-size:11px;background:var(--bg-inset);color:var(--text);border:1px solid var(--rule);border-radius:4px;padding:5px 8px;outline:none;transition:border-color 0.15s;width:100%;box-sizing:border-box}
+.w-slcfg .sl-ctrl select:focus,.w-slcfg .sl-ctrl input:focus{border-color:var(--c-primary);box-shadow:0 0 6px var(--glow)}
+.w-slcfg .sl-ctrl input[type=number]{text-align:center}
+.w-slcfg .sl-sep{grid-column:1/-1;height:1px;background:var(--rule);margin:2px 0;opacity:0.4}
+
+/* Row sections */
+.w-slcfg .sl-rows{display:flex;flex-direction:column;gap:8px}
+.w-slcfg .sl-row-section{display:flex;flex-direction:column;gap:3px}
+.w-slcfg .sl-row-hdr{font-family:var(--font-mono);font-size:8px;text-transform:uppercase;letter-spacing:1.5px;color:var(--text-dim);display:flex;align-items:center;gap:6px}
+.w-slcfg .sl-row-hdr .rtag{font-size:7px;padding:1px 5px;border-radius:3px;border:1px solid var(--rule);color:var(--text-dim);letter-spacing:0}
+.w-slcfg .sl-segments{display:flex;flex-wrap:wrap;gap:5px;min-height:28px;padding:3px 0}
+.w-slcfg .sl-chip{font-family:var(--font-mono);font-size:10px;padding:4px 10px;border-radius:14px;border:1px solid var(--rule);background:var(--bg-inset);color:var(--text);cursor:grab;transition:all 0.15s;user-select:none;display:flex;align-items:center;gap:4px}
+.w-slcfg .sl-chip:active{cursor:grabbing}
+.w-slcfg .sl-chip:hover{border-color:color-mix(in srgb,var(--rule) 50%,var(--text-dim));box-shadow:0 0 6px var(--glow)}
+.w-slcfg .sl-chip.on{border-color:var(--c-primary);background:color-mix(in srgb,var(--c-primary) 10%,var(--bg-inset))}
+.w-slcfg .sl-chip.off{opacity:0.35;border-style:dashed}
+.w-slcfg .sl-chip .cdot{width:5px;height:5px;border-radius:50%;flex-shrink:0}
+.w-slcfg .sl-chip.drag-over{border-color:var(--c-secondary,#9ece6a);transform:scale(1.05)}
+.w-slcfg .sl-chip.dragging{opacity:0.2}
+
+/* Save */
+.w-slcfg .sl-foot{display:flex;align-items:center;gap:10px;justify-content:flex-end}
+.w-slcfg .sl-save{font-family:var(--font-mono);font-weight:600;font-size:10px;letter-spacing:1.5px;text-transform:uppercase;padding:6px 18px;border:1px solid var(--rule);background:var(--bg-void,var(--bg-inset));color:var(--text);cursor:pointer;transition:all .15s;border-radius:4px}
+.w-slcfg .sl-save:hover{border-color:var(--c-primary);color:var(--c-primary);box-shadow:0 0 10px var(--glow)}
+.w-slcfg .sl-save:active{transform:scale(0.97)}
+.w-slcfg .sl-status{font-family:var(--font-mono);font-size:9px;color:var(--text-dim);min-width:50px;text-align:right;transition:color 0.3s}
+.w-slcfg .sl-status.ok{color:var(--c-secondary,#9ece6a)}
+.w-slcfg .sl-status.err{color:var(--c-danger,#f7768e)}
+</style>
+<script>
+Periscope.registerWidget({
+  id:'statusline-settings',title:'Statusline Config',size:'md',priority:85,
+
+  _a256:(function(){var m={};var b=['#000','#800000','#008000','#808000','#000080','#800080','#008080','#c0c0c0','#808080','#f00','#0f0','#ff0','#00f','#f0f','#0ff','#fff'];for(var i=0;i<16;i++)m[i]=b[i];var v=[0,95,135,175,215,255];for(var r=0;r<6;r++)for(var g=0;g<6;g++)for(var bb=0;bb<6;bb++)m[16+r*36+g*6+bb]='rgb('+v[r]+','+v[g]+','+v[bb]+')';for(var i=0;i<24;i++){var x=8+i*10;m[232+i]='rgb('+x+','+x+','+x+')';}return m;})(),
+
+  _themes:{
+    'catppuccin-mocha':{bg1:235,bg2:237,fg:255,dim:60,blue:117,purple:183,cyan:117,green:150,yellow:222,red:210,peach:216},
+    'dracula':{bg1:235,bg2:237,fg:255,dim:60,blue:117,purple:141,cyan:159,green:120,yellow:228,red:210,peach:212},
+    'tokyo-night':{bg1:235,bg2:237,fg:255,dim:60,blue:111,purple:141,cyan:116,green:158,yellow:222,red:210,peach:216},
+    'nord':{bg1:235,bg2:237,fg:252,dim:60,blue:110,purple:139,cyan:110,green:150,yellow:222,red:174,peach:216},
+    'gruvbox':{bg1:236,bg2:238,fg:223,dim:245,blue:109,purple:175,cyan:108,green:142,yellow:214,red:167,peach:208},
+    'tactical':{bg1:233,bg2:235,fg:252,dim:60,blue:75,purple:141,cyan:44,green:77,yellow:214,red:196,peach:215},
+    'arctic':{bg1:255,bg2:254,fg:235,dim:249,blue:33,purple:98,cyan:37,green:34,yellow:178,red:160,peach:208},
+    'ghost':{bg1:234,bg2:236,fg:252,dim:242,blue:110,purple:139,cyan:116,green:150,yellow:222,red:174,peach:216},
+    'midnight':{bg1:234,bg2:236,fg:252,dim:242,blue:69,purple:135,cyan:44,green:78,yellow:220,red:196,peach:209},
+    'phosphor':{bg1:233,bg2:235,fg:46,dim:239,blue:46,purple:46,cyan:46,green:46,yellow:226,red:196,peach:208},
+    'starfield-dark':{bg1:234,bg2:236,fg:252,dim:242,blue:75,purple:141,cyan:80,green:114,yellow:220,red:203,peach:215},
+    'starfield-light':{bg1:255,bg2:254,fg:235,dim:249,blue:33,purple:98,cyan:30,green:28,yellow:172,red:160,peach:208},
+    'thermal':{bg1:233,bg2:235,fg:252,dim:241,blue:33,purple:135,cyan:44,green:46,yellow:226,red:196,peach:208}
+  },
+
+  _segs:{
+    'dir':        {l:'dir',     d:'~/Desktop/Apps', ck:'blue',  t:'Working directory',                    dr:1},
+    'git':        {l:'git',     d:'main*',          ck:'purple',t:'Git branch (* = dirty)',                dr:1},
+    'model':      {l:'model',   d:'opus',           ck:'cyan',  t:'Active Claude model',                  dr:1},
+    'turns':      {l:'turns',   d:'t:42',           ck:'cyan',  t:'API turns this session',               dr:1},
+    'cost':       {l:'cost',    d:'$1.23',          ck:'yellow',t:'Session cost (API-equiv pricing)',      dr:1},
+    'tools':      {l:'tools',   d:'[Bash Read]',    ck:'peach', t:'Tools used in last turn',              dr:1},
+    'vim':        {l:'vim',     d:'NORMAL',         ck:'yellow',t:'Vim keybinding mode',                  dr:1},
+    'rate-5hr':   {l:'rate-5hr',d:'5h:7%',          ck:'green', t:'5-hour sliding window rate limit',     dr:2},
+    'rate-weekly':{l:'rate-wk', d:'wk:95%',         ck:'red',   t:'Weekly rate limit usage',              dr:2},
+    'rate-sonnet':{l:'rate-sn', d:'sn:30%',         ck:'yellow',t:'Sonnet-specific rate limit',           dr:2},
+    'reset':      {l:'reset',   d:'rst:2h14m',      ck:'cyan',  t:'Nearest rate limit reset',             dr:2},
+    'proj':       {l:'proj',    d:'pj:12%',         ck:'green', t:'Projected 5hr usage at burn rate',     dr:2},
+    'cache':      {l:'cache',   d:'87%',            ck:'green', t:'Prompt cache hit rate',                dr:2},
+    'context':    {l:'ctx',     d:'\u2588\u2588\u2588\u2588\u2588\u2588\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591 45%',ck:'green',t:'Context window usage',dr:2}
+  },
+
+  _dOrder:['dir','git','model','turns','cost','tools','vim','rate-5hr','rate-weekly','rate-sonnet','reset','proj','cache','context'],
+  _st:null,_ds:null,_jd:false,
+
+  _c:function(i){return this._a256[i]||'#888'},
+
+  _updateCtxBar:function(){
+    var w=this._st.options.contextBarWidth||15;
+    var pct=45,filled=Math.round(w*pct/100),empty=w-filled;
+    this._segs.context.d='\u2588'.repeat(filled)+'\u2591'.repeat(empty)+' '+pct+'%';
+  },
+
+  init:function(el){
+    var S=this;
+    el.innerHTML=
+      '<div class="widget-title">Periscope Statusline Config</div>'+
+      '<div class="w-slcfg">'+
+        '<div class="sl-term">'+
+          '<div class="sl-term-bar"><span class="sl-term-dot r"></span><span class="sl-term-dot y"></span><span class="sl-term-dot g"></span><span class="sl-term-title">Preview</span><span style="width:50px"></span></div>'+
+          '<div class="sl-term-body" id="slcfg-tbody"></div>'+
+        '</div>'+
+        '<div class="sl-controls">'+
+          '<div class="sl-ctrl-row">'+
+            '<div class="sl-ctrl"><span class="sl-ctrl-label">Theme</span><select id="slcfg-theme"></select></div>'+
+            '<div class="sl-ctrl"><span class="sl-ctrl-label">Style</span><select id="slcfg-style"><option value="powerline">Powerline</option><option value="plain">Plain</option><option value="minimal">Minimal</option></select></div>'+
+          '</div>'+
+          '<div class="sl-sep"></div>'+
+          '<div class="sl-ctrl-row sl-3">'+
+            '<div class="sl-ctrl"><span class="sl-ctrl-label">Compact Below</span><input type="number" id="slcfg-cmp" min="40" max="200" value="100"><span class="sl-ctrl-hint">Cols to hide low-priority</span></div>'+
+            '<div class="sl-ctrl"><span class="sl-ctrl-label">Bare Minimum</span><input type="number" id="slcfg-min" min="30" max="120" value="60"><span class="sl-ctrl-hint">Only dir+git+model</span></div>'+
+            '<div class="sl-ctrl"><span class="sl-ctrl-label">Context Bar</span><input type="number" id="slcfg-ctx" min="5" max="30" value="15"><span class="sl-ctrl-hint">Bar char width</span></div>'+
+          '</div>'+
+        '</div>'+
+        '<div class="sl-rows" id="slcfg-rows"></div>'+
+      '</div>';
+
+    S._st={theme:'catppuccin-mocha',style:'powerline',segments:{},order:S._dOrder.slice(),options:{contextBarWidth:15,compactThreshold:100,minWidth:60}};
+    S._buildChips(el);S._loadThemes(el);
+
+    var on=function(id,ev,fn){el.querySelector(id).addEventListener(ev,fn)};
+    on('#slcfg-theme','change',function(){S._st.theme=this.value;S._render(el)});
+    on('#slcfg-style','change',function(){S._st.style=this.value;S._render(el)});
+    on('#slcfg-ctx','input',function(){S._st.options.contextBarWidth=parseInt(this.value)||15;S._updateCtxBar();S._render(el)});
+    on('#slcfg-cmp','input',function(){S._st.options.compactThreshold=parseInt(this.value)||100;S._render(el)});
+    on('#slcfg-min','input',function(){S._st.options.minWidth=parseInt(this.value)||60;S._render(el)});
+    on('#slcfg-sv','click',function(){S._save(el)});
+  },
+
+  _row:function(n){var s=this._st.segments[n];if(s&&s.row>0)return s.row;var d=this._segs[n];return d?d.dr:1},
+
+  _buildChips:function(el){
+    var S=this,re=el.querySelector('#slcfg-rows');re.innerHTML='';
+    var r1=[],r2=[];
+    S._st.order.forEach(function(n){if(!S._segs[n])return;S._row(n)===2?r2.push(n):r1.push(n)});
+
+    [{id:1,lbl:'Top \u2014 Work',ns:r1},{id:2,lbl:'Bottom \u2014 Rates',ns:r2}].forEach(function(rd){
+      var sec=document.createElement('div');sec.className='sl-row-section';
+      sec.innerHTML='<div class="sl-row-hdr">'+rd.lbl+' <span class="rtag">row '+rd.id+'</span></div>';
+      var se=document.createElement('div');se.className='sl-segments';se.dataset.row=rd.id;
+
+      rd.ns.forEach(function(n){
+        var sd=S._segs[n];if(!sd)return;
+        var sc=S._st.segments[n],en=sc?sc.enabled!==false:true;
+        var ch=document.createElement('span');
+        ch.className='sl-chip '+(en?'on':'off');ch.dataset.seg=n;ch.title=sd.t;ch.draggable=true;
+        ch.innerHTML='<span class="cdot"></span>'+sd.l;
+
+        ch.addEventListener('click',function(){
+          if(S._jd){S._jd=false;return}
+          var on=ch.classList.toggle('on');ch.classList.toggle('off',!on);
+          if(!S._st.segments[n])S._st.segments[n]={};S._st.segments[n].enabled=on;S._render(el)});
+        ch.addEventListener('dragstart',function(e){S._ds=n;ch.classList.add('dragging');e.dataTransfer.effectAllowed='move';e.dataTransfer.setData('text/plain',n)});
+        ch.addEventListener('dragend',function(){ch.classList.remove('dragging');re.querySelectorAll('.sl-chip').forEach(function(c){c.classList.remove('drag-over')});S._ds=null});
+        ch.addEventListener('dragover',function(e){e.preventDefault();if(S._ds&&S._ds!==n)ch.classList.add('drag-over')});
+        ch.addEventListener('dragleave',function(){ch.classList.remove('drag-over')});
+        ch.addEventListener('drop',function(e){
+          e.preventDefault();ch.classList.remove('drag-over');
+          var src=S._ds;if(!src||src===n)return;
+          var tr=parseInt(se.dataset.row);
+          if(!S._st.segments[src])S._st.segments[src]={};S._st.segments[src].row=tr;
+          var o=S._st.order,si=o.indexOf(src);if(si!==-1)o.splice(si,1);
+          var di=o.indexOf(n);if(di!==-1)o.splice(di,0,src);else o.push(src);
+          S._jd=true;S._buildChips(el);S._render(el)});
+        se.appendChild(ch);
+      });
+
+      se.addEventListener('dragover',function(e){e.preventDefault()});
+      se.addEventListener('drop',function(e){
+        e.preventDefault();var src=S._ds;if(!src)return;
+        if(e.target===se||e.target.classList.contains('sl-segments')){
+          var tr=parseInt(se.dataset.row);
+          if(!S._st.segments[src])S._st.segments[src]={};S._st.segments[src].row=tr;
+          S._jd=true;S._buildChips(el);S._render(el)}});
+
+      // Add save button inline with row 2 chips
+      if(rd.id===2){
+        var sf=document.createElement('span');
+        sf.style.cssText='margin-left:auto;display:flex;align-items:center;gap:8px';
+        sf.innerHTML='<span class="sl-status" id="slcfg-st"></span><button class="sl-save" id="slcfg-sv">SAVE</button>';
+        se.appendChild(sf);
+      }
+      sec.appendChild(se);re.appendChild(sec);
+    });
+
+    var th=S._gt();
+    re.querySelectorAll('.sl-chip').forEach(function(ch){
+      var sd=S._segs[ch.dataset.seg];
+      if(sd){var d=ch.querySelector('.cdot');if(d)d.style.background=S._c(th[sd.ck])}
+    });
+    // Re-wire save button (DOM was rebuilt)
+    var sv=el.querySelector('#slcfg-sv');
+    if(sv)sv.addEventListener('click',function(){S._save(el)});
+  },
+
+  _loadThemes:async function(el){
+    var S=this,sel=el.querySelector('#slcfg-theme'),ns=Object.keys(S._themes);
+    try{var r=await fetch('/api/plugins/themes');if(r.ok){var f=await r.json();f.forEach(function(x){var n=x.replace(/\.toml$/,'');if(ns.indexOf(n)===-1)ns.push(n)})}}catch(e){}
+    ns.sort();sel.innerHTML='';ns.forEach(function(n){var o=document.createElement('option');o.value=n;o.textContent=n;sel.appendChild(o)});
+    sel.value=S._st.theme;S._render(el);
+  },
+
+  _gt:function(){return this._themes[this._st.theme]||this._themes['catppuccin-mocha']},
+
+  _render:function(el){
+    var S=this,th=S._gt(),sty=S._st.style,tb=el.querySelector('#slcfg-tbody');if(!tb)return;
+    tb.style.background=S._c(th.bg1);
+    S._updateCtxBar();
+
+    var r1=[],r2=[];
+    S._st.order.forEach(function(n){
+      var sd=S._segs[n];if(!sd)return;
+      var sc=S._st.segments[n];
+      var it={n:n,d:sd,en:sc?sc.enabled!==false:true};
+      S._row(n)===2?r2.push(it):r1.push(it)});
+
+    var rr=function(items){
+      if(sty==='powerline')return S._pw(items,th);
+      if(sty==='plain')return S._pl(items,th);
+      return S._mn(items,th)};
+
+    var fgC=S._c(th.fg);
+    tb.innerHTML=
+      '<div class="sl-term-row">'+rr(r1)+'<span class="sl-cursor" style="color:'+fgC+'"></span></div>'+
+      '<div class="sl-term-row">'+rr(r2)+'</div>';
+
+    el.querySelectorAll('.sl-chip').forEach(function(ch){
+      var sd=S._segs[ch.dataset.seg];
+      if(sd){var d=ch.querySelector('.cdot');if(d)d.style.background=S._c(th[sd.ck])}
+    });
+  },
+
+  _pw:function(items,th){
+    var S=this,h='',bt=false,wb=S._c(th.bg1);
+    var en=items.filter(function(i){return i.en}),ec=0;
+    for(var i=0;i<items.length;i++){
+      var it=items[i],fg=S._c(th[it.d.ck]);
+      if(!it.en)continue;
+      var ci=bt?th.bg2:th.bg1,cb=S._c(ci);
+      h+='<span class="sl-t-seg" style="background:'+cb+';color:'+fg+'"> '+S._esc(it.d.d)+' </span>';
+      var last=ec===en.length-1,nb=last?wb:S._c(bt?th.bg1:th.bg2);
+      h+='<span class="sl-t-pw" style="background:'+nb+'"><span class="sl-t-pw-inner" style="background:'+cb+'"></span></span>';
+      bt=!bt;ec++}
+    return h},
+
+  _pl:function(items,th){
+    var S=this,h='',dc=S._c(th.dim),c=0;
+    for(var i=0;i<items.length;i++){
+      var it=items[i],fg=S._c(th[it.d.ck]);
+      if(!it.en)continue;
+      if(c>0)h+='<span class="sl-t-pipe" style="color:'+dc+'">|</span>';
+      h+='<span class="sl-t-seg" style="color:'+fg+'">'+S._esc(it.d.d)+'</span>';c++}
+    return h},
+
+  _mn:function(items,th){
+    var S=this,h='';
+    for(var i=0;i<items.length;i++){
+      var it=items[i],fg=S._c(th[it.d.ck]);
+      if(!it.en)continue;
+      h+='<span class="sl-t-seg" style="color:'+fg+'">'+S._esc(it.d.d)+'</span><span class="sl-t-space"></span>'}
+    return h},
+
+  _esc:function(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')},
+
+  _save:async function(el){
+    var S=this,se=el.querySelector('#slcfg-st');
+    var cfg={theme:S._st.theme,style:S._st.style,order:S._st.order,segments:{},options:{contextBarWidth:S._st.options.contextBarWidth,compactThreshold:S._st.options.compactThreshold,minWidth:S._st.options.minWidth}};
+    for(var n in S._st.segments){var s=S._st.segments[n];var e={enabled:s.enabled!==false};if(s.priority)e.priority=s.priority;if(s.row)e.row=s.row;cfg.segments[n]=e}
+    try{
+      var r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(cfg)});
+      if(r.ok){se.textContent='\u2713 saved';se.className='sl-status ok';if(Periscope._data)Periscope._data.statuslineConfig=cfg}
+      else{se.textContent='\u2717 '+(await r.text());se.className='sl-status err'}}
+    catch(e){se.textContent='\u2717 network';se.className='sl-status err'}
+    setTimeout(function(){se.textContent='';se.className='sl-status'},4000)},
+
+  render:function(el,data){
+    var S=this,cfg=data.statuslineConfig;
+    if(cfg&&typeof cfg==='object'){
+      if(cfg.theme)S._st.theme=cfg.theme;
+      if(cfg.style)S._st.style=cfg.style;
+      if(cfg.order&&cfg.order.length)S._st.order=cfg.order;
+      if(cfg.segments)for(var n in cfg.segments)S._st.segments[n]=cfg.segments[n];
+      if(cfg.options){
+        if(cfg.options.contextBarWidth)S._st.options.contextBarWidth=cfg.options.contextBarWidth;
+        if(cfg.options.compactThreshold)S._st.options.compactThreshold=cfg.options.compactThreshold;
+        if(cfg.options.minWidth)S._st.options.minWidth=cfg.options.minWidth}
+      var te=el.querySelector('#slcfg-theme');if(te)te.value=S._st.theme;
+      var se=el.querySelector('#slcfg-style');if(se)se.value=S._st.style;
+      el.querySelector('#slcfg-ctx').value=S._st.options.contextBarWidth;
+      el.querySelector('#slcfg-cmp').value=S._st.options.compactThreshold;
+      el.querySelector('#slcfg-min').value=S._st.options.minWidth;
+      S._buildChips(el)}
+    S._render(el)}
+});
+</script>

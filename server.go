@@ -183,6 +183,10 @@ func startServer(app *App) {
 		handlePricing(app, w, r)
 	})
 
+	mux.HandleFunc("/api/layout", func(w http.ResponseWriter, r *http.Request) {
+		handleLayout(app, w, r)
+	})
+
 	mux.HandleFunc("/api/shutdown", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]bool{"ok": true})
 		go func() {
@@ -200,6 +204,33 @@ func startServer(app *App) {
 	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
 		serveWS(app, w, r)
 	})
+
+	// Background usage refresh — fetch from Anthropic API every 30s, push via WS
+	// Also re-import JSONL history files so hook-written data appears in real-time
+	go func() {
+		// Initial fetch on startup
+		if result, err := fetchUsage(app); err == nil {
+			app.Hub.broadcastJSON("usage", json.RawMessage(result))
+			appendLimitSnapshot(app, result)
+		}
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for range ticker.C {
+			result, err := fetchUsage(app)
+			if err != nil {
+				continue
+			}
+			app.Hub.broadcastJSON("usage", json.RawMessage(result))
+			appendLimitSnapshot(app, result)
+
+			// Re-import new JSONL lines + sidecars written by hooks
+			importJSONL(app, "usage-history.jsonl", "history")
+			importSidecars(app)
+
+			// Snapshot current sidecar states into history for continuous charting
+			snapshotSidecarsToHistory(app)
+		}
+	}()
 
 	addr := fmt.Sprintf("%s:%d", app.Config.Server.Host, app.Config.Server.Port)
 	log.Printf("Periscope listening on http://%s", addr)
@@ -233,7 +264,7 @@ func corsMiddleware(next http.Handler) http.Handler {
 // --- Handlers ---
 
 func serveDashboard(app *App, w http.ResponseWriter, r *http.Request) {
-	// Try plugin runtime shell first, fall back to legacy dashboard
+	// Serve plugin runtime shell
 	runtimePath := filepath.Join(app.PluginDir, "runtime.html")
 	if data, err := os.ReadFile(runtimePath); err == nil {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -241,15 +272,7 @@ func serveDashboard(app *App, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Fall back to existing dashboard
-	dashPath := filepath.Join(app.DataDir, "telemetry-dashboard.html")
-	if data, err := os.ReadFile(dashPath); err == nil {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Write(data)
-		return
-	}
-
-	http.Error(w, "Dashboard not found", 404)
+	http.Error(w, "Dashboard not found — run 'periscope init' to extract plugins", 404)
 }
 
 func handleData(app *App, w http.ResponseWriter, r *http.Request) {
@@ -343,6 +366,34 @@ func handlePricing(app *App, w http.ResponseWriter, r *http.Request) {
 	w.Write(result)
 }
 
+func handleLayout(app *App, w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case "GET":
+		raw := kvGet(app.DB, "config:layout")
+		if raw == nil {
+			writeJSON(w, nil)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.Write(raw)
+	case "POST":
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			writeError(w, 400, "cannot read body")
+			return
+		}
+		val := strings.TrimSpace(string(body))
+		if val == "null" || val == "" {
+			app.DB.Exec("DELETE FROM kv WHERE key = ?", "config:layout")
+		} else {
+			kvSet(app.DB, "config:layout", val)
+		}
+		writeJSON(w, map[string]bool{"ok": true})
+	default:
+		http.Error(w, "method not allowed", 405)
+	}
+}
+
 func handlePlugins(app *App, w http.ResponseWriter, r *http.Request) {
 	// /api/plugins/{type} — list plugins
 	// /api/plugins/{type}/{name} — get specific plugin file
@@ -352,7 +403,7 @@ func handlePlugins(app *App, w http.ResponseWriter, r *http.Request) {
 	pluginType := parts[0]
 	validTypes := map[string]bool{
 		"themes": true, "widgets": true, "pricing": true,
-		"forecasters": true, "canvas": true,
+		"forecasters": true, "canvas": true, "vendor": true,
 	}
 	if !validTypes[pluginType] {
 		writeError(w, 404, "unknown plugin type")
@@ -394,6 +445,8 @@ func handlePlugins(app *App, w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	case strings.HasSuffix(name, ".js"):
 		w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
+	case strings.HasSuffix(name, ".css"):
+		w.Header().Set("Content-Type", "text/css; charset=utf-8")
 	default:
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	}

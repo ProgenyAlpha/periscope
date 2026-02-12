@@ -1,208 +1,231 @@
 <style>
-.w-cache .donut-section{display:flex;flex-direction:column;align-items:center;gap:8px;margin-bottom:14px}
-.w-cache .donut-wrap{position:relative;width:100px;height:100px}
-.w-cache .donut-svg{transform:rotate(-90deg)}
-.w-cache .donut-center{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center}
-.w-cache .donut-pct{font-size:1.4rem;font-weight:600;font-family:var(--font-mono);color:var(--text-bright);line-height:1}
-.w-cache .donut-sub{font-size:0.5rem;text-transform:uppercase;letter-spacing:1px;color:var(--text-dim)}
-.w-cache .donut-legend{display:flex;gap:12px;justify-content:center;flex-wrap:wrap}
-.w-cache .donut-legend span{display:flex;align-items:center;gap:4px;font-size:0.58rem;color:var(--text-dim);font-family:var(--font-mono)}
-.w-cache .donut-legend span::before{content:'';width:7px;height:7px;border-radius:50%;flex-shrink:0}
-.w-cache .dl-input::before{background:var(--c-tertiary)}
-.w-cache .dl-cr::before{background:var(--c-secondary)}
-.w-cache .dl-cw::before{background:var(--c-danger)}
-
-.w-cache .stats-row{display:flex;gap:8px;justify-content:space-between;margin-bottom:14px}
-.w-cache .stat{display:flex;flex-direction:column;align-items:center;gap:2px;flex:1;min-width:0}
-.w-cache .stat-val{font-size:0.95rem;font-weight:600;font-family:var(--font-mono);color:var(--text-bright);line-height:1;white-space:nowrap}
-.w-cache .stat-label{font-size:0.5rem;text-transform:uppercase;letter-spacing:0.8px;color:var(--text-dim);text-align:center;line-height:1.2}
-.w-cache .stat-positive{color:#22c55e}
-.w-cache .stat-negative{color:var(--c-danger)}
-
-.w-cache .seg-section{padding-top:10px;border-top:1px solid var(--rule)}
-.w-cache .seg-bar{display:flex;height:8px;border-radius:4px;overflow:hidden;background:var(--bg-inset)}
-.w-cache .seg-bar span{height:100%;transition:width 0.5s ease}
-.w-cache .sb-input{background:var(--c-tertiary)}
-.w-cache .sb-cr{background:var(--c-secondary)}
-.w-cache .sb-cw{background:var(--c-danger)}
-.w-cache .sb-out{background:var(--c-primary)}
-.w-cache .seg-labels{display:flex;gap:8px;margin-top:6px;flex-wrap:wrap;justify-content:space-between}
-.w-cache .seg-labels span{display:flex;align-items:center;gap:4px;font-size:0.55rem;color:var(--text-dim);font-family:var(--font-mono)}
-.w-cache .seg-labels span::before{content:'';width:6px;height:6px;border-radius:2px;flex-shrink:0}
-.w-cache .sl-input::before{background:var(--c-tertiary)}
-.w-cache .sl-cr::before{background:var(--c-secondary)}
-.w-cache .sl-cw::before{background:var(--c-danger)}
-.w-cache .sl-out::before{background:var(--c-primary)}
-.w-cache .empty-state{text-align:center;padding:24px 0;color:var(--text-dim);font-size:0.75rem;font-style:italic}
+.w-cache-v2{display:flex;flex-direction:column;gap:6px}
+.w-cache-v2 .cs-hdr{display:flex;align-items:center;justify-content:space-between}
+.w-cache-v2 .tog-group{display:inline-flex;border:1px solid var(--rule);border-radius:var(--radius);overflow:hidden}
+.w-cache-v2 .tog{padding:2px 8px;border:none;background:var(--bg-inset);color:var(--text-dim);font-family:var(--font-mono);font-size:0.55rem;cursor:pointer;transition:all .15s;letter-spacing:0.5px}
+.w-cache-v2 .tog:not(:last-child){border-right:1px solid var(--rule)}
+.w-cache-v2 .tog.active{background:var(--c-primary);color:var(--bg-void);font-weight:600}
+.w-cache-v2 .tog:hover:not(.active){background:var(--bg-hover);color:var(--text)}
+.w-cache-v2 .hero{text-align:center;padding:2px 0}
+.w-cache-v2 .hero-val{font-size:1.4rem;font-weight:700;font-family:var(--font-mono);line-height:1}
+.w-cache-v2 .hero-val.positive{color:var(--c-secondary,#22c55e)}
+.w-cache-v2 .hero-val.negative{color:var(--c-danger,#ef4444)}
+.w-cache-v2 .hero-val.zero{color:var(--text-dim)}
+.w-cache-v2 .hero-sub{font-size:0.55rem;text-transform:uppercase;letter-spacing:2px;color:var(--text-dim);margin-top:4px}
+.w-cache-v2 .breakdown{display:grid;grid-template-columns:1fr auto;gap:1px 12px;font-family:var(--font-mono);font-size:0.65rem;padding:6px 10px;background:var(--bg-inset);border:1px solid var(--rule);border-radius:var(--radius,6px)}
+.w-cache-v2 .breakdown .lbl{color:var(--text-dim)}
+.w-cache-v2 .breakdown .val{text-align:right;color:var(--text-bright);font-weight:600}
+.w-cache-v2 .breakdown .val.dim{color:var(--text-dim);font-weight:400}
+.w-cache-v2 .breakdown .val.green{color:var(--c-secondary,#22c55e)}
+.w-cache-v2 .breakdown .sep{grid-column:1/-1;height:1px;background:var(--rule);margin:3px 0}
+.w-cache-v2 .hit-bar-wrap{display:flex;flex-direction:column;gap:4px}
+.w-cache-v2 .hit-bar-hdr{display:flex;justify-content:space-between;align-items:baseline}
+.w-cache-v2 .hit-bar-label{font-size:0.55rem;text-transform:uppercase;letter-spacing:1.5px;color:var(--text-dim)}
+.w-cache-v2 .hit-bar-val{font-family:var(--font-mono);font-size:0.75rem;font-weight:600;color:var(--text-bright)}
+.w-cache-v2 .hit-bar{height:6px;border-radius:3px;background:var(--bg-inset);overflow:hidden}
+.w-cache-v2 .hit-bar-fill{height:100%;border-radius:3px;transition:width 0.5s ease,background 0.3s}
+.w-cache-v2 .hit-bar-note{font-family:var(--font-mono);font-size:0.55rem;color:var(--text-dim);text-align:right}
 </style>
 <script>
 Periscope.registerWidget({
   id: 'cache-savings',
-  title: 'Cache & Savings',
+  title: 'Cache Savings',
   size: 'md',
   priority: 22,
+
   init(el) {
-    el.innerHTML = `
-      <div class="widget-title">Cache & Savings</div>
-      <div class="w-cache">
-        <div class="donut-section">
-          <div class="donut-wrap">
-            <svg class="donut-svg" width="100" height="100" viewBox="0 0 100 100">
-              <circle cx="50" cy="50" r="38" fill="none" stroke="var(--bg-inset)" stroke-width="12"/>
-              <circle id="cs-arc-input" cx="50" cy="50" r="38" fill="none" stroke="var(--c-tertiary)" stroke-width="12" stroke-linecap="round" stroke-dasharray="0 238.76" stroke-dashoffset="0"/>
-              <circle id="cs-arc-cr" cx="50" cy="50" r="38" fill="none" stroke="var(--c-secondary)" stroke-width="12" stroke-linecap="round" stroke-dasharray="0 238.76" stroke-dashoffset="0"/>
-              <circle id="cs-arc-cw" cx="50" cy="50" r="38" fill="none" stroke="var(--c-danger)" stroke-width="12" stroke-linecap="round" stroke-dasharray="0 238.76" stroke-dashoffset="0"/>
-            </svg>
-            <div class="donut-center">
-              <div class="donut-pct" id="cs-donut-pct">0%</div>
-              <div class="donut-sub">cache hit</div>
-            </div>
-          </div>
-          <div class="donut-legend">
-            <span class="dl-input" id="cs-dl-input">Input 0</span>
-            <span class="dl-cr" id="cs-dl-cr">Cache Read 0</span>
-            <span class="dl-cw" id="cs-dl-cw">Cache Write 0</span>
-          </div>
-        </div>
-        <div class="stats-row">
-          <div class="stat"><span class="stat-val" id="cs-hit-rate">0%</span><span class="stat-label">Cache Hit</span></div>
-          <div class="stat"><span class="stat-val" id="cs-tokens-saved">0</span><span class="stat-label">Tokens Saved</span></div>
-          <div class="stat"><span class="stat-val" id="cs-cost-saved">$0.00</span><span class="stat-label">Cost Saved</span></div>
-          <div class="stat"><span class="stat-val" id="cs-cw-cost">$0.00</span><span class="stat-label">Write Cost</span></div>
-          <div class="stat"><span class="stat-val" id="cs-net">$0.00</span><span class="stat-label">Net Savings</span></div>
-        </div>
-        <div class="seg-section">
-          <div class="seg-bar">
-            <span class="sb-input" id="cs-sb-in" style="width:0%"></span>
-            <span class="sb-cr" id="cs-sb-cr" style="width:0%"></span>
-            <span class="sb-cw" id="cs-sb-cw" style="width:0%"></span>
-            <span class="sb-out" id="cs-sb-out" style="width:0%"></span>
-          </div>
-          <div class="seg-labels">
-            <span class="sl-input" id="cs-sl-in">Input 0%</span>
-            <span class="sl-cr" id="cs-sl-cr">Read 0%</span>
-            <span class="sl-cw" id="cs-sl-cw">Write 0%</span>
-            <span class="sl-out" id="cs-sl-out">Output 0%</span>
-          </div>
-        </div>
-      </div>`;
+    el.innerHTML =
+      '<div class="cs-hdr"><span class="widget-title" style="margin-bottom:0">Cache Savings</span>' +
+        '<div class="tog-group" id="csv2-range">' +
+          '<button class="tog active" data-val="5h">5h</button>' +
+          '<button class="tog" data-val="24h">24h</button>' +
+          '<button class="tog" data-val="7d">7d</button>' +
+          '<button class="tog" data-val="all">All</button>' +
+        '</div>' +
+      '</div>' +
+      '<div class="w-cache-v2">' +
+        '<div class="hero">' +
+          '<div class="hero-val zero" id="csv2-hero">--</div>' +
+          '<div class="hero-sub" id="csv2-herosub">net savings</div>' +
+        '</div>' +
+        '<div class="breakdown">' +
+          '<span class="lbl">Without cache</span><span class="val dim" id="csv2-without">--</span>' +
+          '<span class="lbl">Actual cost</span><span class="val" id="csv2-actual">--</span>' +
+          '<div class="sep"></div>' +
+          '<span class="lbl">Cache saved</span><span class="val green" id="csv2-saved">--</span>' +
+          '<span class="lbl">Cache write overhead</span><span class="val dim" id="csv2-overhead">--</span>' +
+          '<span class="lbl">Savings rate</span><span class="val" id="csv2-rate">--</span>' +
+        '</div>' +
+        '<div class="hit-bar-wrap">' +
+          '<div class="hit-bar-hdr"><span class="hit-bar-label">Cache Hit Rate</span><span class="hit-bar-val" id="csv2-hit">0%</span></div>' +
+          '<div class="hit-bar"><div class="hit-bar-fill" id="csv2-bar" style="width:0%"></div></div>' +
+          '<div class="hit-bar-note" id="csv2-note"></div>' +
+        '</div>' +
+      '</div>';
+
+    el._csvRange = '5h';
+    var self = this;
+    el.querySelector('#csv2-range').querySelectorAll('.tog').forEach(function(btn) {
+      btn.addEventListener('click', function() {
+        el.querySelector('#csv2-range').querySelectorAll('.tog').forEach(function(b) { b.classList.remove('active'); });
+        btn.classList.add('active');
+        el._csvRange = btn.dataset.val;
+        if (Periscope._data) {
+          var w = Periscope._widgets.get('cache-savings');
+          if (w && w.render) w.render(el, Periscope._data);
+        }
+      });
+    });
   },
+
   render(el, data) {
-    const fmt = n => n >= 1e9 ? (n/1e9).toFixed(1)+'B' : n >= 1e6 ? (n/1e6).toFixed(1)+'M' : n >= 1e3 ? (n/1e3).toFixed(1)+'K' : n.toString();
-    const fmtC = v => v >= 100 ? '$'+v.toFixed(0) : v >= 10 ? '$'+v.toFixed(1) : '$'+v.toFixed(2);
+    var range = el._csvRange || '5h';
+    var fmt = function(v) { return v >= 100 ? '$' + v.toFixed(0) : v >= 10 ? '$' + v.toFixed(1) : '$' + v.toFixed(2); };
+    var fmtT = function(n) { return n >= 1e9 ? (n/1e9).toFixed(1)+'B' : n >= 1e6 ? (n/1e6).toFixed(1)+'M' : n >= 1e3 ? (n/1e3).toFixed(1)+'K' : n.toString(); };
 
-    // Default pricing (Opus 4.6 $/MTok)
-    const DEFAULT_PRICING = { input: 5, cache_read: 0.5, cache_write: 6.25, output: 25 };
+    var DEFAULT_PRICING = { input: 5, cache_read: 0.5, cache_write: 6.25, output: 25 };
 
-    let totalIn=0, totalCR=0, totalCW=0, totalOut=0, latestModel=null;
-    const sidecars = data.sidecars || [];
-    sidecars.forEach(s => {
-      const c = s.data && s.data.cumulative;
-      if (!c) return;
-      totalIn += c.input||0;
-      totalCR += c.cache_read||0;
-      totalCW += c.cache_write||0;
-      totalOut += c.output||0;
-      const lt = s.data && s.data.lastTurn;
+    // Find latest model for pricing
+    var latestModel = null;
+    var sidecars = data.sidecars || [];
+    sidecars.forEach(function(s) {
+      var lt = s.data && s.data.lastTurn;
       if (lt && lt.model) latestModel = lt.model;
     });
 
-    const totalAll = totalIn + totalCR + totalCW + totalOut;
-    const donutTotal = totalIn + totalCR + totalCW; // only input-side tokens for donut
-    const cacheHit = (totalIn + totalCR) > 0 ? (totalCR / (totalIn + totalCR) * 100) : 0;
-
-    // Get model pricing from shared utilities
-    let pricing = DEFAULT_PRICING;
+    var pricing = DEFAULT_PRICING;
     if (typeof getModelPricing === 'function' && latestModel) {
-      const mp = getModelPricing(latestModel);
+      var mp = getModelPricing(latestModel);
       if (mp && mp.input > 0) pricing = mp;
     }
 
-    // Subscription detection (Max vs API)
-    const isMax = typeof isSubscription === 'function' ? isSubscription(data) : false;
-    const cs = typeof costSuffix === 'function' ? costSuffix(data) : '';
-    const pricingLabel = isMax ? 'Max (cached=free)' : 'API (cached=1/10th)';
+    var isMax = typeof isSubscription === 'function' ? isSubscription(data) : false;
+    var cs = typeof costSuffix === 'function' ? costSuffix(data) : '';
 
-    // Savings calculations — Max: cached reads are free. API: cached reads cost 1/10th.
-    const costSaved = isMax
+    // --- Compute totals based on time window ---
+    var totalIn = 0, totalCR = 0, totalCW = 0, totalOut = 0;
+
+    if (range === 'all') {
+      // Lifetime from sidecars (most accurate)
+      sidecars.forEach(function(s) {
+        var c = s.data && s.data.cumulative;
+        if (!c) return;
+        totalIn += c.input || 0;
+        totalCR += c.cache_read || 0;
+        totalCW += c.cache_write || 0;
+        totalOut += c.output || 0;
+      });
+    } else {
+      // Windowed from history (delta = max - min per session)
+      var windowMs = range === '5h' ? 5*3600e3 : range === '24h' ? 24*3600e3 : 7*24*3600e3;
+      var cutoff = Date.now() - windowMs;
+      var history = data.history || [];
+      var bySid = {};
+      for (var i = 0; i < history.length; i++) {
+        var h = history[i];
+        var t = new Date(h.ts).getTime();
+        if (t < cutoff) continue;
+        var sid = h.sid;
+        if (!bySid[sid]) bySid[sid] = {
+          minIn: h.input||0, maxIn: h.input||0,
+          minCR: h.cr||0, maxCR: h.cr||0,
+          minCW: h.cw||0, maxCW: h.cw||0,
+          minOut: h.out||0, maxOut: h.out||0
+        };
+        var s = bySid[sid];
+        var inp = h.input||0; if (inp < s.minIn) s.minIn = inp; if (inp > s.maxIn) s.maxIn = inp;
+        var cr = h.cr||0; if (cr < s.minCR) s.minCR = cr; if (cr > s.maxCR) s.maxCR = cr;
+        var cw = h.cw||0; if (cw < s.minCW) s.minCW = cw; if (cw > s.maxCW) s.maxCW = cw;
+        var out = h.out||0; if (out < s.minOut) s.minOut = out; if (out > s.maxOut) s.maxOut = out;
+      }
+      for (var sid in bySid) {
+        var sv = bySid[sid];
+        totalIn += sv.maxIn - sv.minIn;
+        totalCR += sv.maxCR - sv.minCR;
+        totalCW += sv.maxCW - sv.minCW;
+        totalOut += sv.maxOut - sv.minOut;
+      }
+    }
+
+    // --- Calculations ---
+    var withoutCache = ((totalIn + totalCR) / 1e6) * pricing.input + (totalCW / 1e6) * pricing.cache_write + (totalOut / 1e6) * pricing.output;
+    var actualCost = (totalIn / 1e6) * pricing.input + (totalCR / 1e6) * pricing.cache_read + (totalCW / 1e6) * pricing.cache_write + (totalOut / 1e6) * pricing.output;
+    var cacheSaved = isMax
       ? (totalCR / 1e6) * pricing.input
       : (totalCR / 1e6) * (pricing.input - pricing.cache_read);
-    const cwCost = (totalCW / 1e6) * pricing.cache_write;
-    const netSavings = costSaved - cwCost;
+    var cwCost = (totalCW / 1e6) * pricing.cache_write;
+    var netSavings = cacheSaved - cwCost;
+    var savingsRate = withoutCache > 0 ? (netSavings / withoutCache * 100) : 0;
 
-    // --- Donut chart ---
-    const circumference = 2 * Math.PI * 38; // ~238.76
-    const arcInput = el.querySelector('#cs-arc-input');
-    const arcCR = el.querySelector('#cs-arc-cr');
-    const arcCW = el.querySelector('#cs-arc-cw');
+    var totalInput = totalIn + totalCR;
+    var hitRate = totalInput > 0 ? (totalCR / totalInput * 100) : 0;
 
-    if (donutTotal > 0) {
-      const pIn = totalIn / donutTotal;
-      const pCR = totalCR / donutTotal;
-      const pCW = totalCW / donutTotal;
+    // --- Render ---
+    var heroEl = el.querySelector('#csv2-hero');
+    var heroSub = el.querySelector('#csv2-herosub');
 
-      // Slight gap between segments (1px visual gap)
-      const gap = 1.5;
-      const segIn = Math.max(0, pIn * circumference - gap);
-      const segCR = Math.max(0, pCR * circumference - gap);
-      const segCW = Math.max(0, pCW * circumference - gap);
+    if (isMax) {
+      heroEl.textContent = fmtT(totalCR);
+      heroEl.className = totalCR > 0 ? 'hero-val positive' : 'hero-val zero';
+      heroSub.textContent = 'tokens served from cache';
 
-      const offIn = 0;
-      const offCR = -(pIn * circumference);
-      const offCW = -((pIn + pCR) * circumference);
+      el.querySelector('#csv2-without').textContent = fmtT(totalIn + totalCR) + ' input tokens';
+      el.querySelector('#csv2-actual').textContent = fmtT(totalIn) + ' fresh input';
+      el.querySelector('#csv2-saved').textContent = fmtT(totalCR) + ' from cache';
+      el.querySelector('#csv2-overhead').textContent = fmtT(totalCW) + ' cache writes';
+      el.querySelector('#csv2-rate').textContent = hitRate > 0 ? Math.round(hitRate) + '% hit rate' : '--';
 
-      arcInput.setAttribute('stroke-dasharray', segIn + ' ' + (circumference - segIn));
-      arcInput.setAttribute('stroke-dashoffset', offIn);
-
-      arcCR.setAttribute('stroke-dasharray', segCR + ' ' + (circumference - segCR));
-      arcCR.setAttribute('stroke-dashoffset', offCR);
-
-      arcCW.setAttribute('stroke-dasharray', segCW + ' ' + (circumference - segCW));
-      arcCW.setAttribute('stroke-dashoffset', offCW);
+      var lbls = el.querySelectorAll('.breakdown .lbl');
+      if (lbls.length >= 5) {
+        lbls[0].textContent = 'Total input demand';
+        lbls[1].textContent = 'Fresh tokens sent';
+        lbls[2].textContent = 'Served from cache';
+        lbls[3].textContent = 'Cache write overhead';
+        lbls[4].textContent = 'Cache efficiency';
+      }
     } else {
-      // Empty state: show full background ring only
-      arcInput.setAttribute('stroke-dasharray', '0 ' + circumference);
-      arcCR.setAttribute('stroke-dasharray', '0 ' + circumference);
-      arcCW.setAttribute('stroke-dasharray', '0 ' + circumference);
+      if (netSavings > 0) {
+        heroEl.textContent = '+' + fmt(netSavings) + cs;
+        heroEl.className = 'hero-val positive';
+      } else if (netSavings < 0) {
+        heroEl.textContent = '-' + fmt(Math.abs(netSavings)) + cs;
+        heroEl.className = 'hero-val negative';
+      } else {
+        heroEl.textContent = fmt(0) + cs;
+        heroEl.className = 'hero-val zero';
+      }
+      heroSub.textContent = 'net savings';
+
+      el.querySelector('#csv2-without').textContent = fmt(withoutCache) + cs;
+      el.querySelector('#csv2-actual').textContent = fmt(actualCost) + cs;
+      el.querySelector('#csv2-saved').textContent = '+' + fmt(cacheSaved) + cs;
+      el.querySelector('#csv2-overhead').textContent = '-' + fmt(cwCost) + cs;
+      el.querySelector('#csv2-rate').textContent = savingsRate > 0 ? Math.round(savingsRate) + '% of bill' : '--';
+
+      var lbls = el.querySelectorAll('.breakdown .lbl');
+      if (lbls.length >= 5) {
+        lbls[0].textContent = 'Without cache';
+        lbls[1].textContent = 'Actual cost';
+        lbls[2].textContent = 'Cache saved';
+        lbls[3].textContent = 'Cache write overhead';
+        lbls[4].textContent = 'Savings rate';
+      }
     }
 
-    // Donut center
-    const pctDisplay = cacheHit >= 95 ? cacheHit.toFixed(1) + '%' : Math.round(cacheHit) + '%';
-    el.querySelector('#cs-donut-pct').textContent = pctDisplay;
+    var hitDisplay = hitRate >= 95 ? hitRate.toFixed(1) + '%' : Math.round(hitRate) + '%';
+    el.querySelector('#csv2-hit').textContent = hitDisplay;
+    var bar = el.querySelector('#csv2-bar');
+    bar.style.width = Math.min(hitRate, 100) + '%';
+    bar.style.background = hitRate >= 90 ? 'var(--c-secondary)' : hitRate >= 70 ? 'var(--c-warm)' : 'var(--c-danger)';
 
-    // Donut legend
-    el.querySelector('#cs-dl-input').textContent = 'Input ' + fmt(totalIn);
-    el.querySelector('#cs-dl-cr').textContent = 'Cache Read ' + fmt(totalCR);
-    el.querySelector('#cs-dl-cw').textContent = 'Cache Write ' + fmt(totalCW);
-
-    // --- Stats row ---
-    el.querySelector('#cs-hit-rate').textContent = pctDisplay;
-    el.querySelector('#cs-tokens-saved').textContent = fmt(totalCR);
-    el.querySelector('#cs-cost-saved').textContent = fmtC(costSaved);
-    el.querySelector('#cs-cw-cost').textContent = fmtC(cwCost);
-
-    const netEl = el.querySelector('#cs-net');
-    netEl.textContent = (netSavings >= 0 ? '+' : '-') + fmtC(Math.abs(netSavings));
-    netEl.className = 'stat-val ' + (netSavings >= 0 ? 'stat-positive' : 'stat-negative');
-
-    // --- Segmented bar ---
-    if (totalAll > 0) {
-      el.querySelector('#cs-sb-in').style.width = (totalIn / totalAll * 100) + '%';
-      el.querySelector('#cs-sb-cr').style.width = (totalCR / totalAll * 100) + '%';
-      el.querySelector('#cs-sb-cw').style.width = (totalCW / totalAll * 100) + '%';
-      el.querySelector('#cs-sb-out').style.width = (totalOut / totalAll * 100) + '%';
+    var note = el.querySelector('#csv2-note');
+    if (isMax && totalCR > 0) {
+      note.textContent = 'API-equivalent savings: ' + fmt(netSavings > 0 ? netSavings : 0);
+    } else if (totalCR > 0) {
+      note.textContent = fmtT(totalCR) + ' tokens served from cache';
     } else {
-      el.querySelector('#cs-sb-in').style.width = '0%';
-      el.querySelector('#cs-sb-cr').style.width = '0%';
-      el.querySelector('#cs-sb-cw').style.width = '0%';
-      el.querySelector('#cs-sb-out').style.width = '0%';
+      note.textContent = 'No cache data yet';
     }
-
-    const pctOf = (v) => totalAll > 0 ? Math.round(v / totalAll * 100) : 0;
-    el.querySelector('#cs-sl-in').textContent = 'Input ' + pctOf(totalIn) + '%';
-    el.querySelector('#cs-sl-cr').textContent = 'Read ' + pctOf(totalCR) + '%';
-    el.querySelector('#cs-sl-cw').textContent = 'Write ' + pctOf(totalCW) + '%';
-    el.querySelector('#cs-sl-out').textContent = 'Output ' + pctOf(totalOut) + '%';
   }
 });
 </script>

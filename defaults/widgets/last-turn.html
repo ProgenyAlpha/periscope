@@ -1,87 +1,104 @@
 <style>
-.w-lastturn .lt-idle{text-align:center;color:var(--text-dim);padding:16px;font-size:0.68rem;font-style:italic}
-.w-lastturn .lt-grid{display:grid;grid-template-columns:auto 1fr;gap:4px 12px;font-size:0.7rem;font-family:var(--font-mono)}
-.w-lastturn .lt-key{color:var(--text-dim);text-transform:uppercase;font-size:0.55rem;letter-spacing:1px;align-self:center}
-.w-lastturn .lt-val{color:var(--text);font-weight:500}
-.w-lastturn .lt-type{display:inline-block;padding:1px 8px;border-radius:3px;font-size:0.6rem;font-weight:600;text-transform:uppercase;letter-spacing:1px}
-.w-lastturn .lt-type-agent{background:rgba(var(--rgb-primary,245,158,11),0.15);color:var(--c-primary)}
-.w-lastturn .lt-type-tool{background:rgba(var(--rgb-secondary,34,197,94),0.15);color:var(--c-secondary)}
-.w-lastturn .lt-type-chat{background:rgba(var(--rgb-tertiary,6,182,212),0.15);color:var(--c-tertiary)}
-.w-lastturn .lt-tools-list{display:flex;gap:4px;flex-wrap:wrap}
-.w-lastturn .lt-tool-tag{padding:1px 6px;background:var(--bg-inset);border-radius:3px;border:1px solid var(--rule);font-size:0.55rem;color:var(--text-dim)}
-.w-lastturn .lt-cost{color:var(--c-primary);font-size:1rem;font-weight:600}
-.w-lastturn .lt-token-row{display:flex;gap:8px;flex-wrap:wrap}
-.w-lastturn .lt-tok{display:flex;flex-direction:column;gap:1px}
-.w-lastturn .lt-tok-val{font-size:0.72rem;color:var(--text-bright)}
-.w-lastturn .lt-tok-label{font-size:0.48rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.5px}
+.w-activity-feed .feed-list{display:flex;flex-direction:column;gap:4px}
+.w-activity-feed .feed-item{display:grid;grid-template-columns:auto 1fr auto;gap:6px;padding:6px 8px;background:var(--bg-inset);border:1px solid var(--rule);border-radius:4px;font-family:var(--font-mono);font-size:0.62rem;align-items:center;transition:border-color 0.15s}
+.w-activity-feed .feed-item:first-child{border-color:color-mix(in srgb,var(--c-primary) 30%,var(--rule))}
+.w-activity-feed .feed-item:hover{border-color:var(--c-primary)}
+.w-activity-feed .fi-type{display:inline-block;padding:2px 6px;border-radius:3px;font-size:0.52rem;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;min-width:42px;text-align:center}
+.w-activity-feed .fi-agent{background:rgba(var(--rgb-primary,245,158,11),0.15);color:var(--c-primary)}
+.w-activity-feed .fi-tool{background:rgba(var(--rgb-secondary,34,197,94),0.15);color:var(--c-secondary)}
+.w-activity-feed .fi-chat{background:rgba(var(--rgb-tertiary,6,182,212),0.15);color:var(--c-tertiary)}
+.w-activity-feed .fi-body{min-width:0;overflow:hidden}
+.w-activity-feed .fi-session{font-size:0.58rem;color:var(--text);font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.w-activity-feed .fi-detail{font-size:0.52rem;color:var(--text-dim);margin-top:2px;display:flex;gap:6px;flex-wrap:wrap}
+.w-activity-feed .fi-detail .fi-tools{display:flex;gap:2px;flex-wrap:wrap}
+.w-activity-feed .fi-detail .fi-tool-tag{padding:0 4px;background:var(--bg-panel);border:1px solid var(--rule);border-radius:2px;font-size:0.48rem}
+.w-activity-feed .fi-right{text-align:right;white-space:nowrap}
+.w-activity-feed .fi-cost{font-weight:600;color:var(--c-primary);font-size:0.7rem}
+.w-activity-feed .fi-time{font-size:0.5rem;color:var(--text-dim);margin-top:2px}
+.w-activity-feed .feed-empty{text-align:center;color:var(--text-dim);padding:16px;font-size:0.68rem;font-style:italic}
 </style>
 <script>
 Periscope.registerWidget({
   id: 'last-turn',
-  title: 'Last Turn',
+  title: 'Recent Activity',
   size: 'sm',
   priority: 12,
   init(el) {
-    el.innerHTML = `
-      <div class="widget-title">Last Turn</div>
-      <div class="w-lastturn">
-        <div class="lt-idle" id="lt-idle">Waiting for data...</div>
-        <div class="lt-grid" id="lt-grid" style="display:none">
-          <span class="lt-key">Type</span><span class="lt-val" id="lt-type">--</span>
-          <span class="lt-key">Cost</span><span class="lt-val lt-cost" id="lt-cost">$0.00</span>
-          <span class="lt-key">Model</span><span class="lt-val" id="lt-model">--</span>
-          <span class="lt-key">Tokens</span>
-          <div class="lt-token-row">
-            <div class="lt-tok"><span class="lt-tok-val" id="lt-in">0</span><span class="lt-tok-label">Input</span></div>
-            <div class="lt-tok"><span class="lt-tok-val" id="lt-cr">0</span><span class="lt-tok-label">Cache R</span></div>
-            <div class="lt-tok"><span class="lt-tok-val" id="lt-cw">0</span><span class="lt-tok-label">Cache W</span></div>
-            <div class="lt-tok"><span class="lt-tok-val" id="lt-out">0</span><span class="lt-tok-label">Output</span></div>
-          </div>
-          <span class="lt-key">Tools</span><div class="lt-tools-list" id="lt-tools">--</div>
-        </div>
-      </div>`;
+    el.innerHTML =
+      '<div class="widget-title">Recent Activity</div>' +
+      '<div class="w-activity-feed">' +
+        '<div class="feed-list" id="af-list"><div class="feed-empty">Waiting for data...</div></div>' +
+      '</div>';
   },
   render(el, data) {
-    // Find the most recently updated sidecar
-    const sidecars = data.sidecars || [];
+    var sidecars = data.sidecars || [];
     if (sidecars.length === 0) return;
 
-    // First sidecar is most recent (ordered by updated_at DESC)
-    const latest = sidecars[0];
-    const lt = latest?.data?.lastTurn;
-    if (!lt) return;
-
-    el.querySelector('#lt-idle').style.display = 'none';
-    el.querySelector('#lt-grid').style.display = '';
-
-    const fmt = n => n >= 1e6 ? (n/1e6).toFixed(1)+'M' : n >= 1e3 ? (n/1e3).toFixed(1)+'K' : n.toString();
-    const fmtC = v => v >= 10 ? '$'+v.toFixed(1) : v >= 1 ? '$'+v.toFixed(2) : '$'+v.toFixed(3);
-
-    // Type badge
-    const typeEl = el.querySelector('#lt-type');
-    const typeClass = lt.type === 'agent' ? 'lt-type-agent' : lt.type === 'tool' ? 'lt-type-tool' : 'lt-type-chat';
-    typeEl.innerHTML = `<span class="lt-type ${typeClass}">${lt.type||'unknown'}</span>`;
-
-    el.querySelector('#lt-cost').textContent = fmtC(lt.cost||0);
-
-    // Model - shorten
-    let model = lt.model || '--';
-    model = model.replace('claude-', '').replace(/-20\d{6}$/, '');
-    el.querySelector('#lt-model').textContent = model;
-
-    el.querySelector('#lt-in').textContent = fmt(lt.input||0);
-    el.querySelector('#lt-cr').textContent = fmt(lt.cache_read||0);
-    el.querySelector('#lt-cw').textContent = fmt(lt.cache_write||0);
-    el.querySelector('#lt-out').textContent = fmt(lt.output||0);
-
-    // Tools
-    const toolsEl = el.querySelector('#lt-tools');
-    const tools = lt.tools || [];
-    if (tools.length === 0) {
-      toolsEl.innerHTML = '<span style="color:var(--text-dim);font-size:0.6rem">none</span>';
-    } else {
-      toolsEl.innerHTML = tools.map(t => `<span class="lt-tool-tag">${t}</span>`).join('');
+    // Collect last turn from each session, sorted by recency
+    var items = [];
+    for (var i = 0; i < sidecars.length; i++) {
+      var sc = sidecars[i];
+      var lt = sc.data && sc.data.lastTurn;
+      if (!lt) continue;
+      items.push({
+        sid: sc.id,
+        type: lt.type || 'unknown',
+        cost: lt.cost || 0,
+        model: (lt.model || '').replace(/^claude-/,'').replace(/-20\d{6}$/,''),
+        tools: lt.tools || [],
+        input: lt.input || 0,
+        output: lt.output || 0,
+        updatedAt: sc.updated_at || ''
+      });
     }
+
+    // Sort by updated_at descending (most recent first)
+    items.sort(function(a, b) {
+      if (a.updatedAt > b.updatedAt) return -1;
+      if (a.updatedAt < b.updatedAt) return 1;
+      return 0;
+    });
+
+    var list = el.querySelector('#af-list');
+    var top5 = items.slice(0, 4);
+
+    if (top5.length === 0) {
+      list.innerHTML = '<div class="feed-empty">No turn data yet</div>';
+      return;
+    }
+
+    var now = Date.now();
+    var fmtC = function(v) { return v >= 1 ? '$' + v.toFixed(2) : '$' + v.toFixed(3); };
+    var fmtAgo = function(ts) {
+      if (!ts) return '';
+      var diff = now - new Date(ts).getTime();
+      if (diff < 60000) return 'just now';
+      if (diff < 3600000) return Math.round(diff / 60000) + 'm ago';
+      if (diff < 86400000) return Math.round(diff / 3600000) + 'h ago';
+      return Math.round(diff / 86400000) + 'd ago';
+    };
+
+    list.innerHTML = top5.map(function(item) {
+      var typeClass = item.type === 'agent' ? 'fi-agent' : item.type === 'tool' ? 'fi-tool' : 'fi-chat';
+      var label = sessionLabel(item.sid, data);
+      var toolTags = item.tools.length > 0
+        ? '<span class="fi-tools">' + item.tools.slice(0,3).map(function(t) { return '<span class="fi-tool-tag">' + t + '</span>'; }).join('') + (item.tools.length > 3 ? '<span class="fi-tool-tag">+' + (item.tools.length - 3) + '</span>' : '') + '</span>'
+        : '';
+      return '<div class="feed-item">' +
+        '<span class="fi-type ' + typeClass + '">' + item.type + '</span>' +
+        '<div class="fi-body">' +
+          '<div class="fi-session" title="' + item.sid + '">' + label + '</div>' +
+          '<div class="fi-detail">' +
+            '<span>' + item.model + '</span>' +
+            toolTags +
+          '</div>' +
+        '</div>' +
+        '<div class="fi-right">' +
+          '<div class="fi-cost">' + fmtC(item.cost) + '</div>' +
+          '<div class="fi-time">' + fmtAgo(item.updatedAt) + '</div>' +
+        '</div>' +
+      '</div>';
+    }).join('');
   }
 });
 </script>

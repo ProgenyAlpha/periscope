@@ -119,6 +119,7 @@ Periscope.registerWidget({
     const sidecars = data.sidecars || [];
     const meta = data.sessionMeta || {};
     el.querySelector('#sl-count').textContent = sidecars.length + ' session' + (sidecars.length !== 1 ? 's' : '');
+    el._slFullData = data;
 
     // Pre-process rows
     el._slData = sidecars.map(s => {
@@ -228,10 +229,11 @@ function _slRender(el) {
     const isExpanded = el._slExpanded === r.id;
     const expandedClass = isExpanded ? ' row-expanded' : '';
 
+    var slabel = (typeof sessionLabel === 'function' && el._slFullData) ? sessionLabel(r.id, el._slFullData) : sid;
     html += `<tr class="row-data${expandedClass}" data-sid="${r.id}">
       <td class="num-col">${rowNum}</td>
-      <td class="sid">${sid}</td>
-      <td class="col-proj proj" title="${r.proj.replace(/"/g,'&quot;')}">${r.summary || shortProj(r.proj) || '--'}</td>
+      <td class="sid" title="${r.id}">${sid}</td>
+      <td class="col-proj proj" title="${r.proj.replace(/"/g,'&quot;')}">${r.summary || slabel || shortProj(r.proj) || '--'}</td>
       <td class="${costClass}">${r.c ? fmtCost(r.cost) : '<span class="null-val">--</span>'}</td>
       <td>${r.c ? r.turns : '<span class="null-val">--</span>'}</td>
       <td>${r.c ? fmtK(r.totalTok) : '<span class="null-val">--</span>'}</td>

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -296,6 +297,7 @@ func hookDisplay() {
 
 	home, _ := os.UserHomeDir()
 	stateDir := filepath.Join(home, ".claude", "hooks", "cost-state")
+	claudeDir := filepath.Join(home, ".claude")
 	statePath := filepath.Join(stateDir, payload.SessionID+".json")
 
 	if _, err := os.Stat(statePath); os.IsNotExist(err) {
@@ -324,6 +326,28 @@ func hookDisplay() {
 	c := state.Cumulative
 	totalCalls := c.AgentCalls + c.ToolCalls + c.ChatCalls
 
+	// Append history entry (every prompt submission = data point for charts)
+	shortSid := payload.SessionID
+	if len(shortSid) > 8 {
+		shortSid = shortSid[:8]
+	}
+	historyEntry := map[string]any{
+		"ts":    time.Now().UTC().Format("2006-01-02T15:04:05Z"),
+		"sid":   shortSid,
+		"input": c.Input,
+		"cr":    c.CacheRead,
+		"cw":    c.CacheWrite,
+		"out":   c.Output,
+		"cost":  math.Round(c.Cost*100) / 100,
+		"turns": totalCalls,
+	}
+	histLine, _ := json.Marshal(historyEntry)
+	histPath := filepath.Join(stateDir, "usage-history.jsonl")
+	if hf, err := os.OpenFile(histPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); err == nil {
+		hf.Write(append(histLine, '\n'))
+		hf.Close()
+	}
+
 	// Cache hit rate
 	totalIn := c.Input + c.CacheRead
 	cacheHit := 0.0
@@ -347,7 +371,6 @@ func hookDisplay() {
 		for name, stat := range c.Tools {
 			tools = append(tools, toolEntry{name, stat.Calls, stat.Weighted})
 		}
-		// Sort by weighted descending (simple selection)
 		for i := 0; i < len(tools); i++ {
 			for j := i + 1; j < len(tools); j++ {
 				if tools[j].weighted > tools[i].weighted {
@@ -367,20 +390,42 @@ func hookDisplay() {
 		toolStr = strings.Join(parts, " | ")
 	}
 
-	// Rate limits
+	// Refresh usage cache if stale (>30s), fetch from API if needed
+	usage := hookRefreshUsage(stateDir, claudeDir)
+
+	// Rate limits + extra usage
 	rateStr := ""
-	cacheFile := filepath.Join(stateDir, "usage-api-cache.json")
-	if data, err := os.ReadFile(cacheFile); err == nil {
-		data = stripBOM(data)
-		var usage map[string]any
-		if json.Unmarshal(data, &usage) == nil {
-			pct5hr := intOrDefault(usage["pct5hr"], -1)
-			pctWk := intOrDefault(usage["pctWeekly"], -1)
-			if pct5hr >= 0 {
-				rateStr = fmt.Sprintf("5hr [%s] %d%% | Weekly [%s] %d%%",
-					progressBar(pct5hr, 20), pct5hr, progressBar(pctWk, 20), pctWk)
+	extraStr := ""
+	pct5hr := -1
+	pctWk := -1
+	if usage != nil {
+		pct5hr = intOrDefault(usage["pct5hr"], -1)
+		pctWk = intOrDefault(usage["pctWeekly"], -1)
+		if pct5hr >= 0 {
+			rateStr = fmt.Sprintf("5hr [%s] %d%% | Weekly [%s] %d%%",
+				progressBar(pct5hr, 20), pct5hr, progressBar(pctWk, 20), pctWk)
+		}
+		if eu, ok := usage["extra_usage"].(map[string]any); ok {
+			enabled, _ := eu["is_enabled"].(bool)
+			if enabled {
+				used, _ := eu["used_credits"].(float64)
+				lim, _ := eu["monthly_limit"].(float64)
+				extraStr = fmt.Sprintf("Extra usage: ON ($%.2f/$%.2f)", used, lim)
+			} else {
+				extraStr = "Extra usage: OFF"
 			}
 		}
+	}
+
+	// Record limit-history snapshot (throttled to 5min intervals)
+	if usage != nil && pct5hr >= 0 {
+		hookRecordSnapshot(stateDir, usage)
+	}
+
+	// Build forecast projection
+	forecastStr := ""
+	if usage != nil && pct5hr >= 0 {
+		forecastStr = hookBuildForecast(stateDir, usage)
 	}
 
 	// Build output
@@ -393,6 +438,12 @@ func hookDisplay() {
 	if rateStr != "" {
 		lines = append(lines, "Rate limits: "+rateStr)
 	}
+	if forecastStr != "" {
+		lines = append(lines, "Forecast: "+forecastStr)
+	}
+	if extraStr != "" {
+		lines = append(lines, extraStr)
+	}
 
 	output := map[string]any{
 		"hookSpecificOutput": map[string]any{
@@ -402,6 +453,383 @@ func hookDisplay() {
 	}
 	data, _ := json.Marshal(output)
 	fmt.Print(string(data))
+}
+
+// hookRefreshUsage returns current usage data, refreshing from the Anthropic API if the
+// cache is stale (>30s). This makes the hook self-sufficient even when the periscope server
+// isn't running.
+func hookRefreshUsage(stateDir, claudeDir string) map[string]any {
+	cachePath := filepath.Join(stateDir, "usage-api-cache.json")
+
+	// Read existing cache
+	cached := readUsageCache(cachePath)
+	if cached != nil {
+		if fetched, ok := cached["fetched_at"].(float64); ok {
+			if time.Since(time.Unix(int64(fetched), 0)) < 30*time.Second {
+				return cached // Fresh enough
+			}
+		}
+	}
+
+	// Need refresh — read OAuth token
+	credPath := filepath.Join(claudeDir, ".credentials.json")
+	credData, err := os.ReadFile(credPath)
+	if err != nil {
+		return cached // No creds, use stale cache
+	}
+	var creds struct {
+		ClaudeAiOauth struct {
+			AccessToken string `json:"accessToken"`
+		} `json:"claudeAiOauth"`
+	}
+	if json.Unmarshal(credData, &creds) != nil || creds.ClaudeAiOauth.AccessToken == "" {
+		return cached
+	}
+
+	// Fetch from Anthropic API (3s timeout — acceptable in UserPromptSubmit hook)
+	req, _ := http.NewRequest("GET", "https://api.anthropic.com/api/oauth/usage", nil)
+	req.Header.Set("Authorization", "Bearer "+creds.ClaudeAiOauth.AccessToken)
+	req.Header.Set("User-Agent", "periscope-hook")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("anthropic-version", "2023-06-01")
+	req.Header.Set("anthropic-beta", "oauth-2025-04-20")
+
+	client := &http.Client{Timeout: 3 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return cached
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != 200 {
+		return cached
+	}
+
+	// Parse — same structure as store.go fetchUsage
+	var apiResp struct {
+		FiveHour       *usageWindow `json:"five_hour"`
+		SevenDay       *usageWindow `json:"seven_day"`
+		SevenDaySonnet *usageWindow `json:"seven_day_sonnet"`
+		ExtraUsage     *struct {
+			IsEnabled    bool     `json:"is_enabled"`
+			MonthlyLimit *float64 `json:"monthly_limit"`
+			UsedCredits  float64  `json:"used_credits"`
+		} `json:"extra_usage"`
+	}
+	if json.Unmarshal(body, &apiResp) != nil {
+		return cached
+	}
+
+	usage := map[string]any{
+		"fetched_at": time.Now().Unix(),
+	}
+	if apiResp.FiveHour != nil {
+		usage["pct5hr"] = int(apiResp.FiveHour.Utilization + 0.5)
+		usage["reset5hr"] = apiResp.FiveHour.ResetsAt
+	} else {
+		usage["pct5hr"] = -1
+	}
+	if apiResp.SevenDay != nil {
+		usage["pctWeekly"] = int(apiResp.SevenDay.Utilization + 0.5)
+		usage["resetWeekly"] = apiResp.SevenDay.ResetsAt
+	} else {
+		usage["pctWeekly"] = -1
+	}
+	if apiResp.SevenDaySonnet != nil {
+		usage["pctSonnet"] = int(apiResp.SevenDaySonnet.Utilization + 0.5)
+	} else {
+		usage["pctSonnet"] = -1
+	}
+	if apiResp.ExtraUsage != nil {
+		eu := map[string]any{
+			"is_enabled":   apiResp.ExtraUsage.IsEnabled,
+			"used_credits": apiResp.ExtraUsage.UsedCredits / 100,
+		}
+		if apiResp.ExtraUsage.MonthlyLimit != nil {
+			eu["monthly_limit"] = *apiResp.ExtraUsage.MonthlyLimit / 100
+		}
+		usage["extra_usage"] = eu
+	}
+
+	// Write cache file (same format the server uses)
+	result, _ := json.Marshal(usage)
+	os.WriteFile(cachePath, result, 0644)
+
+	return usage
+}
+
+func readUsageCache(path string) map[string]any {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	data = stripBOM(data)
+	var m map[string]any
+	if json.Unmarshal(data, &m) != nil {
+		return nil
+	}
+	return m
+}
+
+// hookRecordSnapshot appends a limit-history entry if >5min since the last one.
+// This keeps the forecast fed with data points even when the periscope server isn't running.
+func hookRecordSnapshot(stateDir string, usage map[string]any) {
+	histPath := filepath.Join(stateDir, "limit-history.jsonl")
+
+	// Check last entry time — throttle to 5min
+	if f, err := os.Open(histPath); err == nil {
+		fi, _ := f.Stat()
+		offset := fi.Size() - 512
+		if offset < 0 {
+			offset = 0
+		}
+		f.Seek(offset, io.SeekStart)
+		scanner := bufio.NewScanner(f)
+		var lastLine string
+		for scanner.Scan() {
+			if l := strings.TrimSpace(scanner.Text()); l != "" {
+				lastLine = l
+			}
+		}
+		f.Close()
+
+		if lastLine != "" {
+			var entry map[string]any
+			if json.Unmarshal([]byte(lastLine), &entry) == nil {
+				if ts, ok := entry["ts"].(string); ok {
+					if t, err := time.Parse(time.RFC3339, ts); err == nil {
+						if time.Since(t) < 5*time.Minute {
+							return
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// Build snapshot
+	snap := map[string]any{
+		"ts":        time.Now().UTC().Format(time.RFC3339),
+		"pct5hr":    intOrDefault(usage["pct5hr"], -1),
+		"pctWeekly": intOrDefault(usage["pctWeekly"], -1),
+	}
+	if v, ok := usage["reset5hr"].(string); ok {
+		snap["reset5hr"] = v
+	}
+	if v, ok := usage["resetWeekly"].(string); ok {
+		snap["resetWeekly"] = v
+	}
+
+	line, _ := json.Marshal(snap)
+	if f, err := os.OpenFile(histPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); err == nil {
+		f.Write(append(line, '\n'))
+		f.Close()
+	}
+}
+
+// hookBuildForecast calculates projected usage at reset time.
+// 5hr window: rate-based (blended current 30min rate + average rate).
+// Weekly window: duty-cycle adjusted burn rate (stable across sleep/wake cycles).
+func hookBuildForecast(stateDir string, usage map[string]any) string {
+	histPath := filepath.Join(stateDir, "limit-history.jsonl")
+
+	data, err := os.ReadFile(histPath)
+	if err != nil {
+		return ""
+	}
+
+	// Parse last 60 entries
+	allLines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	start := len(allLines) - 60
+	if start < 0 {
+		start = 0
+	}
+
+	type limitPoint struct {
+		ts     time.Time
+		pct5hr float64
+		pctWk  float64
+	}
+
+	var pts []limitPoint
+	for _, line := range allLines[start:] {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var entry map[string]any
+		if json.Unmarshal([]byte(line), &entry) != nil {
+			continue
+		}
+		tsStr, ok := entry["ts"].(string)
+		if !ok {
+			continue
+		}
+		t, err := time.Parse(time.RFC3339, tsStr)
+		if err != nil {
+			continue
+		}
+		pts = append(pts, limitPoint{
+			ts:     t,
+			pct5hr: floatOrDefault(entry["pct5hr"], -1),
+			pctWk:  floatOrDefault(entry["pctWeekly"], -1),
+		})
+	}
+
+	if len(pts) < 3 {
+		return ""
+	}
+
+	now := time.Now().UTC()
+	pct5hr := intOrDefault(usage["pct5hr"], -1)
+	pctWk := intOrDefault(usage["pctWeekly"], -1)
+	reset5hr, _ := usage["reset5hr"].(string)
+	resetWk, _ := usage["resetWeekly"].(string)
+
+	// Load duty cycle data (written by dashboard for weekly projection stability)
+	dutyHrs := 24.0
+	dutyCachePath := filepath.Join(stateDir, "duty-cache.json")
+	if dcData, err := os.ReadFile(dutyCachePath); err == nil {
+		var dc map[string]any
+		if json.Unmarshal(dcData, &dc) == nil {
+			if updAt, ok := dc["updated_at"].(float64); ok {
+				if time.Since(time.Unix(int64(updAt), 0)) < time.Hour {
+					if dh, ok := dc["activeHrsPerDay"].(float64); ok && dh > 0 {
+						dutyHrs = dh
+					}
+				}
+			}
+		}
+	}
+
+	type windowSpec struct {
+		label, resetStr string
+		current         int
+		use5hr          bool // true = 5hr rate-based, false = weekly duty-adjusted
+	}
+	windows := []windowSpec{
+		{"5h", reset5hr, pct5hr, true},
+		{"wk", resetWk, pctWk, false},
+	}
+
+	var parts []string
+	for _, w := range windows {
+		if w.current < 0 || w.resetStr == "" {
+			continue
+		}
+		resetTime, err := time.Parse(time.RFC3339, w.resetStr)
+		if err != nil {
+			continue
+		}
+		hrsLeft := resetTime.Sub(now).Hours()
+		if hrsLeft <= 0 {
+			continue
+		}
+
+		// Build series with reset detection (big drop = window rolled over)
+		var series []limitPoint
+		prev := -1.0
+		for _, pt := range pts {
+			v := pt.pct5hr
+			if !w.use5hr {
+				v = pt.pctWk
+			}
+			if v < 0 {
+				continue
+			}
+			if prev >= 0 && v < prev-15 {
+				series = nil // Reset detected
+			}
+			series = append(series, pt)
+			prev = v
+		}
+		if len(series) < 2 {
+			continue
+		}
+
+		var proj int
+		var tl, rateStr string
+
+		if !w.use5hr {
+			// Weekly: duty-adjusted active-hours projection
+			elapsedHrs := 168 - hrsLeft
+			activeElapsed := math.Max(0.5, (elapsedHrs/24)*dutyHrs)
+			activeRemaining := (hrsLeft / 24) * dutyHrs
+			burnRate := float64(w.current) / activeElapsed
+			proj = int(math.Round(float64(w.current) + burnRate*activeRemaining))
+			tl = fmt.Sprintf("%.1fd", hrsLeft/24)
+			rateStr = fmt.Sprintf("%.1f%%/ah", burnRate)
+		} else {
+			// 5hr: current rate (last 30min) blended with average rate
+			cutoff := now.Add(-30 * time.Minute)
+			var recent []limitPoint
+			for _, s := range series {
+				if !s.ts.Before(cutoff) {
+					recent = append(recent, s)
+				}
+			}
+
+			curRate := 0.0
+			if len(recent) >= 2 {
+				first, last := recent[0], recent[len(recent)-1]
+				dh := last.ts.Sub(first.ts).Hours()
+				if dh > 0.01 {
+					curRate = (last.pct5hr - first.pct5hr) / dh
+				}
+			}
+
+			firstAll, lastAll := series[0], series[len(series)-1]
+			dAll := lastAll.ts.Sub(firstAll.ts).Hours()
+			avgRate := 0.0
+			if dAll > 0.05 {
+				avgRate = (lastAll.pct5hr - firstAll.pct5hr) / dAll
+			}
+
+			// Weighted blend: 60% current, 40% average
+			rate := 0.0
+			if curRate > 0 && avgRate > 0 {
+				rate = 0.6*curRate + 0.4*avgRate
+			} else if curRate > 0 {
+				rate = curRate
+			} else if avgRate > 0 {
+				rate = avgRate
+			}
+
+			proj = int(math.Round(float64(w.current) + rate*hrsLeft))
+			tl = fmt.Sprintf("%.1fh", hrsLeft)
+			rateStr = fmt.Sprintf("%.1f%%/h", rate)
+		}
+
+		verdict := "OK"
+		if !w.use5hr && proj <= w.current {
+			verdict = "idle"
+		} else if proj > 100 {
+			verdict = "OVER LIMIT"
+		} else if proj > 90 {
+			verdict = "SLOW DOWN"
+		} else if proj > 70 {
+			verdict = "monitor"
+		}
+
+		parts = append(parts, fmt.Sprintf("%s:%d%%->~%d%%(%s left, %s) %s",
+			w.label, w.current, proj, tl, rateStr, verdict))
+	}
+
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.Join(parts, " | ")
+}
+
+func floatOrDefault(v any, def float64) float64 {
+	switch n := v.(type) {
+	case float64:
+		return n
+	case int:
+		return float64(n)
+	}
+	return def
 }
 
 // --- Helpers ---

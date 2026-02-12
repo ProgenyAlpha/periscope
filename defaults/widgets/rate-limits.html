@@ -1,86 +1,99 @@
 <style>
 /* Rate Limit HUD — .w-rlhud namespace */
-.w-rlhud{display:flex;gap:24px;align-items:stretch;background:var(--bg-inset);border:1px solid var(--rule);border-radius:12px;padding:24px}
+.w-rlhud{display:flex;gap:16px;align-items:stretch;background:var(--bg-inset);border:1px solid var(--rule);border-radius:12px;padding:14px 16px}
 .w-rlhud:hover{border-color:color-mix(in srgb,var(--rule) 50%,var(--text-dim));box-shadow:0 0 20px var(--glow)}
 
 /* Gauges column */
-.w-rlhud .hud-gauges{display:flex;flex-direction:column;align-items:center;gap:8px;flex-shrink:0}
-.w-rlhud .hud-gauges-row{display:flex;gap:20px;align-items:center}
-.w-rlhud .hud-gauge{display:flex;flex-direction:column;align-items:center;gap:6px}
+.w-rlhud .hud-gauges{display:flex;gap:14px;align-items:center;flex-shrink:0}
+.w-rlhud .hud-gauge{display:flex;flex-direction:column;align-items:center;gap:3px}
 .w-rlhud .hud-gauge svg{filter:drop-shadow(0 0 8px var(--glow));transition:filter 0.3s}
 .w-rlhud .hud-gauge:hover svg{filter:drop-shadow(0 0 14px var(--glow))}
 .w-rlhud .gauge-ring-bg{fill:none;stroke:var(--rule);stroke-width:8;opacity:0.4}
 .w-rlhud .gauge-ring-fill{fill:none;stroke-width:8;stroke-linecap:round;transition:stroke-dashoffset 0.8s cubic-bezier(0.4,0,0.2,1),stroke 0.4s}
 .w-rlhud .gauge-ring-glow{fill:none;stroke-width:12;stroke-linecap:round;opacity:0.15;transition:stroke-dashoffset 0.8s cubic-bezier(0.4,0,0.2,1)}
-.w-rlhud .gauge-center-val{font-family:var(--font-mono);font-size:18px;font-weight:700;fill:var(--text-bright,var(--text));text-anchor:middle;dominant-baseline:central;font-variant-numeric:tabular-nums}
-.w-rlhud .gauge-center-label{font-family:var(--font-ui,var(--font-mono));font-size:10px;font-weight:700;fill:var(--text-dim);text-anchor:middle;letter-spacing:1.5px;text-transform:uppercase}
-.w-rlhud .hud-gauge-reset{font-family:var(--font-mono);font-size:9px;color:var(--text-dim);min-height:14px;text-align:center}
+.w-rlhud .gauge-center-val{font-family:var(--font-mono);font-size:16px;font-weight:700;fill:var(--text-bright,var(--text));text-anchor:middle;dominant-baseline:central;font-variant-numeric:tabular-nums}
+.w-rlhud .gauge-center-label{font-family:var(--font-ui,var(--font-mono));font-size:9px;font-weight:700;fill:var(--text-dim);text-anchor:middle;letter-spacing:1.5px;text-transform:uppercase}
+.w-rlhud .hud-gauge-reset{font-family:var(--font-mono);font-size:8px;color:var(--text-dim);min-height:12px;text-align:center;line-height:1.3}
+.w-rlhud .hud-gauge-reset .at-limit{color:var(--c-danger,#ef4444);font-weight:600;text-transform:uppercase;letter-spacing:0.5px}
 
-/* Sync area under gauges */
-.w-rlhud .hud-gauge-sync{display:flex;flex-direction:column;align-items:center;gap:4px;margin-top:6px}
-.w-rlhud .sync-btn{font-family:var(--font-ui,var(--font-mono));font-weight:600;font-size:11px;letter-spacing:1.5px;text-transform:uppercase;padding:5px 14px;border:1px solid var(--rule);background:var(--bg-void,var(--bg-inset));color:var(--text);cursor:pointer;transition:all .15s;border-radius:4px}
+/* Sync area */
+.w-rlhud .hud-gauge-sync{display:flex;flex-direction:column;align-items:center;gap:3px;margin-top:4px}
+.w-rlhud .sync-btn{font-family:var(--font-ui,var(--font-mono));font-weight:600;font-size:10px;letter-spacing:1.5px;text-transform:uppercase;padding:4px 12px;border:1px solid var(--rule);background:var(--bg-void,var(--bg-inset));color:var(--text);cursor:pointer;transition:all .15s;border-radius:4px}
 .w-rlhud .sync-btn:hover{border-color:var(--c-primary);color:var(--c-primary);box-shadow:0 0 12px var(--glow)}
-.w-rlhud .data-age{font-family:var(--font-mono);font-size:10px;color:var(--text-dim)}
+.w-rlhud .data-age{font-family:var(--font-mono);font-size:9px;color:var(--text-dim)}
 
 /* Intel cards 2x2 grid */
-.w-rlhud .hud-intel{flex:1;display:grid;grid-template-columns:repeat(2,1fr);gap:10px;min-width:0}
-.w-rlhud .hud-intel-card{background:color-mix(in srgb,var(--bg-inset) 60%,transparent);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);border:1px solid var(--rule);border-radius:8px;padding:12px 14px;transition:transform .2s,border-color .2s}
+.w-rlhud .hud-intel{flex:1;display:grid;grid-template-columns:repeat(2,1fr);gap:8px;min-width:0}
+.w-rlhud .hud-intel-card{background:color-mix(in srgb,var(--bg-inset) 60%,transparent);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);border:1px solid var(--rule);border-radius:8px;padding:10px 12px;transition:transform .2s,border-color .2s}
 .w-rlhud .hud-intel-card:hover{transform:translateY(-2px);border-color:color-mix(in srgb,var(--rule) 50%,var(--text-dim));box-shadow:0 0 12px var(--glow)}
-.w-rlhud .ic-label{font-family:var(--font-mono);font-size:9px;color:var(--text-dim);text-transform:uppercase;letter-spacing:1px;margin-bottom:4px}
-.w-rlhud .ic-val{font-family:var(--font-ui,var(--font-mono));font-size:18px;font-weight:700;color:var(--text-bright,var(--text));line-height:1.1;font-variant-numeric:tabular-nums}
-.w-rlhud .ic-sub{font-family:var(--font-mono);font-size:9px;margin-top:3px;color:var(--text-dim)}
+.w-rlhud .ic-label{font-family:var(--font-mono);font-size:8px;color:var(--text-dim);text-transform:uppercase;letter-spacing:1px;margin-bottom:3px}
+.w-rlhud .ic-val{font-family:var(--font-ui,var(--font-mono));font-size:16px;font-weight:700;color:var(--text-bright,var(--text));line-height:1.1;font-variant-numeric:tabular-nums}
+.w-rlhud .ic-sub{font-family:var(--font-mono);font-size:8px;margin-top:2px;color:var(--text-dim)}
 .w-rlhud .ic-val-row{display:flex;gap:4px;align-items:baseline;flex-wrap:wrap}
-.w-rlhud .ic-tag{font-size:12px;color:var(--text-dim)}
-.w-rlhud .ic-timing-line{font-size:14px;line-height:1.6}
+.w-rlhud .ic-tag{font-size:11px;color:var(--text-dim)}
+.w-rlhud .ic-timing-line{font-size:13px;line-height:1.5}
+.w-rlhud .ic-status{font-size:10px;font-weight:600;margin-top:2px;letter-spacing:0.5px}
 
 /* Penguin column */
-.w-rlhud .hud-penguin-wrap{display:flex;flex-direction:column;align-items:center;justify-content:center;min-width:150px;flex-shrink:0}
-.w-rlhud .hud-penguin-wrap .penguin-scene{width:150px;height:140px;margin-bottom:4px}
-.w-rlhud .hud-penguin-wrap .penguin-body{width:100px;height:110px}
-.w-rlhud .hud-penguin-wrap .data-particle{font-size:7px}
-.w-rlhud .hud-penguin-status{font-family:var(--font-mono);font-size:9px;text-align:center;letter-spacing:0.5px;margin-top:2px}
+.w-rlhud .hud-penguin-wrap{display:flex;flex-direction:column;align-items:center;justify-content:center;min-width:130px;flex-shrink:0}
+.w-rlhud .hud-penguin-wrap .penguin-scene{width:130px;height:120px;margin-bottom:2px}
+.w-rlhud .hud-penguin-wrap .penguin-body{width:90px;height:100px}
+.w-rlhud .hud-penguin-wrap .data-particle{font-size:6px}
+.w-rlhud .hud-penguin-status{font-family:var(--font-mono);font-size:8px;text-align:center;letter-spacing:0.5px;margin-top:2px}
 .w-rlhud .hud-penguin-status.live{color:var(--c-secondary)}
 .w-rlhud .hud-penguin-status.live::after{content:'...';display:inline-block;width:1.2em;text-align:left;animation:rlhud-dots 1.5s steps(4,end) infinite}
 @keyframes rlhud-dots{0%{content:''}25%{content:'.'}50%{content:'..'}75%{content:'...'}}
 .w-rlhud .hud-penguin-status.error{color:var(--c-danger)}
 .w-rlhud .hud-penguin-status.stale{color:var(--c-primary)}
 
+/* Extra usage credit bar */
+.w-rlhud .hud-extra{width:100%;margin-top:6px;display:none}
+.w-rlhud .hud-extra.visible{display:block}
+.w-rlhud .hud-extra-label{font-family:var(--font-mono);font-size:8px;color:var(--text-dim);text-transform:uppercase;letter-spacing:1px;margin-bottom:3px;display:flex;align-items:center;gap:6px}
+.w-rlhud .hud-extra-label .eu-dot{width:5px;height:5px;border-radius:50%;flex-shrink:0}
+.w-rlhud .hud-extra-label .eu-dot.on{background:var(--signal,#22c55e);box-shadow:0 0 6px var(--signal,#22c55e)}
+.w-rlhud .hud-extra-label .eu-dot.off{background:var(--text-dim);opacity:0.5}
+.w-rlhud .hud-extra-bar{height:5px;background:var(--rule);border-radius:3px;overflow:hidden}
+.w-rlhud .hud-extra-fill{height:100%;border-radius:3px;transition:width 0.8s cubic-bezier(0.4,0,0.2,1),background 0.4s}
+.w-rlhud .hud-extra-val{font-family:var(--font-mono);font-size:9px;color:var(--text-dim);margin-top:2px;text-align:center}
+
 /* Responsive */
 @media(max-width:1024px){
   .w-rlhud{flex-direction:column;align-items:center}
-  .w-rlhud .hud-gauges-row svg{width:90px;height:90px}
+  .w-rlhud .hud-gauges{justify-content:center}
+  .w-rlhud .hud-gauges svg{width:80px;height:80px}
   .w-rlhud .hud-penguin-wrap{min-width:unset}
-  .w-rlhud .gauge-center-val{font-size:14px}
+  .w-rlhud .gauge-center-val{font-size:13px}
 }
 @media(max-width:640px){
-  .w-rlhud{padding:14px;gap:16px}
-  .w-rlhud .hud-gauges-row svg{width:70px;height:70px}
+  .w-rlhud{padding:10px;gap:12px}
+  .w-rlhud .hud-gauges svg{width:70px;height:70px}
   .w-rlhud .gauge-center-val{font-size:12px}
   .w-rlhud .hud-intel{grid-template-columns:1fr}
 }
 @media(max-width:460px){
-  .w-rlhud .hud-gauges-row{flex-direction:column}
+  .w-rlhud .hud-gauges{flex-direction:column}
 }
 </style>
 <script>
 Periscope.registerWidget({
   id: 'rate-limits',
   title: 'Rate Limit HUD',
-  size: 'xl',
+  size: 'lg',
   priority: 1,
 
   init(el) {
-    var CIRC = (2 * Math.PI * 48).toFixed(1); // r=48 -> ~301.6
+    var CIRC = (2 * Math.PI * 48).toFixed(1);
     el.innerHTML =
       '<div class="widget-title">Rate Limit HUD</div>' +
       '<div class="w-rlhud">' +
 
         /* --- Gauges column --- */
-        '<div class="hud-gauges">' +
-          '<div class="hud-gauges-row">' +
+        '<div style="display:flex;flex-direction:column;align-items:center;gap:6px">' +
+          '<div class="hud-gauges">' +
             /* 5-Hour gauge */
             '<div class="hud-gauge" data-gauge="5hr">' +
-              '<svg width="120" height="120" viewBox="0 0 120 120">' +
+              '<svg width="100" height="100" viewBox="0 0 120 120">' +
                 '<circle class="gauge-ring-bg" cx="60" cy="60" r="48"/>' +
                 '<circle class="gauge-ring-glow" cx="60" cy="60" r="48" stroke-dasharray="' + CIRC + '" stroke-dashoffset="' + CIRC + '" transform="rotate(-90 60 60)"/>' +
                 '<circle class="gauge-ring-fill" cx="60" cy="60" r="48" stroke-dasharray="' + CIRC + '" stroke-dashoffset="' + CIRC + '" transform="rotate(-90 60 60)"/>' +
@@ -89,9 +102,9 @@ Periscope.registerWidget({
               '</svg>' +
               '<div class="hud-gauge-reset" data-reset="5hr"></div>' +
             '</div>' +
-            /* Weekly gauge */
+            /* Weekly gauge — center, with SYNC underneath */
             '<div class="hud-gauge" data-gauge="weekly">' +
-              '<svg width="120" height="120" viewBox="0 0 120 120">' +
+              '<svg width="100" height="100" viewBox="0 0 120 120">' +
                 '<circle class="gauge-ring-bg" cx="60" cy="60" r="48"/>' +
                 '<circle class="gauge-ring-glow" cx="60" cy="60" r="48" stroke-dasharray="' + CIRC + '" stroke-dashoffset="' + CIRC + '" transform="rotate(-90 60 60)"/>' +
                 '<circle class="gauge-ring-fill" cx="60" cy="60" r="48" stroke-dasharray="' + CIRC + '" stroke-dashoffset="' + CIRC + '" transform="rotate(-90 60 60)"/>' +
@@ -99,10 +112,14 @@ Periscope.registerWidget({
                 '<text class="gauge-center-label" x="60" y="72">WEEKLY</text>' +
               '</svg>' +
               '<div class="hud-gauge-reset" data-reset="weekly"></div>' +
+              '<div class="hud-gauge-sync">' +
+                '<button class="sync-btn" data-action="sync">SYNC</button>' +
+                '<span class="data-age">--</span>' +
+              '</div>' +
             '</div>' +
             /* Sonnet gauge */
             '<div class="hud-gauge" data-gauge="sonnet">' +
-              '<svg width="120" height="120" viewBox="0 0 120 120">' +
+              '<svg width="100" height="100" viewBox="0 0 120 120">' +
                 '<circle class="gauge-ring-bg" cx="60" cy="60" r="48"/>' +
                 '<circle class="gauge-ring-glow" cx="60" cy="60" r="48" stroke-dasharray="' + CIRC + '" stroke-dashoffset="' + CIRC + '" transform="rotate(-90 60 60)"/>' +
                 '<circle class="gauge-ring-fill" cx="60" cy="60" r="48" stroke-dasharray="' + CIRC + '" stroke-dashoffset="' + CIRC + '" transform="rotate(-90 60 60)"/>' +
@@ -112,11 +129,8 @@ Periscope.registerWidget({
               '<div class="hud-gauge-reset" data-reset="sonnet"></div>' +
             '</div>' +
           '</div>' +
-          /* Sync button + data age */
-          '<div class="hud-gauge-sync">' +
-            '<button class="sync-btn" data-action="sync">SYNC</button>' +
-            '<span class="data-age">--</span>' +
-          '</div>' +
+          /* Extra usage credit bar — hidden until data arrives */
+          '<div class="hud-extra" data-extra="wrap"></div>' +
         '</div>' +
 
         /* --- Intel cards 2x2 --- */
@@ -139,7 +153,7 @@ Periscope.registerWidget({
   },
 
   render(el, data) {
-    var CIRC = 2 * Math.PI * 48; // ~301.593
+    var CIRC = 2 * Math.PI * 48;
 
     // --- Resolve runtime globals with safe fallbacks ---
     var tColor = typeof thresholdColor === 'function' ? thresholdColor
@@ -165,7 +179,7 @@ Periscope.registerWidget({
         fill.style.stroke = 'var(--text-dim)';
         if (glow) { glow.style.strokeDashoffset = CIRC; glow.style.stroke = 'var(--text-dim)'; }
         if (valEl) valEl.textContent = '--%';
-        if (resetEl) resetEl.textContent = '';
+        if (resetEl) resetEl.innerHTML = '';
         return;
       }
       var clamped = Math.min(Math.max(pct, 0), 100);
@@ -175,15 +189,28 @@ Periscope.registerWidget({
       fill.style.stroke = color;
       if (glow) { glow.style.strokeDashoffset = offset; glow.style.stroke = color; }
       if (valEl) valEl.textContent = Math.round(clamped) + '%';
-      // Reset countdown
+
+      // Reset countdown + at-limit status
       if (resetEl) {
-        if (!resetIso) { resetEl.textContent = ''; return; }
-        var diffMin = Math.round((new Date(resetIso) - Date.now()) / 60000);
-        if (diffMin <= 0) { resetEl.textContent = 'resets now'; return; }
-        if (diffMin < 60) { resetEl.textContent = 'resets ' + diffMin + 'm'; return; }
-        var hrs = Math.floor(diffMin / 60);
-        var mins = diffMin % 60;
-        resetEl.textContent = 'resets ' + hrs + 'h' + (mins > 0 ? mins + 'm' : '');
+        var atLimit = pct >= 100;
+        var resetText = '';
+        if (resetIso) {
+          var diffMin = Math.round((new Date(resetIso) - Date.now()) / 60000);
+          if (diffMin <= 0) {
+            resetText = 'resets now';
+          } else if (diffMin < 60) {
+            resetText = 'resets ' + diffMin + 'm';
+          } else {
+            var hrs = Math.floor(diffMin / 60);
+            var mins = diffMin % 60;
+            resetText = 'resets ' + hrs + 'h' + (mins > 0 ? mins + 'm' : '');
+          }
+        }
+        if (atLimit) {
+          resetEl.innerHTML = '<span class="at-limit">at limit</span>' + (resetText ? ' \u2014 ' + resetText : '');
+        } else {
+          resetEl.innerHTML = resetText;
+        }
       }
     }
 
@@ -210,6 +237,40 @@ Periscope.registerWidget({
       else ageEl.textContent = Math.round(ageSec / 60) + 'm ago';
     }
 
+    // --- Extra Usage ---
+    var extraWrap = el.querySelector('[data-extra="wrap"]');
+    if (extraWrap) {
+      var eu = lu && lu.extra_usage;
+      if (eu) {
+        extraWrap.classList.add('visible');
+        var anyAtLimit = (pctW != null && pctW >= 100) || (pct5 != null && pct5 >= 100);
+        if (eu.is_enabled) {
+          var euUsed = eu.used_credits || 0;
+          var euLimit = eu.monthly_limit;
+          var burning = anyAtLimit && euUsed > 0;
+          var euLabel = burning ? 'BURNING EXTRA USAGE' : 'EXTRA USAGE';
+          if (euLimit != null && euLimit > 0) {
+            var euPct = Math.min(100, (euUsed / euLimit) * 100);
+            var euColor = burning ? 'var(--c-danger)' : euPct < 50 ? 'var(--c-secondary)' : euPct < 80 ? 'var(--c-primary)' : 'var(--c-danger)';
+            extraWrap.innerHTML =
+              '<div class="hud-extra-label"><span class="eu-dot on"></span>' + euLabel + '</div>' +
+              '<div class="hud-extra-bar"><div class="hud-extra-fill" style="width:' + euPct.toFixed(1) + '%;background:' + euColor + '"></div></div>' +
+              '<div class="hud-extra-val">$' + euUsed.toFixed(2) + ' / $' + euLimit.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2}) + '</div>';
+          } else {
+            extraWrap.innerHTML =
+              '<div class="hud-extra-label"><span class="eu-dot on"></span>' + euLabel + ' \u2014 NO LIMIT</div>' +
+              '<div class="hud-extra-val">$' + euUsed.toFixed(2) + ' spent</div>';
+          }
+        } else {
+          extraWrap.innerHTML =
+            '<div class="hud-extra-label"><span class="eu-dot off"></span>EXTRA USAGE: AVAILABLE</div>';
+        }
+      } else {
+        extraWrap.classList.remove('visible');
+        extraWrap.innerHTML = '';
+      }
+    }
+
     // --- Intel cards via prepRateLimitData ---
     var rd = prep ? prep(data) : null;
     var burnCard = el.querySelector('[data-card="burn"]');
@@ -224,6 +285,9 @@ Periscope.registerWidget({
       if (projCard) projCard.innerHTML = emptyMsg;
       if (winCard) winCard.innerHTML = emptyMsg;
     } else {
+      var wkAtLimit = rd.pctW >= 100;
+      var hrAtLimit = rd.pct5 >= 100;
+
       // Burn Rate card
       if (burnCard) {
         var burnWkVal = rd.burnWeeklyActive != null ? rd.burnWeeklyActive : rd.burnWeekly;
@@ -234,38 +298,48 @@ Periscope.registerWidget({
             '<span class="ic-tag">5hr</span>' +
           '</div>' +
           '<div class="ic-val-row">' +
-            '<span class="ic-val" style="color:var(--c-secondary)">' + (burnWkVal || 0).toFixed(2) + '%/h</span>' +
+            '<span class="ic-val" style="color:' + (wkAtLimit ? 'var(--c-danger)' : 'var(--c-secondary)') + '">' + (burnWkVal || 0).toFixed(2) + '%/h</span>' +
             '<span class="ic-tag">wk(active)</span>' +
           '</div>' +
-          '<div class="ic-sub">5hr: per calendar hr | Wk: per active hr</div>';
+          (wkAtLimit ? '<div class="ic-status" style="color:var(--c-danger)">WEEKLY RATE EXCEEDED</div>' :
+           '<div class="ic-sub">5hr: per calendar hr | Wk: per active hr</div>');
       }
 
       // Time to Limit card
       if (ttlCard) {
+        var ttl5Label = hrAtLimit ? '<span style="color:var(--c-danger)">AT LIMIT</span>' :
+          '<span style="color:var(--c-primary)">' + fH(rd.ttl5hr) + '</span>';
+        var ttlWLabel = wkAtLimit ? '<span style="color:var(--c-danger)">AT LIMIT</span>' :
+          '<span style="color:var(--c-secondary)">' + fH(rd.ttlWeekly) + '</span>';
         ttlCard.innerHTML =
           '<div class="ic-label">Time to Limit</div>' +
           '<div class="ic-val-row">' +
-            '<span class="ic-val" style="color:var(--c-primary)">' + fH(rd.ttl5hr) + '</span>' +
+            '<span class="ic-val">' + ttl5Label + '</span>' +
             '<span class="ic-tag">5hr</span>' +
           '</div>' +
           '<div class="ic-val-row">' +
-            '<span class="ic-val" style="color:var(--c-secondary)">' + fH(rd.ttlWeekly) + '</span>' +
+            '<span class="ic-val">' + ttlWLabel + '</span>' +
             '<span class="ic-tag">wk</span>' +
           '</div>' +
-          '<div class="ic-sub">At current burn rate until 100%</div>';
+          (wkAtLimit || hrAtLimit ? '<div class="ic-sub">Waiting for window reset</div>' :
+           '<div class="ic-sub">At current burn rate until 100%</div>');
       }
 
       // Projected at Window End card
       if (projCard) {
         var dutyLabel = rd.duty ? rd.duty.activeHrsPerDay.toFixed(0) + 'h/day)' : 'n/a)';
+        var proj5Color = pColor(rd.proj5hr);
+        var projWColor = pColor(rd.projWeekly);
+        var proj5Text = rd.proj5hr >= 100 ? 'OVER' : rd.proj5hr + '%';
+        var projWText = rd.projWeekly >= 100 ? 'OVER' : rd.projWeekly + '%';
         projCard.innerHTML =
           '<div class="ic-label">Projected at Window End</div>' +
           '<div class="ic-val-row">' +
-            '<span class="ic-val" style="color:' + pColor(rd.proj5hr) + '">' + rd.proj5hr + '%</span>' +
+            '<span class="ic-val" style="color:' + proj5Color + '">' + proj5Text + '</span>' +
             '<span class="ic-tag">5hr</span>' +
           '</div>' +
           '<div class="ic-val-row">' +
-            '<span class="ic-val" style="color:' + pColor(rd.projWeekly) + '">' + rd.projWeekly + '%</span>' +
+            '<span class="ic-val" style="color:' + projWColor + '">' + projWText + '</span>' +
             '<span class="ic-tag">wk</span>' +
           '</div>' +
           '<div class="ic-sub">5hr: rate-based | Wk: duty-adjusted (' + dutyLabel + '</div>';
@@ -285,7 +359,7 @@ Periscope.registerWidget({
             '<span class="ic-tag"> (' + r5time + ')</span>' +
           '</div>' +
           '<div class="ic-timing-line">' +
-            '<span style="color:var(--c-secondary)">Wk</span> resets in <strong>' + fH(rd.remainingWeekly) + '</strong>' +
+            '<span style="color:' + (wkAtLimit ? 'var(--c-danger)' : 'var(--c-secondary)') + '">Wk</span> resets in <strong>' + fH(rd.remainingWeekly) + '</strong>' +
             '<span class="ic-tag"> (' + rWdate + ')</span>' +
           '</div>';
       }

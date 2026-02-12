@@ -24,6 +24,11 @@ glow       = "rgba(224,98,54,0.18)"
 sf-metal   = "#6a747e"
 signal     = "#22c55e"
 
+[terminal]
+bg1 = 234; bg2 = 236; fg = 252; dim = 242
+blue = 75; purple = 141; cyan = 80
+green = 114; yellow = 220; red = 203; peach = 215
+
 [stripe]
 colors = ["#C82337", "#E06236", "#D7AB61", "#2F4C79"]
 width  = "equal"

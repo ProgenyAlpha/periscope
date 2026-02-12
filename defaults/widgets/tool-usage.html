@@ -1,15 +1,19 @@
 <style>
-.w-tools .tool-list{display:flex;flex-direction:column;gap:6px}
+.w-tools .tool-controls{display:flex;justify-content:space-between;align-items:center;margin-bottom:4px}
+.w-tools .tool-filter{font-family:var(--font-mono);font-size:0.58rem;background:var(--bg-inset);border:1px solid var(--rule);border-radius:3px;color:var(--text);padding:3px 6px;cursor:pointer;max-width:160px}
+.w-tools .tool-filter:hover{border-color:var(--c-primary)}
+.w-tools .tool-list{display:flex;flex-direction:column;gap:4px}
 .w-tools .tool-row{display:flex;align-items:center;gap:10px}
 .w-tools .tool-rank{width:16px;font-size:0.55rem;color:var(--text-dim);font-family:var(--font-mono);text-align:right;flex-shrink:0}
 .w-tools .tool-info{flex:1;min-width:0}
 .w-tools .tool-head{display:flex;justify-content:space-between;align-items:baseline;gap:6px}
 .w-tools .tool-name{font-size:0.68rem;font-family:var(--font-mono);color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .w-tools .tool-calls{font-size:0.6rem;color:var(--text-dim);font-family:var(--font-mono);flex-shrink:0}
+.w-tools .tool-sessions{font-size:0.48rem;color:var(--text-dim);font-family:var(--font-mono);margin-left:6px}
 .w-tools .tool-bar{height:3px;background:var(--bg-inset);border-radius:2px;overflow:hidden;margin-top:3px}
 .w-tools .tool-fill{height:100%;border-radius:2px;transition:width 0.5s ease;background:linear-gradient(90deg,var(--c-primary),var(--c-secondary))}
 .w-tools .tool-empty{text-align:center;color:var(--text-dim);padding:16px;font-size:0.68rem;font-style:italic}
-.w-tools .tool-summary{display:flex;gap:16px;margin-top:10px;padding-top:8px;border-top:1px solid var(--rule)}
+.w-tools .tool-summary{display:flex;gap:16px;margin-top:6px;padding-top:6px;border-top:1px solid var(--rule)}
 .w-tools .ts-item{display:flex;flex-direction:column;gap:2px}
 .w-tools .ts-val{font-size:0.9rem;font-weight:600;font-family:var(--font-mono);color:var(--text-bright)}
 .w-tools .ts-label{font-size:0.55rem;text-transform:uppercase;letter-spacing:1px;color:var(--text-dim)}
@@ -21,61 +25,114 @@ Periscope.registerWidget({
   size: 'sm',
   priority: 25,
   init(el) {
-    el.innerHTML = `
-      <div class="widget-title">Top Tools</div>
-      <div class="w-tools">
-        <div class="tool-list" id="tu-list"><div class="tool-empty">No data</div></div>
-        <div class="tool-summary">
-          <div class="ts-item"><span class="ts-val" id="tu-unique">0</span><span class="ts-label">Unique Tools</span></div>
-          <div class="ts-item"><span class="ts-val" id="tu-total">0</span><span class="ts-label">Total Calls</span></div>
-          <div class="ts-item"><span class="ts-val" id="tu-weighted">0</span><span class="ts-label">Weighted MTok</span></div>
-        </div>
-      </div>`;
-  },
-  render(el, data) {
-    const tools = {};
-    (data.sidecars||[]).forEach(s => {
-      const t = s.data?.cumulative?.tools; if (!t) return;
-      Object.entries(t).forEach(([name, stat]) => {
-        if (!tools[name]) tools[name] = {calls:0, weighted:0};
-        tools[name].calls += stat.calls||0;
-        tools[name].weighted += stat.weighted||0;
-      });
-    });
+    el.innerHTML =
+      '<div class="w-tools">' +
+        '<div class="tool-controls">' +
+          '<div class="widget-title" style="margin:0">Top Tools</div>' +
+          '<select class="tool-filter" id="tu-filter"><option value="all">All Sessions</option></select>' +
+        '</div>' +
+        '<div class="tool-list" id="tu-list"><div class="tool-empty">No data</div></div>' +
+        '<div class="tool-summary">' +
+          '<div class="ts-item"><span class="ts-val" id="tu-unique">0</span><span class="ts-label">Unique Tools</span></div>' +
+          '<div class="ts-item"><span class="ts-val" id="tu-total">0</span><span class="ts-label">Total Calls</span></div>' +
+          '<div class="ts-item"><span class="ts-val" id="tu-sessions">0</span><span class="ts-label">Sessions</span></div>' +
+        '</div>' +
+      '</div>';
 
-    const sorted = Object.entries(tools).sort((a,b) => b[1].weighted - a[1].weighted);
-    const list = el.querySelector('#tu-list');
+    el._tuFilter = 'all';
+    el._tuData = null;
+
+    var select = el.querySelector('#tu-filter');
+    select.addEventListener('change', function() {
+      el._tuFilter = select.value;
+      if (el._tuData) {
+        var w = Periscope._widgets.get('tool-usage');
+        if (w) w._renderTools(el, el._tuData);
+      }
+    });
+  },
+
+  render(el, data) {
+    el._tuData = data;
+
+    // Build filter dropdown with session labels
+    var select = el.querySelector('#tu-filter');
+    var currentVal = el._tuFilter;
+    var options = '<option value="all">All Sessions</option>';
+    var sidecars = data.sidecars || [];
+    for (var i = 0; i < sidecars.length; i++) {
+      var sc = sidecars[i];
+      var hasTools = sc.data && sc.data.cumulative && sc.data.cumulative.tools;
+      if (!hasTools) continue;
+      var label = sessionLabel(sc.id, data);
+      var sel = sc.id === currentVal ? ' selected' : '';
+      options += '<option value="' + sc.id + '"' + sel + '>' + label + '</option>';
+    }
+    select.innerHTML = options;
+    if (currentVal !== 'all') select.value = currentVal;
+
+    this._renderTools(el, data);
+  },
+
+  _renderTools(el, data) {
+    var filter = el._tuFilter;
+    var tools = {};
+    var sessionCount = 0;
+    var sidecars = data.sidecars || [];
+
+    for (var i = 0; i < sidecars.length; i++) {
+      var sc = sidecars[i];
+      var t = sc.data && sc.data.cumulative && sc.data.cumulative.tools;
+      if (!t) continue;
+      if (filter !== 'all' && sc.id !== filter) continue;
+      sessionCount++;
+      var entries = Object.entries(t);
+      for (var j = 0; j < entries.length; j++) {
+        var name = entries[j][0];
+        var stat = entries[j][1];
+        if (!tools[name]) tools[name] = { calls: 0, weighted: 0, sessions: 0 };
+        tools[name].calls += stat.calls || 0;
+        tools[name].weighted += stat.weighted || 0;
+        tools[name].sessions++;
+      }
+    }
+
+    var sorted = Object.entries(tools).sort(function(a, b) { return b[1].calls - a[1].calls; });
+    var list = el.querySelector('#tu-list');
 
     if (sorted.length === 0) {
-      list.innerHTML = '<div class="tool-empty">No tool data yet</div>';
+      list.innerHTML = '<div class="tool-empty">No tool data' + (filter !== 'all' ? ' for this session' : ' yet') + '</div>';
       el.querySelector('#tu-unique').textContent = '0';
       el.querySelector('#tu-total').textContent = '0';
-      el.querySelector('#tu-weighted').textContent = '0';
+      el.querySelector('#tu-sessions').textContent = '0';
       return;
     }
 
-    const maxW = sorted[0][1].weighted || 1;
-    const topN = sorted.slice(0, 10);
-    const fmt = n => n >= 1e6 ? (n/1e6).toFixed(1)+'M' : n >= 1e3 ? (n/1e3).toFixed(1)+'K' : n.toString();
+    var maxCalls = sorted[0][1].calls || 1;
+    var topN = sorted.slice(0, 7);
+    var fmtN = function(n) { return n >= 1e6 ? (n/1e6).toFixed(1)+'M' : n >= 1e3 ? (n/1e3).toFixed(1)+'K' : n.toString(); };
 
-    list.innerHTML = topN.map(([name, s], i) => `
-      <div class="tool-row">
-        <span class="tool-rank">${i+1}</span>
-        <div class="tool-info">
-          <div class="tool-head">
-            <span class="tool-name" title="${name}">${name}</span>
-            <span class="tool-calls">${s.calls} calls</span>
-          </div>
-          <div class="tool-bar"><div class="tool-fill" style="width:${(s.weighted/maxW*100).toFixed(1)}%"></div></div>
-        </div>
-      </div>
-    `).join('');
+    list.innerHTML = topN.map(function(entry, i) {
+      var name = entry[0];
+      var s = entry[1];
+      var sessInfo = filter === 'all' && s.sessions > 1 ? '<span class="tool-sessions">' + s.sessions + ' sessions</span>' : '';
+      return '<div class="tool-row">' +
+        '<span class="tool-rank">' + (i + 1) + '</span>' +
+        '<div class="tool-info">' +
+          '<div class="tool-head">' +
+            '<span class="tool-name" title="' + name + '">' + name + '</span>' +
+            '<span class="tool-calls">' + fmtN(s.calls) + ' calls' + sessInfo + '</span>' +
+          '</div>' +
+          '<div class="tool-bar"><div class="tool-fill" style="width:' + (s.calls / maxCalls * 100).toFixed(1) + '%"></div></div>' +
+        '</div>' +
+      '</div>';
+    }).join('');
 
-    let totalCalls = 0, totalWeighted = 0;
-    sorted.forEach(([, s]) => { totalCalls += s.calls; totalWeighted += s.weighted; });
+    var totalCalls = 0;
+    for (var k = 0; k < sorted.length; k++) totalCalls += sorted[k][1].calls;
     el.querySelector('#tu-unique').textContent = sorted.length;
-    el.querySelector('#tu-total').textContent = fmt(totalCalls);
-    el.querySelector('#tu-weighted').textContent = (totalWeighted/1e6).toFixed(1);
+    el.querySelector('#tu-total').textContent = fmtN(totalCalls);
+    el.querySelector('#tu-sessions').textContent = sessionCount;
   }
 });
 </script>

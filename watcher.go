@@ -2,6 +2,7 @@ package main
 
 import (
 	"log"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -20,10 +21,11 @@ func startWatcher(app *App) (*fsnotify.Watcher, error) {
 		log.Printf("watcher: cannot watch data dir: %v", err)
 	}
 
-	// Watch each plugin subdirectory
-	pluginTypes := []string{"themes", "widgets", "pricing", "forecasters", "canvas"}
+	// Watch each plugin subdirectory (create if missing)
+	pluginTypes := []string{"themes", "widgets", "pricing", "forecasters", "canvas", "vendor"}
 	for _, pt := range pluginTypes {
 		dir := filepath.Join(app.PluginDir, pt)
+		os.MkdirAll(dir, 0755)
 		if err := watcher.Add(dir); err != nil {
 			log.Printf("watcher: cannot watch %s: %v", pt, err)
 		}

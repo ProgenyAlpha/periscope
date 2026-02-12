@@ -3,17 +3,74 @@ package main
 import (
 	"fmt"
 	"io/fs"
-	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 )
 
-func install(app *App) error {
-	fmt.Println("Setting up Periscope...")
+// ── UI helpers ──────────────────────────────────────────────────────────────
 
-	// Create directory structure
+const (
+	cDim    = "\033[90m"
+	cBold   = "\033[1m"
+	cGreen  = "\033[32m"
+	cYellow = "\033[33m"
+	cCyan   = "\033[36m"
+	cRed    = "\033[31m"
+	cReset  = "\033[0m"
+)
+
+func iOK(msg string)   { fmt.Printf("  %s[OK]%s  %s\n", cGreen, cReset, msg) }
+func iWarn(msg string)  { fmt.Printf("  %s[!!]%s  %s\n", cYellow, cReset, msg) }
+func iInfo(msg string)  { fmt.Printf("  %s...%s  %s\n", cDim, cReset, msg) }
+func iStep(n, total int, msg string) {
+	fmt.Printf("\n  %s[%d/%d]%s %s%s%s\n", cCyan, n, total, cReset, cBold, msg, cReset)
+}
+
+func iBanner() {
+	fmt.Println()
+	fmt.Printf("  %s╔═══════════════════════════════════════════╗%s\n", cDim, cReset)
+	fmt.Printf("  %s║%s  %sP E R I S C O P E%s                       %s║%s\n", cDim, cReset, cBold, cReset, cDim, cReset)
+	fmt.Printf("  %s║%s  Claude Code Telemetry Dashboard          %s║%s\n", cDim, cReset, cDim, cReset)
+	fmt.Printf("  %s╚═══════════════════════════════════════════╝%s\n", cDim, cReset)
+	fmt.Println()
+}
+
+func iDivider() {
+	fmt.Printf("\n  %s───────────────────────────────────────────────%s\n", cDim, cReset)
+}
+
+func iPrompt(question string) bool {
+	fmt.Printf("  %s", question)
+	var answer string
+	fmt.Scanln(&answer)
+	answer = strings.TrimSpace(strings.ToLower(answer))
+	return answer != "n" && answer != "no"
+}
+
+// ── Install ─────────────────────────────────────────────────────────────────
+
+func install(app *App) error {
+	// Detect if this is a first-time install or re-init
+	_, existsErr := os.Stat(app.PluginDir)
+	isReinstall := existsErr == nil
+
+	iBanner()
+
+	if isReinstall {
+		fmt.Printf("  %sRe-initializing existing installation%s\n", cDim, cReset)
+	}
+
+	totalSteps := 5
+	if runtime.GOOS == "windows" {
+		totalSteps = 6
+	}
+
+	// ── Step 1: Directories ──
+	iStep(1, totalSteps, "Creating directory structure")
 	dirs := []string{
 		app.HomeDir,
 		app.PluginDir,
@@ -22,26 +79,29 @@ func install(app *App) error {
 		filepath.Join(app.PluginDir, "pricing"),
 		filepath.Join(app.PluginDir, "forecasters"),
 		filepath.Join(app.PluginDir, "canvas"),
+		filepath.Join(app.PluginDir, "vendor"),
 	}
 	for _, d := range dirs {
 		if err := os.MkdirAll(d, 0755); err != nil {
 			return fmt.Errorf("mkdir %s: %w", d, err)
 		}
 	}
-	fmt.Println("  Created plugin directories")
+	iOK(fmt.Sprintf("%d directories ready", len(dirs)))
 
-	// Extract default plugins (only if not already present — don't clobber user edits)
+	// ── Step 2: Extract plugins ──
+	iStep(2, totalSteps, "Extracting bundled plugins")
 	extracted := 0
+	skipped := 0
 	fs.WalkDir(defaultPlugins, "defaults", func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return err
 		}
-		// defaults/themes/foo.toml → plugins/themes/foo.toml
 		rel, _ := filepath.Rel("defaults", path)
 		dest := filepath.Join(app.PluginDir, rel)
 
 		if _, err := os.Stat(dest); err == nil {
-			return nil // Already exists, don't overwrite
+			skipped++
+			return nil // Don't clobber user edits
 		}
 
 		data, err := defaultPlugins.ReadFile(path)
@@ -54,53 +114,125 @@ func install(app *App) error {
 		extracted++
 		return nil
 	})
-	fmt.Printf("  Extracted %d default plugins\n", extracted)
+	if extracted > 0 {
+		iOK(fmt.Sprintf("Extracted %d files", extracted))
+	}
+	if skipped > 0 {
+		iInfo(fmt.Sprintf("Skipped %d existing files (preserving your edits)", skipped))
+	}
 
-	// Write default config if missing
+	// ── Step 3: Config ──
+	iStep(3, totalSteps, "Writing configuration")
 	configPath := filepath.Join(app.HomeDir, "config.toml")
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
-		defaultConfig := `# Periscope configuration
+		defaultConfig := fmt.Sprintf(`# Periscope configuration
 
 [server]
 host = "localhost"
-port = 8384
+port = %d
 
 # Override Claude data directory (usually auto-detected)
 # data_dir = ""
-`
+`, app.Config.Server.Port)
 		os.WriteFile(configPath, []byte(defaultConfig), 0644)
-		fmt.Println("  Created config.toml")
-	}
-
-	// Register Claude hooks
-	if err := registerHooks(app); err != nil {
-		log.Printf("warning: hook registration: %v", err)
-	}
-
-	// Verify OAuth token
-	if _, err := getOAuthToken(app); err != nil {
-		fmt.Printf("  Warning: %v\n", err)
-		fmt.Println("  Rate limit tracking requires Claude OAuth login")
+		iOK(fmt.Sprintf("Created config.toml (port %d)", app.Config.Server.Port))
 	} else {
-		fmt.Println("  OAuth token verified")
+		iInfo("config.toml already exists, keeping yours")
 	}
 
-	fmt.Println("Done.")
+	// ── Step 4: Claude hooks ──
+	iStep(4, totalSteps, "Registering Claude hooks")
+	if err := registerHooks(app); err != nil {
+		iWarn(fmt.Sprintf("Hook registration: %v", err))
+	}
+
+	// ── Step 5: OAuth ──
+	iStep(5, totalSteps, "Verifying Anthropic connection")
+	if _, err := getOAuthToken(app); err != nil {
+		iWarn("No OAuth token found")
+		iInfo("Rate limit tracking requires 'claude login' first")
+		iInfo("Everything else works without it")
+	} else {
+		iOK("OAuth token verified — rate limit tracking active")
+	}
+
+	// ── Step 6: Autostart (Windows only) ──
+	if runtime.GOOS == "windows" {
+		iStep(6, totalSteps, "Background service")
+		if err := offerAutostart(app); err != nil {
+			iWarn(fmt.Sprintf("Autostart: %v", err))
+		}
+	}
+
+	// ── Summary ──
+	iDivider()
+	addr := fmt.Sprintf("http://%s:%d", app.Config.Server.Host, app.Config.Server.Port)
+	fmt.Println()
+	fmt.Printf("  %s%sREADY%s\n", cBold, cGreen, cReset)
+	fmt.Println()
+	fmt.Printf("  %sDashboard%s   %s\n", cBold, cReset, addr)
+	fmt.Printf("  %sConfig%s     %s\n", cBold, cReset, configPath)
+	fmt.Printf("  %sPlugins%s    %s\n", cBold, cReset, app.PluginDir)
+	fmt.Printf("  %sData%s       %s\n", cBold, cReset, app.DataDir)
+	fmt.Println()
+	fmt.Printf("  Run %speriscope serve%s to start the server.\n", cCyan, cReset)
+	iDivider()
+	fmt.Println()
+	return nil
+}
+
+func offerAutostart(app *App) error {
+	// Check if already registered
+	out, err := exec.Command("schtasks", "/Query", "/TN", "Periscope-AutoStart").CombinedOutput()
+	alreadyExists := err == nil && strings.Contains(string(out), "Periscope-AutoStart")
+
+	if alreadyExists {
+		iOK("Autostart already registered")
+		return nil
+	}
+
+	// Explain the value proposition
+	fmt.Println()
+	fmt.Printf("  %sPeriscope runs a lightweight background server (~5MB RAM)%s\n", cDim, cReset)
+	fmt.Printf("  %sthat collects Claude telemetry in real-time. It needs to%s\n", cDim, cReset)
+	fmt.Printf("  %sbe running for the dashboard to have data.%s\n", cDim, cReset)
+	fmt.Println()
+	fmt.Printf("  %sTwo ways it stays alive:%s\n", cDim, cReset)
+	fmt.Println()
+	fmt.Printf("  %s>%s %sWindows Login%s — starts automatically when you sign in,\n", cCyan, cReset, cBold, cReset)
+	fmt.Printf("    so the dashboard is ready before you open Claude.\n")
+	fmt.Println()
+	fmt.Printf("  %s>%s %sClaude Session%s — if the server ever goes down, it\n", cCyan, cReset, cBold, cReset)
+	fmt.Printf("    auto-restarts the moment you open Claude.\n")
+	fmt.Println()
+	fmt.Printf("  The Claude hook is already configured. The question is\n")
+	fmt.Printf("  whether to also start at Windows login.\n")
+	fmt.Println()
+
+	if !iPrompt(fmt.Sprintf("Start at Windows login? %s[Y/n]%s ", cDim, cReset)) {
+		iInfo("Skipped — Periscope will start when Claude does")
+		return nil
+	}
+
+	binary := periscopeBinary()
+	cmd := exec.Command("schtasks", "/Create",
+		"/TN", "Periscope-AutoStart",
+		"/TR", fmt.Sprintf(`"%s" serve`, binary),
+		"/SC", "ONLOGON",
+		"/RL", "LIMITED",
+		"/F",
+	)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("schtasks: %s: %w", strings.TrimSpace(string(out)), err)
+	}
+	iOK("Registered autostart task (Periscope-AutoStart)")
 	return nil
 }
 
 func registerHooks(app *App) error {
-	// Read existing hooks config
-	hooksPath := filepath.Join(app.ClaudeDir, "hooks.json")
-
-	// The hooks need to know where periscope binary is
 	binary := periscopeBinary()
 
-	// Create/update hooks that start periscope if not running
-	// The existing hooks (cost-tracker-stop.ps1, cost-tracker-display.ps1) already
-	// write sidecar files. We just need periscope serve running to pick them up.
-
-	// Write a small launcher script
+	// Write the launcher script (health-check → auto-start)
 	var launcherContent string
 	var launcherName string
 
@@ -131,24 +263,15 @@ nohup "%s" serve >/dev/null 2>&1 &
 	if err := os.WriteFile(launcherPath, []byte(launcherContent), 0755); err != nil {
 		return fmt.Errorf("write launcher: %w", err)
 	}
-	fmt.Printf("  Created %s\n", launcherName)
+	iOK(fmt.Sprintf("Created %s (auto-start on Claude session)", launcherName))
 
-	// Print hook configuration instructions
-	fmt.Println("  Hook commands for ~/.claude/hooks.json:")
-	fmt.Println("")
-	fmt.Printf("    StopTurn:          %s hook stop\n", binary)
-	fmt.Printf("    UserPromptSubmit:  %s hook display\n", binary)
-	fmt.Println("")
-	fmt.Println("  Example hooks.json:")
-	fmt.Printf(`    {
-      "hooks": {
-        "StopTurn": [{"command": "%s hook stop"}],
-        "UserPromptSubmit": [{"command": "%s hook display"}]
-      }
-    }
-`, binary, binary)
+	// Show hook commands for manual setup
+	iInfo("Claude hook commands (if not already configured):")
+	fmt.Printf("    %sSessionStart%s:       %s%s\n", cDim, cReset, launcherPath, cReset)
+	fmt.Printf("    %sStopTurn%s:           %s hook stop\n", cDim, cReset, binary)
+	fmt.Printf("    %sUserPromptSubmit%s:   %s hook display\n", cDim, cReset, binary)
+	fmt.Printf("    %sStatusline%s:         %s statusline\n", cDim, cReset, binary)
 
-	_ = hooksPath // acknowledge we read but don't modify
 	return nil
 }
 
@@ -163,33 +286,54 @@ func periscopeBinary() string {
 	return exe
 }
 
+// ── Uninstall ───────────────────────────────────────────────────────────────
+
 func uninstall(app *App) error {
-	fmt.Println("Removing Periscope...")
+	iBanner()
+	fmt.Printf("  %sUninstalling Periscope%s\n", cBold, cReset)
+	fmt.Println()
 
 	// Try to shut down running server
 	addr := fmt.Sprintf("http://%s:%d", app.Config.Server.Host, app.Config.Server.Port)
 	resp, err := httpGet(addr + "/api/health")
 	if err == nil {
 		resp.Body.Close()
-		// Server is running, shut it down
 		http.Post(addr+"/api/shutdown", "application/json", nil)
-		fmt.Println("  Stopped running server")
+		iOK("Stopped running server")
+	} else {
+		iInfo("Server not running")
+	}
+
+	// Remove scheduled task
+	if runtime.GOOS == "windows" {
+		if err := exec.Command("schtasks", "/Delete", "/TN", "Periscope-AutoStart", "/F").Run(); err == nil {
+			iOK("Removed autostart task")
+		} else {
+			iInfo("No autostart task found")
+		}
 	}
 
 	// Remove periscope home directory
 	if _, err := os.Stat(app.HomeDir); err == nil {
-		fmt.Printf("  Remove %s? This deletes all plugins and data. [y/N] ", app.HomeDir)
-		var answer string
-		fmt.Scanln(&answer)
-		if answer == "y" || answer == "Y" {
+		fmt.Println()
+		fmt.Printf("  %sRemove %s?%s\n", cBold, app.HomeDir, cReset)
+		fmt.Printf("  %sThis deletes all plugins, themes, and the database.%s\n", cDim, cReset)
+		fmt.Printf("  %sClaude hooks and session data are NOT affected.%s\n", cDim, cReset)
+		fmt.Println()
+		if iPrompt(fmt.Sprintf("Delete? %s[y/N]%s ", cDim, cReset)) {
 			os.RemoveAll(app.HomeDir)
-			fmt.Println("  Removed")
+			iOK("Removed " + app.HomeDir)
 		} else {
-			fmt.Println("  Kept")
+			iInfo("Kept " + app.HomeDir)
 		}
 	}
 
-	fmt.Println("Note: Claude hooks and cost-state data are preserved.")
-	fmt.Println("Done.")
+	iDivider()
+	fmt.Println()
+	fmt.Printf("  %sPeriscope removed.%s\n", cBold, cReset)
+	fmt.Printf("  %sClaude hooks and cost-state data are preserved.%s\n", cDim, cReset)
+	fmt.Printf("  %sRun 'periscope init' anytime to reinstall.%s\n", cDim, cReset)
+	iDivider()
+	fmt.Println()
 	return nil
 }

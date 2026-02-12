@@ -1,33 +1,36 @@
 <style>
 /* Rate Limit Intelligence — XL widget */
-.w-rli .chart-tl-ctrl{display:flex;gap:4px;margin-bottom:8px;align-items:center;flex-wrap:wrap}
+.w-rli .chart-tl-ctrl{display:flex;gap:4px;margin-bottom:4px;align-items:center;flex-wrap:wrap}
 .w-rli .tl-btn{background:var(--bg-inset);border:1px solid var(--rule);color:var(--text-dim);font-family:var(--font-mono);font-size:9px;padding:3px 8px;cursor:pointer;transition:all .2s;line-height:1.4}
 .w-rli .tl-btn:hover{border-color:var(--c-primary);color:var(--text)}
-.w-rli .tl-btn.active{background:rgba(245,158,11,0.15);border-color:var(--c-primary);color:var(--c-primary)}
+.w-rli .tl-btn.active{background:rgba(var(--rgb-primary,245,158,11),0.15);border-color:var(--c-primary);color:var(--c-primary)}
 .w-rli .window-nav{display:flex;gap:2px}
 .w-rli .tog{background:var(--bg-inset);border:1px solid var(--rule);color:var(--text-dim);font-family:var(--font-mono);font-size:0.6rem;padding:3px 8px;cursor:pointer;transition:all 0.15s}
 .w-rli .tog:hover:not(.active):not(:disabled){background:var(--bg-hover);color:var(--text)}
 .w-rli .tog.active{background:var(--c-primary);color:var(--bg-void);border-color:var(--c-primary)}
 .w-rli .tog:disabled{opacity:0.3;pointer-events:none;cursor:default}
-.w-rli .limit-chart-wrap{height:260px;position:relative}
+.w-rli .limit-chart-wrap{height:255px;position:relative}
 .w-rli canvas{display:block}
 .w-rli .burn-overlay{position:absolute;top:-46px;left:0;right:0;display:flex;align-items:flex-start;justify-content:center;pointer-events:none;z-index:10;opacity:0;transition:opacity 0.4s ease}
 .w-rli .burn-overlay.active{opacity:1}
-.w-rli .burn-badge{position:relative;padding:6px 20px;border-radius:6px;background:rgba(127,29,29,0.92);border:1px solid rgba(239,68,68,0.5);box-shadow:0 0 20px rgba(239,68,68,0.2),0 0 40px rgba(239,68,68,0.08);font-family:var(--font-mono);font-size:12px;font-weight:700;color:#fca5a5;letter-spacing:2px;text-transform:uppercase;animation:rli-burnPulse 2s ease-in-out infinite}
+.w-rli .burn-badge{position:relative;padding:6px 20px;border-radius:6px;background:rgba(127,29,29,0.92);border:1px solid rgba(var(--rgb-danger,239,68,68),0.5);box-shadow:0 0 20px rgba(var(--rgb-danger,239,68,68),0.2),0 0 40px rgba(var(--rgb-danger,239,68,68),0.08);font-family:var(--font-mono);font-size:12px;font-weight:700;color:#fca5a5;letter-spacing:2px;text-transform:uppercase;animation:rli-burnPulse 2s ease-in-out infinite}
 .w-rli .burn-badge::before,.w-rli .burn-badge::after{content:'';position:absolute;border-radius:50%;filter:blur(2px);animation:rli-fireFloat 1.5s ease-in-out infinite}
-.w-rli .burn-badge::before{width:6px;height:6px;background:#ef4444;left:15%;top:-8px;animation-delay:0s}
-.w-rli .burn-badge::after{width:5px;height:5px;background:#f59e0b;right:20%;top:-10px;animation-delay:0.4s}
+.w-rli .burn-badge::before{width:6px;height:6px;background:var(--c-danger);left:15%;top:-8px;animation-delay:0s}
+.w-rli .burn-badge::after{width:5px;height:5px;background:var(--c-primary);right:20%;top:-10px;animation-delay:0.4s}
 .w-rli .fire-particle{position:absolute;border-radius:50%;filter:blur(1px);animation:rli-fireFloat 1.8s ease-in-out infinite}
-.w-rli .fire-particle:nth-child(1){width:4px;height:4px;background:#ef4444}
-.w-rli .fire-particle:nth-child(2){width:4px;height:4px;background:#f97316}
-.w-rli .fire-particle:nth-child(3){width:5px;height:5px;background:#fbbf24}
-.w-rli .fire-particle:nth-child(4){width:3px;height:3px;background:#ef4444}
+.w-rli .fire-particle:nth-child(1){width:4px;height:4px;background:var(--c-danger)}
+.w-rli .fire-particle:nth-child(2){width:4px;height:4px;background:var(--c-warm)}
+.w-rli .fire-particle:nth-child(3){width:5px;height:5px;background:var(--c-primary)}
+.w-rli .fire-particle:nth-child(4){width:3px;height:3px;background:var(--c-danger)}
 .w-rli .burn-scope{display:block;font-size:9px;color:rgba(252,165,165,0.7);letter-spacing:1.5px;margin-top:2px;text-align:center}
-@keyframes rli-burnPulse{0%,100%{box-shadow:0 0 20px rgba(239,68,68,0.2),0 0 40px rgba(239,68,68,0.1)}50%{box-shadow:0 0 28px rgba(239,68,68,0.35),0 0 56px rgba(239,68,68,0.17)}}
+@keyframes rli-burnPulse{0%,100%{box-shadow:0 0 20px rgba(var(--rgb-danger,239,68,68),0.2),0 0 40px rgba(var(--rgb-danger,239,68,68),0.1)}50%{box-shadow:0 0 28px rgba(var(--rgb-danger,239,68,68),0.35),0 0 56px rgba(var(--rgb-danger,239,68,68),0.17)}}
+@keyframes rli-extraPulse{0%,100%{box-shadow:0 0 20px rgba(var(--rgb-warm,251,146,60),0.25),0 0 40px rgba(var(--rgb-danger,239,68,68),0.12)}50%{box-shadow:0 0 32px rgba(var(--rgb-warm,251,146,60),0.4),0 0 60px rgba(var(--rgb-danger,239,68,68),0.2)}}
 @keyframes rli-fireFloat{0%{transform:translateY(0) scale(1);opacity:0.9}50%{transform:translateY(-12px) scale(1.3);opacity:1}100%{transform:translateY(-20px) scale(0.6);opacity:0}}
-.w-rli .intel-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;padding-top:10px}
+.w-rli .burn-overlay.extra .burn-badge{background:rgba(120,53,15,0.94);border-color:rgba(var(--rgb-warm,251,146,60),0.6);color:#fdba74;animation:rli-extraPulse 2.5s ease-in-out infinite}
+.w-rli .burn-overlay.extra .burn-scope{color:rgba(253,186,116,0.8)}
+.w-rli .intel-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;padding-top:6px}
 @media(max-width:900px){.w-rli .intel-grid{grid-template-columns:1fr}}
-.w-rli .intel-card{padding:10px 12px;background:var(--bg-inset);border-radius:6px;border-top:2px solid var(--c-tertiary)}
+.w-rli .intel-card{padding:8px 10px;background:var(--bg-inset);border-radius:6px;border-top:2px solid var(--c-tertiary)}
 .w-rli .intel-card.session{border-top-color:var(--c-primary)}
 .w-rli .intel-card.weekly{border-top-color:var(--c-tertiary)}
 .w-rli .intel-card.capacity{border-top-color:var(--c-accent)}
@@ -45,7 +48,7 @@
 Periscope.registerWidget({
   id: 'limit-timeline',
   title: 'Rate Limit Intelligence',
-  size: 'xl',
+  size: 'md',
   priority: 3,
 
   // ── Instance state (scoped to avoid global collisions) ──
@@ -87,7 +90,7 @@ Periscope.registerWidget({
               <span class="fire-particle" style="left:30%;top:-10px;animation-delay:0.3s"></span>
               <span class="fire-particle" style="right:20%;top:-8px;animation-delay:0.6s"></span>
               <span class="fire-particle" style="right:-6px;top:-4px;animation-delay:0.9s"></span>
-              &#x26A0; HEAVY TOKEN BURN
+              <span data-ref="burn-text">&#x26A0; HEAVY TOKEN BURN</span>
               <span class="burn-scope" data-ref="burn-scope"></span>
             </div>
           </div>
@@ -143,16 +146,17 @@ Periscope.registerWidget({
       localStorage.setItem('periscope_rateLimit_defaults', JSON.stringify(defaults));
       const verify = JSON.parse(localStorage.getItem('periscope_rateLimit_defaults'));
       if (verify && verify.range === defaults.range && verify.projection === defaults.projection) {
-        if (btn) { btn.textContent = '\u2713'; btn.style.color = '#22c55e'; btn.style.borderColor = '#22c55e'; setTimeout(() => { btn.textContent = '\u2913'; btn.style.color = ''; btn.style.borderColor = ''; }, 1500); }
+        if (btn) { btn.textContent = '\u2713'; btn.style.color = 'var(--c-secondary)'; btn.style.borderColor = 'var(--c-secondary)'; setTimeout(() => { btn.textContent = '\u2913'; btn.style.color = ''; btn.style.borderColor = ''; }, 1500); }
       }
     } catch(e) {
-      if (btn) { btn.textContent = '\u2717'; btn.style.color = '#ef4444'; setTimeout(() => { btn.textContent = '\u2913'; btn.style.color = ''; }, 1500); }
+      if (btn) { btn.textContent = '\u2717'; btn.style.color = 'var(--c-danger)'; setTimeout(() => { btn.textContent = '\u2913'; btn.style.color = ''; }, 1500); }
     }
   },
 
   // ── COLORS helper (reads CSS vars) ──
   _getColors() {
     const s = getComputedStyle(document.documentElement);
+    const rgbOf = (name, fallback) => s.getPropertyValue('--rgb-' + name).trim() || fallback;
     return {
       primary: s.getPropertyValue('--c-primary').trim() || '#E06236',
       secondary: s.getPropertyValue('--c-secondary').trim() || '#D7AB61',
@@ -162,7 +166,10 @@ Periscope.registerWidget({
       warm: s.getPropertyValue('--c-warm').trim() || '#E06236',
       text: s.getPropertyValue('--text').trim() || '#e8e0d4',
       text2: s.getPropertyValue('--text-dim').trim() || '#5a6270',
-      grid: 'rgba(245,158,11,0.04)'
+      grid: 'rgba(' + rgbOf('primary', '245,158,11') + ',0.04)',
+      rgbDanger: rgbOf('danger', '239,68,68'),
+      rgbSecondary: rgbOf('secondary', '34,197,94'),
+      rgbPrimary: rgbOf('primary', '245,158,11')
     };
   },
 
@@ -208,19 +215,21 @@ Periscope.registerWidget({
         if (!xScale || !yScale) return;
         const ctx = chart.ctx;
         const area = chart.chartArea;
+        const rd = st.rgbDanger || '239,68,68';
+        const rs = st.rgbSecondary || '34,197,94';
 
         // 100% limit line
         const y100 = yScale.getPixelForValue(100);
         if (y100 >= area.top && y100 <= area.bottom) {
           ctx.save();
-          ctx.strokeStyle = 'rgba(239,68,68,0.25)';
+          ctx.strokeStyle = 'rgba(' + rd + ',0.25)';
           ctx.lineWidth = 1;
           ctx.setLineDash([4, 4]);
           ctx.beginPath();
           ctx.moveTo(area.left, y100);
           ctx.lineTo(area.right, y100);
           ctx.stroke();
-          ctx.fillStyle = 'rgba(239,68,68,0.4)';
+          ctx.fillStyle = 'rgba(' + rd + ',0.4)';
           ctx.font = '9px "Fira Code"';
           ctx.textAlign = 'right';
           ctx.fillText('LIMIT', area.right - 4, y100 - 4);
@@ -238,23 +247,23 @@ Periscope.registerWidget({
           ctx.lineWidth = 1;
           ctx.setLineDash([3, 3]);
           if (xStart >= area.left && xStart <= area.right) {
-            ctx.strokeStyle = 'rgba(34,197,94,0.35)';
+            ctx.strokeStyle = 'rgba(' + rs + ',0.35)';
             ctx.beginPath();
             ctx.moveTo(xStart, area.top);
             ctx.lineTo(xStart, area.bottom);
             ctx.stroke();
-            ctx.fillStyle = 'rgba(34,197,94,0.5)';
+            ctx.fillStyle = 'rgba(' + rs + ',0.5)';
             ctx.font = '8px "Fira Code"';
             ctx.textAlign = 'left';
             ctx.fillText(wLabel + ' START', xStart + 3, area.top + 10);
           }
           if (xEnd >= area.left && xEnd <= area.right) {
-            ctx.strokeStyle = 'rgba(239,68,68,0.35)';
+            ctx.strokeStyle = 'rgba(' + rd + ',0.35)';
             ctx.beginPath();
             ctx.moveTo(xEnd, area.top);
             ctx.lineTo(xEnd, area.bottom);
             ctx.stroke();
-            ctx.fillStyle = 'rgba(239,68,68,0.5)';
+            ctx.fillStyle = 'rgba(' + rd + ',0.5)';
             ctx.font = '8px "Fira Code"';
             ctx.textAlign = 'left';
             ctx.fillText('RESET', xEnd + 3, area.top + 10);
@@ -301,13 +310,14 @@ Periscope.registerWidget({
 
         // BREACH PROJECTED pins
         const crossings = st.projCrossings || [];
+        const dHex = st.dangerHex || '#ef4444';
         if (crossings.length > 0 && y100 >= area.top && y100 <= area.bottom) {
           ctx.save();
           for (const c of crossings) {
             const cx = xScale.getPixelForValue(c.x);
             if (cx < area.left || cx > area.right) continue;
             // Vertical pin
-            ctx.strokeStyle = 'rgba(239,68,68,0.8)';
+            ctx.strokeStyle = 'rgba(' + rd + ',0.8)';
             ctx.lineWidth = 2;
             ctx.setLineDash([]);
             ctx.beginPath();
@@ -315,7 +325,7 @@ Periscope.registerWidget({
             ctx.lineTo(cx, y100 + 12);
             ctx.stroke();
             // Diamond
-            ctx.fillStyle = '#ef4444';
+            ctx.fillStyle = dHex;
             ctx.beginPath();
             ctx.moveTo(cx, y100 - 7);
             ctx.lineTo(cx + 5, y100);
@@ -343,7 +353,7 @@ Periscope.registerWidget({
             ctx.fillStyle = 'rgba(127,29,29,0.92)';
             if (ctx.roundRect) { ctx.beginPath(); ctx.roundRect(bx, by, bw, bh, 3); ctx.fill(); }
             else { ctx.fillRect(bx, by, bw, bh); }
-            ctx.strokeStyle = 'rgba(239,68,68,0.7)';
+            ctx.strokeStyle = 'rgba(' + rd + ',0.7)';
             ctx.lineWidth = 1;
             if (ctx.roundRect) { ctx.beginPath(); ctx.roundRect(bx, by, bw, bh, 3); ctx.stroke(); }
             ctx.fillStyle = '#fca5a5';
@@ -482,20 +492,23 @@ Periscope.registerWidget({
     // ── Coverage penguin check (30d/all) ──
     const canvas = el.querySelector('[data-ref="canvas"]');
     const penguinEl = el.querySelector('[data-ref="penguin"]');
+    const chartWrap = el.querySelector('.limit-chart-wrap');
     if (isCurrentWindow && (activeRange === '30d' || activeRange === 'all')) {
       const rlMinDays = activeRange === 'all' ? 30 : 14;
       const rlStart = now.getTime() - (rlMinDays * 24 * 3600000);
       const inRangeRL = allPoints.filter(p => p.ts.getTime() >= rlStart);
       const rlDistinctDays = new Set(inRangeRL.map(p => p.ts.toISOString().slice(0,10))).size;
       if (rlDistinctDays < rlMinDays) {
-        if (canvas) canvas.style.display = 'none';
+        if (chartWrap) chartWrap.style.display = 'none';
         const pct = Math.round(rlDistinctDays / rlMinDays * 100);
+        penguinEl.style.height = '255px';
         penguinEl.innerHTML = penguinEmptyState('COLLECTING RATE DATA', rlDistinctDays + ' of ' + rlMinDays + ' days needed for ' + activeRange + ' view (' + pct + '% coverage)');
         return;
       }
     }
     // No penguin — show canvas
-    if (canvas) canvas.style.display = '';
+    if (chartWrap) chartWrap.style.display = '';
+    penguinEl.style.height = '';
     penguinEl.innerHTML = '';
 
     // ── Session segmentation ──
@@ -528,7 +541,7 @@ Periscope.registerWidget({
     if (this._showProjection) {
       const projNow = new Date();
       const projCandidates = [];
-      if (show5hr) projCandidates.push([pct5, lu.reset5hr, rate5hr > 0 ? rate5hr : burn5hr, COLORS.primary, '5hr proj', proj5hr]);
+      if (show5hr) projCandidates.push([pct5, lu.reset5hr, rate5hr != null ? rate5hr : burn5hr, COLORS.primary, '5hr proj', proj5hr]);
       if (showWk) projCandidates.push([pctW, lu.resetWeekly, 0, COLORS.secondary, 'Wk proj', projWeekly]);
       for (const [pctNow, resetStr, rate, color, label, precomputedProj] of projCandidates) {
         if (!resetStr) continue;
@@ -574,7 +587,9 @@ Periscope.registerWidget({
 
     this._overlayState = {
       windowStart5hrMs, windowEnd5hrMs, windowStartWeeklyMs, windowEndWeeklyMs,
-      showWeekly: showWk, projCrossings, activeRange, accentColor: COLORS.accent
+      showWeekly: showWk, projCrossings, activeRange, accentColor: COLORS.accent,
+      rgbDanger: COLORS.rgbDanger, rgbSecondary: COLORS.rgbSecondary,
+      dangerHex: COLORS.danger, secondaryHex: COLORS.secondary
     };
     const overlayPlugin = this._ensureOverlayPlugin();
 
@@ -629,19 +644,36 @@ Periscope.registerWidget({
       });
     }
 
-    // ── HEAVY BURN overlay ──
-    const effectiveRate5hr = rate5hr > 0 ? rate5hr : burn5hr;
+    // ── HEAVY BURN / EXTRA USAGE overlay ──
+    const effectiveRate5hr = rate5hr != null ? rate5hr : burn5hr;
     const effectiveRateWeekly = rateWeekly > 0 ? rateWeekly : burnWeekly;
     const heavySession = effectiveRate5hr > 15;
     const heavyWeekly = projWeekly > 100;
+    const eu = rd.lu.extra_usage;
+    const anyAtLimit = pct5 >= 100 || pctW >= 100;
+    const burningExtra = anyAtLimit && eu && eu.is_enabled && (eu.used_credits || 0) > 0;
     const burnOverlay = el.querySelector('[data-ref="burn-overlay"]');
     const burnScope = el.querySelector('[data-ref="burn-scope"]');
-    if (heavySession || heavyWeekly) {
-      const scope = heavySession && heavyWeekly ? 'SESSION + WEEKLY' : heavySession ? 'SESSION' : 'WEEKLY';
+    const burnText = el.querySelector('[data-ref="burn-text"]');
+    if (burningExtra || heavySession || heavyWeekly) {
       if (burnOverlay) burnOverlay.classList.add('active');
-      if (burnScope) burnScope.textContent = scope;
+      if (burningExtra) {
+        if (burnOverlay) burnOverlay.classList.add('extra');
+        if (burnText) burnText.innerHTML = '\u26A0 BURNING EXTRA USAGE';
+        const euUsed = eu.used_credits || 0;
+        const euLimit = eu.monthly_limit;
+        const spendStr = euLimit != null && euLimit > 0
+          ? '$' + euUsed.toFixed(2) + ' / $' + euLimit.toFixed(2)
+          : '$' + euUsed.toFixed(2) + ' spent';
+        if (burnScope) burnScope.textContent = spendStr;
+      } else {
+        if (burnOverlay) burnOverlay.classList.remove('extra');
+        if (burnText) burnText.innerHTML = '\u26A0 HEAVY TOKEN BURN';
+        const scope = heavySession && heavyWeekly ? 'SESSION + WEEKLY' : heavySession ? 'SESSION' : 'WEEKLY';
+        if (burnScope) burnScope.textContent = scope;
+      }
     } else {
-      if (burnOverlay) burnOverlay.classList.remove('active');
+      if (burnOverlay) { burnOverlay.classList.remove('active'); burnOverlay.classList.remove('extra'); }
     }
 
     // ── 3-Column Insight Grid ──
@@ -652,7 +684,8 @@ Periscope.registerWidget({
     const sustDailyWk = sustWeeklyPerHr * duty.activeHrsPerDay;
     const activeBurnWkPerDay = burnWeeklyActive * duty.activeHrsPerDay;
 
-    function paceLabel(actual, sustainable) {
+    function paceLabel(actual, sustainable, pctUsed) {
+      if (pctUsed >= 100) return { text: 'AT LIMIT', color: 'var(--c-danger)' };
       if (sustainable <= 0) return { text: '--', color: 'var(--text-dim)' };
       const r = (actual / sustainable) * 100;
       if (r <= 85) return { text: 'ON PACE', color: 'var(--c-secondary)' };
@@ -664,10 +697,15 @@ Periscope.registerWidget({
 
     // COL 1: Session
     let col1 = '';
-    const p5 = paceLabel(effectiveRate5hr, sust5hr);
+    const p5 = paceLabel(effectiveRate5hr, sust5hr, pct5);
     col1 += readout(p5.text, p5.color);
-    col1 += row('Rate', '<span style="color:' + projColor(proj5hr) + '">' + effectiveRate5hr.toFixed(1) + '</span> / ' + sust5hr.toFixed(1) + ' %/h');
-    col1 += row('Used', pct5 + '%');
+    if (pct5 >= 100) {
+      col1 += row('Status', '<span style="color:var(--c-danger)">Rate limited</span>');
+      col1 += row('Used', '<span style="color:var(--c-danger)">' + pct5 + '%</span>');
+    } else {
+      col1 += row('Rate', '<span style="color:' + projColor(proj5hr) + '">' + effectiveRate5hr.toFixed(1) + '</span> / ' + sust5hr.toFixed(1) + ' %/h');
+      col1 += row('Used', pct5 + '%');
+    }
     if (reset5hr) {
       const resetLocal = reset5hr.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
       col1 += row('Resets', resetLocal + ' <span style="color:var(--text-dim)">(' + remaining5hr.toFixed(1) + 'h left)</span>');
@@ -675,10 +713,15 @@ Periscope.registerWidget({
 
     // COL 2: Weekly
     let col2 = '';
-    const pW = paceLabel(burnWeeklyActive, sustWeeklyPerHr);
+    const pW = paceLabel(burnWeeklyActive, sustWeeklyPerHr, pctW);
     col2 += readout(pW.text, pW.color);
-    col2 += row('Rate', '<span style="color:' + projColor(projWeekly) + '">' + activeBurnWkPerDay.toFixed(1) + '</span> / ' + sustDailyWk.toFixed(1) + ' %/day');
-    col2 += row('Used', pctW + '%');
+    if (pctW >= 100) {
+      col2 += row('Status', '<span style="color:var(--c-danger)">Rate limited</span>');
+      col2 += row('Used', '<span style="color:var(--c-danger)">' + pctW + '%</span>');
+    } else {
+      col2 += row('Rate', '<span style="color:' + projColor(projWeekly) + '">' + activeBurnWkPerDay.toFixed(1) + '</span> / ' + sustDailyWk.toFixed(1) + ' %/day');
+      col2 += row('Used', pctW + '%');
+    }
     if (resetWeekly) {
       const resetLocal = resetWeekly.toLocaleDateString([], {weekday:'short',month:'short',day:'numeric'});
       col2 += row('Resets', resetLocal + ' <span style="color:var(--text-dim)">(' + (remainingWeekly/24).toFixed(1) + 'd left)</span>');
@@ -688,6 +731,16 @@ Periscope.registerWidget({
     }
     if (duty.activeDays >= 2) {
       col2 += row('Duty', duty.activeHrsPerDay.toFixed(1) + 'h/day <span style="color:var(--text-dim)">(' + duty.activeDays + 'd)</span>');
+    }
+    // Extra usage spend in weekly card
+    if (burningExtra) {
+      const euUsed = eu.used_credits || 0;
+      const euLimit = eu.monthly_limit;
+      const euColor = euLimit ? (euUsed/euLimit > 0.8 ? 'var(--c-danger)' : euUsed/euLimit > 0.5 ? 'var(--c-warm)' : 'var(--c-primary)') : 'var(--c-warm)';
+      const euVal = euLimit != null && euLimit > 0
+        ? '<span style="color:' + euColor + '">$' + euUsed.toFixed(2) + '</span> / $' + euLimit.toFixed(2)
+        : '<span style="color:' + euColor + '">$' + euUsed.toFixed(2) + '</span>';
+      col2 += row('Extra $', euVal);
     }
 
     // COL 3: Capacity
