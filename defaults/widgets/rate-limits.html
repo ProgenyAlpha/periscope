@@ -65,8 +65,8 @@
 .hud-mode-toggle.active{background:rgba(var(--rgb-tertiary,var(--rgb-primary)),0.08);border-color:var(--c-tertiary,var(--c-primary));color:var(--c-tertiary,var(--c-primary))}
 
 /* Chronomark gauge panel — each gauge column: gauge on top, stats underneath */
-.w-rlhud .chrono-panel{flex:1;display:flex;gap:12px;justify-content:center;align-items:flex-start;flex-wrap:wrap;min-width:0}
-.w-rlhud .chrono-col{display:flex;flex-direction:column;align-items:center;gap:4px;flex:1;min-width:240px;max-width:420px}
+.w-rlhud .chrono-panel{flex:1;display:flex;gap:4px;justify-content:center;align-items:flex-start;flex-wrap:wrap;min-width:0}
+.w-rlhud .chrono-col{display:flex;flex-direction:column;align-items:center;gap:4px;flex:1;min-width:200px;max-width:320px}
 .w-rlhud .effort-col{display:flex;flex-direction:column;align-items:center;width:58px;min-width:58px;flex-shrink:0;padding-top:0}
 .w-rlhud .chrono-col svg{overflow:visible;width:100%;height:auto}
 .w-rlhud .chrono-substats{display:flex;gap:6px;width:100%}
@@ -682,7 +682,7 @@ Periscope.registerWidget({
               weightedSum += toks * (effortWeights[eff] != null ? effortWeights[eff] : 0.5);
             }
           }
-          var effortPct = window._effortOverride != null ? window._effortOverride : (totalTokens > 0 ? weightedSum / totalTokens : 0.5);
+          var effortPct = totalTokens > 0 ? weightedSum / totalTokens : 0.5;
           // Current session effort label
           var curEffort = '--';
           for (var si2 = sidecars.length - 1; si2 >= 0; si2--) {
@@ -803,25 +803,7 @@ Periscope.registerWidget({
           svg += '<text x="'+tubeCX+'" y="'+(tubeY+tubeH+26)+'" text-anchor="middle" font-family="var(--font-mono)" font-size="5.5" fill="rgba('+bulbRgb+',0.6)">'+Math.round(effortPct*100)+'%w</text>';
 
           svg += '</svg>';
-          // TEMP: debug slider to preview effort gauge animation
-          var sliderId = 'eft-slider-'+uid;
-          var sliderExists = effortEl.querySelector('input[type=range]');
-          var sliderVal = sliderExists ? sliderExists.value : null;
-          effortEl.innerHTML = svg +
-            '<input type="range" id="'+sliderId+'" min="0" max="100" value="'+(sliderVal != null ? sliderVal : Math.round(effortPct*100))+'" ' +
-            'style="width:100%;margin-top:4px;accent-color:'+nColor+';cursor:pointer" title="Effort preview slider (TEMP)">';
-          var slider = effortEl.querySelector('#'+sliderId);
-          slider.addEventListener('input', function() {
-            // Store override and re-trigger gauge render
-            window._effortOverride = parseInt(this.value) / 100;
-            // Re-render just the gauge section
-            var fakeData = Object.assign({}, data);
-            Periscope._widgets.get('rate-limits').render(el, fakeData);
-          });
-          // Use override if set
-          if (window._effortOverride != null) {
-            // Already used above via effortPct override
-          }
+          effortEl.innerHTML = svg;
         }
       }
 

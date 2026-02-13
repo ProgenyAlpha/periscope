@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -230,47 +231,102 @@ func importStatuslineConfig(app *App) {
 }
 
 func importSessionMeta(app *App) {
-	projectsDir := filepath.Join(app.ClaudeDir, "projects")
-	entries, err := os.ReadDir(projectsDir)
-	if err != nil {
-		log.Printf("[IMPORT] session meta: projects dir read failed: %v", err)
-		return
-	}
+	meta := make(map[string]map[string]any)
 
-	meta := make(map[string]any)
-	projectsScanned := 0
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		projectsScanned++
-		indexPath := filepath.Join(projectsDir, e.Name(), "sessions-index.json")
-		data, err := os.ReadFile(indexPath)
-		if err != nil {
-			continue
-		}
-		data = stripBOM(data)
-		var index struct {
-			Entries []map[string]any `json:"entries"`
-		}
-		if err := json.Unmarshal(data, &index); err != nil {
-			log.Printf("[IMPORT] session meta: %s parse failed: %v", e.Name(), err)
-			continue
-		}
-		for _, entry := range index.Entries {
-			if sid, ok := entry["sessionId"].(string); ok {
-				meta[sid] = entry
+	// --- Source 1: sessions-index.json (legacy, stopped updating ~Feb 2026) ---
+	projectsDir := filepath.Join(app.ClaudeDir, "projects")
+	if entries, err := os.ReadDir(projectsDir); err == nil {
+		for _, e := range entries {
+			if !e.IsDir() {
+				continue
+			}
+			indexPath := filepath.Join(projectsDir, e.Name(), "sessions-index.json")
+			data, err := os.ReadFile(indexPath)
+			if err != nil {
+				continue
+			}
+			data = stripBOM(data)
+			var index struct {
+				Entries []map[string]any `json:"entries"`
+			}
+			if json.Unmarshal(data, &index) != nil {
+				continue
+			}
+			for _, entry := range index.Entries {
+				if sid, ok := entry["sessionId"].(string); ok {
+					meta[sid] = entry
+				}
 			}
 		}
 	}
+	legacyCount := len(meta)
+
+	// --- Source 2: history.jsonl (current, has real session IDs + timestamps) ---
+	histPath := filepath.Join(app.ClaudeDir, "history.jsonl")
+	if f, err := os.Open(histPath); err == nil {
+		defer f.Close()
+		type HistEntry struct {
+			SessionID string  `json:"sessionId"`
+			Display   string  `json:"display"`
+			Timestamp float64 `json:"timestamp"`
+			Project   string  `json:"project"`
+		}
+		scanner := bufio.NewScanner(f)
+		scanner.Buffer(make([]byte, 256*1024), 2*1024*1024)
+		histEntries := 0
+		for scanner.Scan() {
+			var he HistEntry
+			if json.Unmarshal(scanner.Bytes(), &he) != nil || he.SessionID == "" {
+				continue
+			}
+			histEntries++
+			existing, ok := meta[he.SessionID]
+			if !ok {
+				existing = map[string]any{
+					"sessionId": he.SessionID,
+				}
+				meta[he.SessionID] = existing
+			}
+			// First prompt becomes summary (only if not already set by legacy index)
+			if _, hasSummary := existing["summary"]; !hasSummary {
+				if _, hasFirstPrompt := existing["firstPrompt"]; !hasFirstPrompt {
+					if he.Display != "" {
+						display := he.Display
+						if len(display) > 80 {
+							display = display[:77] + "..."
+						}
+						existing["firstPrompt"] = display
+					}
+				}
+			}
+			// Always update modified to latest timestamp
+			if he.Timestamp > 0 {
+				ts := time.UnixMilli(int64(he.Timestamp)).UTC().Format(time.RFC3339)
+				existing["modified"] = ts
+				// Set created if not already set
+				if _, hasCreated := existing["created"]; !hasCreated {
+					existing["created"] = ts
+				}
+			}
+			if he.Project != "" {
+				existing["project"] = he.Project
+			}
+		}
+		log.Printf("[IMPORT] session meta: history.jsonl parsed, %d entries", histEntries)
+	}
 
 	if len(meta) > 0 {
-		data, _ := json.Marshal(meta)
+		// Convert to map[string]any for JSON
+		out := make(map[string]any, len(meta))
+		for k, v := range meta {
+			out[k] = v
+		}
+		data, _ := json.Marshal(out)
 		app.DB.Exec(`INSERT OR REPLACE INTO kv(key, value, updated_at) VALUES(?, ?, CURRENT_TIMESTAMP)`,
 			"cache:session-meta", string(data))
-		log.Printf("[IMPORT] session meta: %d projects scanned, %d entries found", projectsScanned, len(meta))
+		log.Printf("[IMPORT] session meta: %d legacy + %d from history = %d total", legacyCount, len(meta)-legacyCount, len(meta))
 	} else {
-		log.Printf("[IMPORT] session meta: %d projects scanned, no entries found", projectsScanned)
+		log.Printf("[IMPORT] session meta: no entries found")
 	}
 }
 
