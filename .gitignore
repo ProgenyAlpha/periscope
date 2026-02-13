@@ -1,5 +1,6 @@
 # Binary
 periscope.exe
+periscope.exe~
 periscope
 
 # Go
@@ -13,9 +14,13 @@ go.sum
 # Session data (generated at runtime)
 *.jsonl
 
+# Logs
+*.log
+
 # Backups
 *.bak
 *.bak.*
 
 # Temp files
 temp-*.ps1
+tmp-*.ps1
