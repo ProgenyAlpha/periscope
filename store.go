@@ -123,14 +123,20 @@ func importSidecars(app *App) error {
 			continue
 		}
 		sid := strings.TrimSuffix(e.Name(), ".json")
-		data, err := os.ReadFile(filepath.Join(app.DataDir, e.Name()))
+		fpath := filepath.Join(app.DataDir, e.Name())
+		info, err := os.Stat(fpath)
+		if err != nil {
+			continue
+		}
+		data, err := os.ReadFile(fpath)
 		if err != nil {
 			log.Printf("[IMPORT] sidecar %s read failed: %v", e.Name(), err)
 			continue
 		}
 		data = stripBOM(data)
-		if _, err := app.DB.Exec(`INSERT OR REPLACE INTO sessions(id, data, updated_at) VALUES(?, ?, CURRENT_TIMESTAMP)`,
-			sid, string(data)); err != nil {
+		modTime := info.ModTime().UTC().Format("2006-01-02T15:04:05Z")
+		if _, err := app.DB.Exec(`INSERT OR REPLACE INTO sessions(id, data, updated_at) VALUES(?, ?, ?)`,
+			sid, string(data), modTime); err != nil {
 			log.Printf("[IMPORT] sidecar %s insert failed: %v", sid, err)
 		} else {
 			imported++
