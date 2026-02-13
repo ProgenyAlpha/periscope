@@ -1,6 +1,6 @@
 <style>
-.w-activity-feed .feed-list{display:flex;flex-direction:column;gap:4px}
-.w-activity-feed .feed-item{display:grid;grid-template-columns:auto 1fr auto;gap:6px;padding:6px 8px;background:var(--bg-inset);border:1px solid var(--rule);border-radius:4px;font-family:var(--font-mono);font-size:0.62rem;align-items:center;transition:border-color 0.15s}
+.w-activity-feed .feed-list{display:flex;flex-direction:column;gap:6px}
+.w-activity-feed .feed-item{display:grid;grid-template-columns:auto 1fr auto;gap:6px;padding:8px 10px;background:var(--bg-inset);border:1px solid var(--rule);border-radius:4px;font-family:var(--font-mono);font-size:0.62rem;align-items:center;transition:border-color 0.15s}
 .w-activity-feed .feed-item:first-child{border-color:color-mix(in srgb,var(--c-primary) 30%,var(--rule))}
 .w-activity-feed .feed-item:hover{border-color:var(--c-primary)}
 .w-activity-feed .fi-type{display:inline-block;padding:2px 6px;border-radius:3px;font-size:0.52rem;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;min-width:42px;text-align:center}
@@ -12,6 +12,7 @@
 .w-activity-feed .fi-detail{font-size:0.52rem;color:var(--text-dim);margin-top:2px;display:flex;gap:6px;flex-wrap:wrap}
 .w-activity-feed .fi-detail .fi-tools{display:flex;gap:2px;flex-wrap:wrap}
 .w-activity-feed .fi-detail .fi-tool-tag{padding:0 4px;background:var(--bg-panel);border:1px solid var(--rule);border-radius:2px;font-size:0.48rem}
+.w-activity-feed .fi-proj{padding:0 5px;background:var(--bg-panel);border:1px solid var(--rule);border-radius:2px;font-size:0.5rem;color:var(--c-secondary);font-family:var(--font-mono)}
 .w-activity-feed .fi-right{text-align:right;white-space:nowrap}
 .w-activity-feed .fi-cost{font-weight:600;color:var(--c-primary);font-size:0.7rem}
 .w-activity-feed .fi-time{font-size:0.5rem;color:var(--text-dim);margin-top:2px}
@@ -60,7 +61,7 @@ Periscope.registerWidget({
     });
 
     var list = el.querySelector('#af-list');
-    var top5 = items.slice(0, 4);
+    var top5 = items.slice(0, 5);
 
     if (top5.length === 0) {
       list.innerHTML = '<div class="feed-empty">No turn data yet</div>';
@@ -78,18 +79,22 @@ Periscope.registerWidget({
       return Math.round(diff / 86400000) + 'd ago';
     };
 
+    var esc = typeof escHtml === 'function' ? escHtml : function(s){return s||''};
     list.innerHTML = top5.map(function(item) {
       var typeClass = item.type === 'agent' ? 'fi-agent' : item.type === 'tool' ? 'fi-tool' : 'fi-chat';
       var label = sessionLabel(item.sid, data);
+      var proj = (typeof sessionProject === 'function') ? sessionProject(item.sid, data) : '';
+      var projTag = proj ? '<span class="fi-proj">' + esc(proj) + '</span>' : '';
       var toolTags = item.tools.length > 0
-        ? '<span class="fi-tools">' + item.tools.slice(0,3).map(function(t) { return '<span class="fi-tool-tag">' + t + '</span>'; }).join('') + (item.tools.length > 3 ? '<span class="fi-tool-tag">+' + (item.tools.length - 3) + '</span>' : '') + '</span>'
+        ? '<span class="fi-tools">' + item.tools.slice(0,3).map(function(t) { return '<span class="fi-tool-tag">' + esc(t) + '</span>'; }).join('') + (item.tools.length > 3 ? '<span class="fi-tool-tag">+' + (item.tools.length - 3) + '</span>' : '') + '</span>'
         : '';
       return '<div class="feed-item">' +
-        '<span class="fi-type ' + typeClass + '">' + item.type + '</span>' +
+        '<span class="fi-type ' + typeClass + '">' + esc(item.type) + '</span>' +
         '<div class="fi-body">' +
-          '<div class="fi-session" title="' + item.sid + '">' + label + '</div>' +
+          '<div class="fi-session" title="' + esc(item.sid) + '">' + esc(label) + '</div>' +
           '<div class="fi-detail">' +
-            '<span>' + item.model + '</span>' +
+            projTag +
+            '<span>' + esc(item.model) + '</span>' +
             toolTags +
           '</div>' +
         '</div>' +

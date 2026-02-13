@@ -22,8 +22,8 @@
 .w-rlhud .sync-btn:hover{border-color:var(--c-primary);color:var(--c-primary);box-shadow:0 0 12px var(--glow)}
 .w-rlhud .data-age{font-family:var(--font-mono);font-size:9px;color:var(--text-dim)}
 
-/* Intel cards 2x2 grid */
-.w-rlhud .hud-intel{flex:1;display:grid;grid-template-columns:repeat(2,1fr);gap:8px;min-width:0}
+/* Intel cards 2x3 grid */
+.w-rlhud .hud-intel{flex:1;display:grid;grid-template-columns:repeat(3,1fr);gap:8px;min-width:0}
 .w-rlhud .hud-intel-card{background:color-mix(in srgb,var(--bg-inset) 60%,transparent);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);border:1px solid var(--rule);border-radius:8px;padding:10px 12px;transition:transform .2s,border-color .2s}
 .w-rlhud .hud-intel-card:hover{transform:translateY(-2px);border-color:color-mix(in srgb,var(--rule) 50%,var(--text-dim));box-shadow:0 0 12px var(--glow)}
 .w-rlhud .ic-label{font-family:var(--font-mono);font-size:8px;color:var(--text-dim);text-transform:uppercase;letter-spacing:1px;margin-bottom:3px}
@@ -57,6 +57,30 @@
 .w-rlhud .hud-extra-fill{height:100%;border-radius:3px;transition:width 0.8s cubic-bezier(0.4,0,0.2,1),background 0.4s}
 .w-rlhud .hud-extra-val{font-family:var(--font-mono);font-size:9px;color:var(--text-dim);margin-top:2px;text-align:center}
 
+/* Gauge mode toggle — inherits theme vars (lives in .widget-title, outside .w-rlhud) */
+.hud-mode-toggle{font-family:var(--font-mono);font-size:8px;letter-spacing:1.5px;text-transform:uppercase;
+  padding:2px 8px;border:1px solid var(--rule);background:var(--bg-inset);color:var(--text-dim);cursor:pointer;
+  border-radius:var(--radius,3px);transition:all .15s;margin-left:auto;line-height:1.4}
+.hud-mode-toggle:hover{border-color:var(--c-tertiary,var(--c-primary));color:var(--c-tertiary,var(--c-primary));box-shadow:0 0 8px rgba(var(--rgb-tertiary,var(--rgb-primary)),0.15)}
+.hud-mode-toggle.active{background:rgba(var(--rgb-tertiary,var(--rgb-primary)),0.08);border-color:var(--c-tertiary,var(--c-primary));color:var(--c-tertiary,var(--c-primary))}
+
+/* Chronomark gauge panel — each gauge column: gauge on top, stats underneath */
+.w-rlhud .chrono-panel{flex:1;display:flex;gap:12px;justify-content:center;flex-wrap:wrap;min-width:0}
+.w-rlhud .chrono-col{display:flex;flex-direction:column;align-items:center;gap:4px;flex:1;min-width:240px;max-width:420px}
+.w-rlhud .chrono-col svg{overflow:visible;width:100%;height:auto}
+.w-rlhud .chrono-substats{display:flex;gap:6px;width:100%}
+.w-rlhud .cs-item{flex:1;text-align:center;padding:5px 8px;background:rgba(var(--rgb-tertiary,var(--rgb-primary)),0.03);border:1px solid rgba(var(--rgb-tertiary,var(--rgb-primary)),0.08);border-radius:var(--radius,4px)}
+.w-rlhud .cs-label{font-family:var(--font-mono);font-size:7px;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.5px}
+.w-rlhud .cs-val{font-family:var(--font-ui,var(--font-mono));font-size:14px;font-weight:700;line-height:1.3;font-variant-numeric:tabular-nums}
+@keyframes chrono-sweep{
+  0%{transform:rotate(-60deg)}
+  12%{transform:rotate(55deg)}
+  35%{transform:rotate(-15deg)}
+  55%{transform:rotate(25deg)}
+  80%{transform:rotate(var(--target-rot))}
+  100%{transform:rotate(var(--target-rot))}
+}
+
 /* Responsive */
 @media(max-width:1024px){
   .w-rlhud{flex-direction:column;align-items:center}
@@ -64,6 +88,9 @@
   .w-rlhud .hud-gauges svg{width:80px;height:80px}
   .w-rlhud .hud-penguin-wrap{min-width:unset}
   .w-rlhud .gauge-center-val{font-size:13px}
+}
+@media(max-width:900px){
+  .w-rlhud .hud-intel{grid-template-columns:repeat(2,1fr)}
 }
 @media(max-width:640px){
   .w-rlhud{padding:10px;gap:12px}
@@ -133,12 +160,26 @@ Periscope.registerWidget({
           '<div class="hud-extra" data-extra="wrap"></div>' +
         '</div>' +
 
-        /* --- Intel cards 2x2 --- */
-        '<div class="hud-intel">' +
+        /* --- Intel cards 2x3 (text mode) --- */
+        '<div class="hud-intel" data-view="text">' +
           '<div class="hud-intel-card" data-card="burn"></div>' +
           '<div class="hud-intel-card" data-card="ttl"></div>' +
           '<div class="hud-intel-card" data-card="proj"></div>' +
           '<div class="hud-intel-card" data-card="window"></div>' +
+          '<div class="hud-intel-card" data-card="pace"></div>' +
+          '<div class="hud-intel-card" data-card="duty"></div>' +
+        '</div>' +
+
+        /* --- Chronomark gauge panel (gauge mode, hidden by default) --- */
+        '<div class="chrono-panel" data-view="gauge" style="display:none">' +
+          '<div class="chrono-col" data-chrono="5hr">' +
+            '<div data-chrono-svg></div>' +
+            '<div class="chrono-substats" data-chrono-stats></div>' +
+          '</div>' +
+          '<div class="chrono-col" data-chrono="weekly">' +
+            '<div data-chrono-svg></div>' +
+            '<div class="chrono-substats" data-chrono-stats></div>' +
+          '</div>' +
         '</div>' +
 
         /* --- Penguin mascot --- */
@@ -150,9 +191,48 @@ Periscope.registerWidget({
     el.querySelector('[data-action="sync"]').addEventListener('click', function() {
       if (typeof Periscope.refreshUsage === 'function') Periscope.refreshUsage();
     });
+
+    // Gauge mode toggle — only for starfield themes
+    var isStarfield = (document.documentElement.getAttribute('data-theme') || '').indexOf('starfield') !== -1;
+    if (isStarfield) {
+      var titleEl = el.querySelector('.widget-title');
+      var toggleBtn = document.createElement('button');
+      toggleBtn.className = 'hud-mode-toggle';
+      toggleBtn.textContent = 'GAUGES';
+      titleEl.style.display = 'flex';
+      titleEl.style.alignItems = 'center';
+      titleEl.style.gap = '8px';
+      titleEl.appendChild(toggleBtn);
+
+      var gaugeMode = localStorage.getItem('periscope-hud-gauges') === '1';
+      var textView = el.querySelector('[data-view="text"]');
+      var gaugeView = el.querySelector('[data-view="gauge"]');
+
+      function applyMode() {
+        if (gaugeMode) {
+          textView.style.display = 'none';
+          gaugeView.style.display = '';
+          toggleBtn.classList.add('active');
+        } else {
+          textView.style.display = '';
+          gaugeView.style.display = 'none';
+          toggleBtn.classList.remove('active');
+        }
+      }
+      applyMode();
+
+      toggleBtn.addEventListener('click', function() {
+        gaugeMode = !gaugeMode;
+        localStorage.setItem('periscope-hud-gauges', gaugeMode ? '1' : '0');
+        applyMode();
+        // Force re-render with stashed data
+        if (el._lastData) Periscope._widgets.get('rate-limits').render(el, el._lastData);
+      });
+    }
   },
 
   render(el, data) {
+    el._lastData = data; // stash for toggle re-render
     var CIRC = 2 * Math.PI * 48;
 
     // --- Resolve runtime globals with safe fallbacks ---
@@ -277,6 +357,8 @@ Periscope.registerWidget({
     var ttlCard = el.querySelector('[data-card="ttl"]');
     var projCard = el.querySelector('[data-card="proj"]');
     var winCard = el.querySelector('[data-card="window"]');
+    var paceCard = el.querySelector('[data-card="pace"]');
+    var dutyCard = el.querySelector('[data-card="duty"]');
 
     if (!rd) {
       var emptyMsg = '<div class="ic-label">--</div><div class="ic-sub">Sync rate limits to populate</div>';
@@ -284,6 +366,8 @@ Periscope.registerWidget({
       if (ttlCard) ttlCard.innerHTML = emptyMsg;
       if (projCard) projCard.innerHTML = emptyMsg;
       if (winCard) winCard.innerHTML = emptyMsg;
+      if (paceCard) paceCard.innerHTML = emptyMsg;
+      if (dutyCard) dutyCard.innerHTML = emptyMsg;
     } else {
       var wkAtLimit = rd.pctW >= 100;
       var hrAtLimit = rd.pct5 >= 100;
@@ -362,6 +446,248 @@ Periscope.registerWidget({
             '<span style="color:' + (wkAtLimit ? 'var(--c-danger)' : 'var(--c-secondary)') + '">Wk</span> resets in <strong>' + fH(rd.remainingWeekly) + '</strong>' +
             '<span class="ic-tag"> (' + rWdate + ')</span>' +
           '</div>';
+      }
+
+      // Budget Pace card (text mode — always rendered)
+      if (paceCard) {
+        var sustainRate5 = 100 / 5;
+        var sustainRateWk = rd.duty ? 100 / (rd.duty.activeHrsPerDay * 7) : 100 / 168;
+        var pace5x = rd.burn5hr > 0 ? (rd.burn5hr / sustainRate5) : 0;
+        var paceWx = rd.burnWeeklyActive > 0 ? (rd.burnWeeklyActive / sustainRateWk) : 0;
+        var pace5Color = pace5x <= 0.85 ? 'var(--c-secondary)' : pace5x <= 0.95 ? 'var(--c-primary)' : 'var(--c-danger)';
+        var paceWColor = paceWx <= 0.85 ? 'var(--c-secondary)' : paceWx <= 0.95 ? 'var(--c-primary)' : 'var(--c-danger)';
+        var pace5Label = pace5x <= 0.1 ? 'IDLE' : pace5x.toFixed(2) + 'x';
+        var paceWLabel = paceWx <= 0.1 ? 'IDLE' : paceWx.toFixed(2) + 'x';
+        paceCard.innerHTML =
+          '<div class="ic-label">Budget Pace</div>' +
+          '<div class="ic-val-row">' +
+            '<span class="ic-val" style="color:' + pace5Color + '">' + pace5Label + '</span>' +
+            '<span class="ic-tag">5hr</span>' +
+          '</div>' +
+          '<div class="ic-val-row">' +
+            '<span class="ic-val" style="color:' + paceWColor + '">' + paceWLabel + '</span>' +
+            '<span class="ic-tag">weekly</span>' +
+          '</div>' +
+          '<div class="ic-sub">1.0x = even burn across window</div>';
+      }
+
+      // Chronomark gauge panel (gauge mode — only rendered when visible)
+      var chronoPanel = el.querySelector('[data-view="gauge"]');
+      if (chronoPanel && chronoPanel.style.display !== 'none') {
+        var sustainRate5 = sustainRate5 || 100/5;
+        var sustainRateWk = sustainRateWk || (rd.duty ? 100/(rd.duty.activeHrsPerDay*7) : 100/168);
+        var p5x = rd.burn5hr > 0 ? (rd.burn5hr / sustainRate5) : 0;
+        var pWx = rd.burnWeeklyActive > 0 ? (rd.burnWeeklyActive / sustainRateWk) : 0;
+
+        // Chronomark half-gauge builder — full-size (200x115 viewBox)
+        // sides: [{label, value, pct, color}] — up to 3 vertical capsule gauges
+        function buildChrono(pace, label, uid, sides) {
+          var CX=100,CY=108,R=80,DEG=Math.PI/180,MAX=1.5;
+          var AS=-150,AE=-30;
+          // Resolve theme colors from CSS variables
+          var cs=getComputedStyle(document.documentElement);
+          var cSafe=cs.getPropertyValue('--c-secondary').trim()||'#06b6d4';
+          var cWarn=cs.getPropertyValue('--c-primary').trim()||'#f59e0b';
+          var cDanger=cs.getPropertyValue('--c-danger').trim()||'#ef4444';
+          var cAccent=cs.getPropertyValue('--c-tertiary').trim()||cSafe;
+          // Hex→rgb helper for opacity variants
+          function hexRgb(h){if(h.charAt(0)==='#'){var v=parseInt(h.slice(1),16);return(h.length===4)?((v>>8&0xf)*17)+','+((v>>4&0xf)*17)+','+(((v&0xf)*17)):(v>>16&255)+','+(v>>8&255)+','+(v&255)}return'6,182,212'}
+          var rgbSafe=hexRgb(cSafe);
+          function pol(r,a){return{x:CX+r*Math.cos(a*DEG),y:CY+r*Math.sin(a*DEG)}}
+          function arc(r,s,e){var p1=pol(r,s),p2=pol(r,e);var lg=(e-s)>180?1:0;return'M '+p1.x.toFixed(1)+','+p1.y.toFixed(1)+' A '+r+','+r+' 0 '+lg+',1 '+p2.x.toFixed(1)+','+p2.y.toFixed(1)}
+          var t=Math.min(pace,MAX)/MAX;
+          var needleAng=AS+t*(AE-AS);
+          var rotDeg=needleAng+90;
+          var safeEnd=AS+(0.85/MAX)*(AE-AS);
+          var warnEnd=AS+(0.95/MAX)*(AE-AS);
+          var nColor=pace<=0.85?cSafe:(pace<=0.95?cWarn:cDanger);
+          var statusTxt=pace<=0.1?'IDLE':(pace<=0.85?'NOMINAL':(pace<=0.95?'ELEVATED':'CRITICAL'));
+          // Ticks — 15 divisions (0.1x each), major every 0.5x
+          var tks='';
+          for(var i=0;i<=15;i++){
+            var tp=(i/15)*MAX,ta=AS+((tp/MAX)*(AE-AS));
+            var maj=i%5===0,mid=i%5!==0&&i%2===0;
+            var inn=pol(maj?60:(mid?66:70),ta),out=pol(76,ta);
+            tks+='<line x1="'+inn.x.toFixed(1)+'" y1="'+inn.y.toFixed(1)+'" x2="'+out.x.toFixed(1)+'" y2="'+out.y.toFixed(1)+'" stroke="rgba('+rgbSafe+','+(maj?'0.5':(mid?'0.2':'0.08'))+')" stroke-width="'+(maj?'1.2':(mid?'0.6':'0.3'))+'"/>';
+            if(maj){var lp=pol(52,ta);tks+='<text x="'+lp.x.toFixed(1)+'" y="'+(lp.y+2.5).toFixed(1)+'" text-anchor="middle" font-family="Rajdhani,sans-serif" font-size="8" fill="rgba('+rgbSafe+',0.45)" font-weight="600">'+tp.toFixed(1)+'</text>';}
+          }
+          // Sweep animation on first render
+          var isFirst=!chronoPanel.dataset['init_'+uid];
+          var needleStyle=isFirst
+            ? 'transform-origin:'+CX+'px '+CY+'px;animation:chrono-sweep 1.4s cubic-bezier(0.22,1,0.36,1) forwards;--target-rot:'+rotDeg+'deg'
+            : 'transform-origin:'+CX+'px '+CY+'px;transform:rotate('+rotDeg+'deg);transition:transform 0.8s cubic-bezier(0.34,1.56,0.64,1)';
+          chronoPanel.dataset['init_'+uid]='1';
+
+          // Red warning light position — just past arc end
+          var rgbDanger=hexRgb(cDanger);
+          var warnLit=pace>1.1;
+          var wlPos=pol(R,AE+6);
+          var warnLight='<circle cx="'+wlPos.x.toFixed(1)+'" cy="'+wlPos.y.toFixed(1)+'" r="3.5" fill="'+(warnLit?cDanger:'rgba('+rgbDanger+',0.12)')+'" stroke="rgba('+rgbDanger+',0.3)" stroke-width="0.5"/>';
+          if(warnLit) warnLight+='<circle cx="'+wlPos.x.toFixed(1)+'" cy="'+wlPos.y.toFixed(1)+'" r="6" fill="none" stroke="'+cDanger+'" stroke-width="0.4" opacity="0.3"/><circle cx="'+wlPos.x.toFixed(1)+'" cy="'+wlPos.y.toFixed(1)+'" r="3.5" fill="'+cDanger+'" opacity="0.6"><animate attributeName="opacity" values="0.6;0.2;0.6" dur="1.2s" repeatCount="indefinite"/></circle>';
+
+          return '<svg width="272" height="156" viewBox="0 0 200 115">' +
+            '<defs><filter id="cg-'+uid+'"><feDropShadow dx="0" dy="0" stdDeviation="2" flood-color="rgba('+rgbSafe+',0.5)"/></filter></defs>' +
+            // Housing
+            '<path d="M 8,110 A 92,92 0 0,1 192,110" fill="rgba(8,14,20,0.6)" stroke="rgba(26,37,53,0.6)" stroke-width="1.5"/>' +
+            '<line x1="8" y1="110" x2="192" y2="110" stroke="rgba(26,37,53,0.4)" stroke-width="1"/>' +
+            // Outer decorative ring
+            '<path d="'+arc(86,AS,AE)+'" fill="none" stroke="rgba('+rgbSafe+',0.06)" stroke-width="0.5"/>' +
+            // Zone arcs
+            '<path d="'+arc(R,AS,safeEnd)+'" fill="none" stroke="'+cSafe+'" stroke-width="8" opacity="0.1"/>' +
+            '<path d="'+arc(R,safeEnd,warnEnd)+'" fill="none" stroke="'+cWarn+'" stroke-width="8" opacity="0.1"/>' +
+            '<path d="'+arc(R,warnEnd,AE)+'" fill="none" stroke="'+cDanger+'" stroke-width="8" opacity="0.12"/>' +
+            // Constellation dots
+            '<g opacity="0.1">' +
+              '<circle cx="42" cy="42" r="0.7" fill="'+cSafe+'"/><circle cx="50" cy="38" r="0.5" fill="'+cSafe+'"/><circle cx="37" cy="48" r="0.5" fill="'+cSafe+'"/>' +
+              '<line x1="42" y1="42" x2="50" y2="38" stroke="'+cSafe+'" stroke-width="0.2"/><line x1="42" y1="42" x2="37" y2="48" stroke="'+cSafe+'" stroke-width="0.2"/>' +
+              '<circle cx="158" cy="45" r="0.6" fill="'+cSafe+'"/><circle cx="163" cy="40" r="0.4" fill="'+cSafe+'"/><circle cx="153" cy="52" r="0.5" fill="'+cSafe+'"/>' +
+              '<line x1="158" y1="45" x2="163" y2="40" stroke="'+cSafe+'" stroke-width="0.2"/><line x1="158" y1="45" x2="153" y2="52" stroke="'+cSafe+'" stroke-width="0.2"/>' +
+            '</g>' +
+            // Ticks
+            tks +
+            // Inner dashed ring
+            '<path d="'+arc(38,AS,AE)+'" fill="none" stroke="rgba('+rgbSafe+',0.04)" stroke-width="0.5" stroke-dasharray="2,3"/>' +
+            // Warning light (110%+ overburn indicator)
+            warnLight +
+            // Needle
+            '<g filter="url(#cg-'+uid+')" style="'+needleStyle+'">' +
+              '<polygon fill="'+nColor+'" points="'+CX+',22 '+(CX-2.5)+',100 '+CX+','+CY+' '+(CX+2.5)+',100"/>' +
+              '<polygon fill="rgba('+rgbSafe+',0.25)" points="'+CX+',32 '+(CX-0.8)+',94 '+(CX+0.8)+',94"/>' +
+            '</g>' +
+            // Center hub
+            '<circle cx="'+CX+'" cy="'+CY+'" r="7" fill="rgba(10,16,24,0.8)" stroke="'+cSafe+'" stroke-width="0.8" opacity="0.5"/>' +
+            '<circle cx="'+CX+'" cy="'+CY+'" r="2.5" fill="'+cSafe+'" opacity="0.3"/>' +
+            // Status text
+            '<text x="'+CX+'" y="70" text-anchor="middle" font-family="Michroma,sans-serif" font-size="4.3" font-weight="bold" fill="'+nColor+'" letter-spacing="2px" opacity="0.7">'+statusTxt+'</text>' +
+            // Readout
+            '<text x="'+CX+'" y="86" text-anchor="middle" font-family="Rajdhani,sans-serif" font-size="18" font-weight="700" fill="'+nColor+'">' + (pace<=0.1?'IDLE':pace.toFixed(2)+'x') + '</text>' +
+            // Label
+            '<text x="'+CX+'" y="100" text-anchor="middle" font-family="Michroma,sans-serif" font-size="5" fill="rgba('+rgbSafe+',0.7)" letter-spacing="2px" font-weight="bold">'+label+'</text>' +
+            // Vertical capsule gauges in dead space
+            buildSideGauges(sides||[], rgbSafe, cSafe, cWarn, cDanger, hexRgb) +
+          '</svg>';
+        }
+
+        // Vertical capsule gauge builder — renders in SVG dead space flanking the half-gauge
+        function buildSideGauges(items, rgbSafe, cSafe, cWarn, cDanger, hexRgb) {
+          if (!items || !items.length) return '';
+          var s = '';
+          // Position configs: tucked into far corners outside the arc housing
+          var positions = [
+            {x:4, anchor:'start'},
+            {x:13, anchor:'start'},
+            {x:196, anchor:'end'}
+          ];
+          var BY=6, BH=45, BW=4, BR=2;
+          for (var i = 0; i < Math.min(items.length, 3); i++) {
+            var it = items[i];
+            var pos = positions[i];
+            var bx = pos.x - BW/2;
+            var pct = Math.max(0, Math.min(1, it.pct || 0));
+            var fillH = pct * BH;
+            var fillY = BY + BH - fillH;
+            var barColor = it.color || cSafe;
+            var rgbBar = hexRgb(barColor);
+            s += '<rect x="'+bx+'" y="'+BY+'" width="'+BW+'" height="'+BH+'" rx="'+BR+'" ry="'+BR+'" fill="rgba(8,14,20,0.7)" stroke="rgba('+rgbSafe+',0.15)" stroke-width="0.5"/>';
+            if (fillH > 0) {
+              var clipId = 'sc-'+i+'-'+(Math.random()*1e6|0);
+              s += '<defs><clipPath id="'+clipId+'"><rect x="'+bx+'" y="'+fillY.toFixed(1)+'" width="'+BW+'" height="'+fillH.toFixed(1)+'" rx="'+BR+'" ry="'+BR+'"/></clipPath></defs>';
+              s += '<rect x="'+bx+'" y="'+BY+'" width="'+BW+'" height="'+BH+'" rx="'+BR+'" ry="'+BR+'" fill="'+barColor+'" opacity="0.6" clip-path="url(#'+clipId+')"/>';
+              s += '<rect x="'+(bx-1)+'" y="'+(fillY-1).toFixed(1)+'" width="'+(BW+2)+'" height="3" rx="1" fill="'+barColor+'" opacity="0.3" clip-path="url(#'+clipId+')"/>';
+            }
+            for (var t = 0; t <= 4; t++) {
+              var ty = BY + (t/4) * BH;
+              s += '<line x1="'+(bx-1)+'" y1="'+ty.toFixed(1)+'" x2="'+bx+'" y2="'+ty.toFixed(1)+'" stroke="rgba('+rgbSafe+',0.15)" stroke-width="0.3"/>';
+            }
+            s += '<text x="'+pos.x+'" y="'+(BY+BH+7)+'" text-anchor="middle" font-family="Rajdhani,sans-serif" font-size="5" font-weight="700" fill="'+barColor+'">'+it.value+'</text>';
+            s += '<text x="'+pos.x+'" y="'+(BY-2)+'" text-anchor="middle" font-family="Michroma,sans-serif" font-size="2.5" fill="rgba('+rgbSafe+',0.45)" letter-spacing="0.8px">'+it.label+'</text>';
+          }
+          return s;
+        }
+
+        // Render each gauge column: SVG + its own stats
+        var col5 = chronoPanel.querySelector('[data-chrono="5hr"]');
+        var colW = chronoPanel.querySelector('[data-chrono="weekly"]');
+        // Compute side gauge data
+        var dc = rd.duty;
+        var activeRatio = dc && dc.activeHrsPerDay ? Math.round((dc.activeHrsPerDay / 24) * 100) : 0;
+        var proj5Pct = Math.min(rd.proj5hr || 0, 100) / 100;
+        var projWPct = Math.min(rd.projWeekly || 0, 100) / 100;
+        var win5Pct = rd.remaining5hr != null ? Math.max(0, 1 - rd.remaining5hr / 5) : 0;
+        var winWPct = rd.remainingWeekly != null ? Math.max(0, 1 - rd.remainingWeekly / 168) : 0;
+        var dutyPct = activeRatio / 100;
+        // Resolve CSS vars for inline SVG (can't use var() in SVG attributes)
+        var _cs = getComputedStyle(document.documentElement);
+        var _cPri = _cs.getPropertyValue('--c-primary').trim()||'#f59e0b';
+        var _cSec = _cs.getPropertyValue('--c-secondary').trim()||'#06b6d4';
+        var _cDng = _cs.getPropertyValue('--c-danger').trim()||'#ef4444';
+        var _cTrt = _cs.getPropertyValue('--c-tertiary').trim()||_cSec;
+        var pColor5 = rd.proj5hr >= 90 ? _cDng : rd.proj5hr >= 70 ? _cPri : _cSec;
+        var pColorW = rd.projWeekly >= 90 ? _cDng : rd.projWeekly >= 70 ? _cPri : _cSec;
+
+        var sides5 = [
+          {label:'PROJECTED', value:(rd.proj5hr>=100?'OVER':rd.proj5hr+'%'), pct:proj5Pct, color:pColor5},
+          {label:'WINDOW', value:fH(rd.remaining5hr||0), pct:win5Pct, color:_cPri},
+          {label:'DUTY', value:activeRatio+'%', pct:dutyPct, color:_cTrt}
+        ];
+        var sidesW = [
+          {label:'PROJECTED', value:(rd.projWeekly>=100?'OVER':rd.projWeekly+'%'), pct:projWPct, color:pColorW},
+          {label:'WINDOW', value:fH(rd.remainingWeekly||0), pct:winWPct, color:_cPri},
+          {label:'DUTY', value:activeRatio+'%', pct:dutyPct, color:_cTrt}
+        ];
+
+        if (col5) {
+          col5.querySelector('[data-chrono-svg]').innerHTML = buildChrono(p5x, '5-HOUR PACE', '5hr', sides5);
+          var ttr5 = rd.remaining5hr != null ? fH(rd.remaining5hr) : '--';
+          var ttl5ok = !hrAtLimit && (rd.ttl5hr >= rd.remaining5hr || rd.ttl5hr === Infinity);
+          var ttl5Val = hrAtLimit ? 'LIMIT' : (ttl5ok ? 'OK' : fH(rd.ttl5hr));
+          var ttl5Color = hrAtLimit ? 'var(--c-danger)' : (ttl5ok ? 'var(--c-secondary)' : 'var(--c-danger)');
+          col5.querySelector('[data-chrono-stats]').innerHTML =
+            '<div class="cs-item"><div class="cs-label">Burn Rate</div><div class="cs-val" style="color:var(--c-primary)">'+rd.burn5hr.toFixed(1)+'%/h</div></div>' +
+            '<div class="cs-item"><div class="cs-label">To Limit</div><div class="cs-val" style="color:'+ttl5Color+'">'+ttl5Val+'</div></div>' +
+            '<div class="cs-item"><div class="cs-label">To Reset</div><div class="cs-val" style="color:var(--c-tertiary,var(--c-primary))">'+ttr5+'</div></div>';
+        }
+        if (colW) {
+          var burnWk = rd.burnWeeklyActive != null ? rd.burnWeeklyActive : rd.burnWeekly;
+          colW.querySelector('[data-chrono-svg]').innerHTML = buildChrono(pWx, 'WEEKLY PACE', 'wk', sidesW);
+          var ttrW = rd.remainingWeekly != null ? fH(rd.remainingWeekly) : '--';
+          var ttlWok = !wkAtLimit && (rd.ttlWeekly >= rd.remainingWeekly || rd.ttlWeekly === Infinity);
+          var ttlWVal = wkAtLimit ? 'LIMIT' : (ttlWok ? 'OK' : fH(rd.ttlWeekly));
+          var ttlWColor = wkAtLimit ? 'var(--c-danger)' : (ttlWok ? 'var(--c-secondary)' : 'var(--c-danger)');
+          colW.querySelector('[data-chrono-stats]').innerHTML =
+            '<div class="cs-item"><div class="cs-label">Burn Rate</div><div class="cs-val" style="color:'+(wkAtLimit?'var(--c-danger)':'var(--c-secondary)')+'">'+((burnWk||0).toFixed(2))+'%/h</div></div>' +
+            '<div class="cs-item"><div class="cs-label">To Limit</div><div class="cs-val" style="color:'+ttlWColor+'">'+ttlWVal+'</div></div>' +
+            '<div class="cs-item"><div class="cs-label">To Reset</div><div class="cs-val" style="color:var(--c-tertiary,var(--c-primary))">'+ttrW+'</div></div>';
+        }
+      }
+
+      // Duty Cycle card — activity pattern from history
+      if (dutyCard) {
+        var dc = rd.duty;
+        var activeHrs = dc ? dc.activeHrsPerDay.toFixed(1) : '--';
+        var activeRatio = dc && dc.activeHrsPerDay ? Math.round((dc.activeHrsPerDay / 24) * 100) : 0;
+        var daysTracked = dc ? dc.activeDays : 0;
+        var idleCount = dc && dc.idleHrs ? dc.idleHrs.length : 0;
+        var idleStr = '';
+        if (dc && dc.idleHrs && dc.idleHrs.length > 0) {
+          var ranges = [];
+          var start = dc.idleHrs[0], end = dc.idleHrs[0];
+          for (var i = 1; i < dc.idleHrs.length; i++) {
+            if (dc.idleHrs[i] === end + 1) { end = dc.idleHrs[i]; }
+            else { ranges.push(start === end ? start + ':00' : start + ':00-' + (end+1) + ':00'); start = end = dc.idleHrs[i]; }
+          }
+          ranges.push(start === end ? start + ':00' : start + ':00-' + (end+1) + ':00');
+          idleStr = ranges.join(', ');
+        }
+        var ratioColor = activeRatio < 40 ? 'var(--c-secondary)' : activeRatio < 70 ? 'var(--c-primary)' : 'var(--c-warm)';
+        dutyCard.innerHTML =
+          '<div class="ic-label">Duty Cycle</div>' +
+          '<div class="ic-val-row">' +
+            '<span class="ic-val" style="color:' + ratioColor + '">' + activeHrs + 'h</span>' +
+            '<span class="ic-tag">/day (' + activeRatio + '%)</span>' +
+          '</div>' +
+          (idleStr ? '<div class="ic-sub">Idle: ' + idleStr + '</div>' : '') +
+          '<div class="ic-sub">' + daysTracked + ' days tracked</div>';
       }
     }
 

@@ -19,7 +19,8 @@
 .w-sessions tbody tr.row-expanded td{border-left:3px solid var(--c-primary);background:rgba(var(--rgb-primary,245,158,11),0.04)}
 
 .w-sessions .sid{color:var(--text-dim);font-weight:500;font-size:0.65rem}
-.w-sessions .proj{font-family:var(--font-ui);font-size:0.68rem;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.w-sessions .proj{font-family:var(--font-ui);font-size:0.68rem;max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.w-sessions .proj-sub{font-size:0.52rem;color:var(--text-dim);font-family:var(--font-mono);margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .w-sessions .cost-val{color:var(--c-primary);font-weight:500}
 .w-sessions .cost-high{color:var(--c-danger,#ef4444)}
 .w-sessions .cache-hi{color:var(--c-secondary,#22c55e)}
@@ -28,6 +29,7 @@
 .w-sessions .num-col{color:var(--text-dim);font-size:0.6rem;text-align:right;width:24px}
 .w-sessions .empty{text-align:center;color:var(--text-dim);padding:24px;font-style:italic;font-family:var(--font-ui)}
 .w-sessions .null-val{color:var(--text-dim)}
+.w-sessions .time-val{font-size:0.6rem;color:var(--text-dim);white-space:nowrap}
 
 /* ── Detail Panel ── */
 .w-sessions tr.row-detail td{padding:0;border-bottom:1px solid var(--rule);border-left:3px solid var(--c-primary)}
@@ -54,6 +56,12 @@
 .w-sessions .lt-info .lt-cost{color:var(--c-primary);font-weight:500}
 .w-sessions .lt-info .lt-tool-list{display:flex;gap:3px;flex-wrap:wrap}
 .w-sessions .lt-info .lt-tool-item{padding:1px 5px;background:var(--bg-card,var(--bg-base));border:1px solid var(--rule);border-radius:2px;font-size:0.52rem;color:var(--text-dim)}
+
+/* Effort level tags */
+.effort-tag{display:inline-block;font-size:0.55rem;font-weight:700;padding:1px 4px;border-radius:3px;letter-spacing:0.5px;vertical-align:middle;margin-left:3px}
+.effort-low{background:rgba(var(--rgb-secondary,34,197,94),0.15);color:var(--c-secondary)}
+.effort-medium{background:rgba(var(--rgb-primary,245,158,11),0.15);color:var(--c-primary)}
+.effort-high{background:rgba(var(--rgb-danger,239,68,68),0.15);color:var(--c-danger)}
 
 @media (max-width: 640px) {
   .w-sessions .col-proj,
@@ -82,6 +90,7 @@ Periscope.registerWidget({
               <th class="num-col" data-col="num">#</th>
               <th data-col="id">Session<span class="sort-arrow"></span></th>
               <th class="col-proj" data-col="project">Summary<span class="sort-arrow"></span></th>
+              <th data-col="lastActive">Last Active<span class="sort-arrow"></span></th>
               <th data-col="cost">Cost<span class="sort-arrow"></span></th>
               <th data-col="turns">Turns<span class="sort-arrow"></span></th>
               <th data-col="tokens">Tokens<span class="sort-arrow"></span></th>
@@ -94,7 +103,7 @@ Periscope.registerWidget({
       </div>`;
 
     // Sort state
-    el._slSort = { col: 'cost', asc: false };
+    el._slSort = { col: 'lastActive', asc: false };
     el._slExpanded = null;
     el._slData = [];
 
@@ -136,12 +145,14 @@ Periscope.registerWidget({
       const cacheHit = (typeof cacheHitRate === 'function') ? cacheHitRate(input, cr) : ((input + cr) > 0 ? Math.round(cr / (input + cr) * 100) : 0);
       let model = lt?.model || '';
       const modelShort = model.replace(/^claude-/, '').replace(/-20\d{6}$/, '');
+      const modelsUsed = s.data?.models || {};
       // Session summary via meta priority: customTitle > summary > firstPrompt > heuristic
       const sm = meta[s.id] || Object.values(meta).find(m => s.id.startsWith(Object.keys(meta).find(k => k.startsWith(s.id.substring(0,8))) || '___')) || null;
       let summary = '';
       if (sm && sm.customTitle) summary = '\u2605 ' + sm.customTitle;
       else if (sm && sm.summary) summary = sm.summary.length > 60 ? sm.summary.substring(0,57) + '...' : sm.summary;
       else if (sm && sm.firstPrompt) { let fp = sm.firstPrompt.replace(/<[^>]+>/g, '').trim(); if (fp.length > 55) fp = fp.substring(0,52) + '...'; summary = fp; }
+      else if (s.data?.firstPrompt) { let fp = s.data.firstPrompt.replace(/<[^>]+>/g, '').trim(); if (fp.length > 55) fp = fp.substring(0,52) + '...'; summary = fp; }
       // Duration from history
       let duration = '';
       const hist = (data.history || []).filter(h => h.sid === s.id);
@@ -152,25 +163,15 @@ Periscope.registerWidget({
         else if (mins < 60) duration = mins + 'm';
         else { const hrs = Math.floor(mins/60); const rm = mins%60; duration = hrs + 'h' + (rm > 0 ? rm + 'm' : ''); }
       }
-      // Heuristic fallback for summary
-      if (!summary && c && c.tools) {
-        const sorted = Object.entries(c.tools).sort((a,b) => (b[1].calls||0) - (a[1].calls||0));
-        const top = sorted.slice(0,3).map(t => t[0]);
-        const has = n => top.includes(n);
-        if (has('Write') && has('Edit')) summary = 'Build & Refactor';
-        else if (has('Write') && has('Bash')) summary = 'Build & Deploy';
-        else if (has('Edit') && has('Read')) summary = 'Refactor';
-        else if (has('Edit') && has('Bash')) summary = 'Fix & Test';
-        else if (has('WebSearch') || has('WebFetch')) summary = 'Research';
-        else if (has('Read') && has('Glob')) summary = 'Code Review';
-        else if (has('Read') && has('Grep')) summary = 'Investigate';
-        else if (has('Bash')) summary = 'System Ops';
-        else if (has('Read')) summary = 'Analysis';
-        else if (top.length) summary = top.slice(0,2).join('+');
-      }
+      // No heuristic fallbacks — blank over misleading data
       if (summary && duration) summary = summary + ' \u00b7 ' + duration;
-      else if (duration) summary = duration;
-      return { id: s.id, proj, cost, turns, totalTok, cacheHit, modelShort, input, cr, cw, output, c, lt, summary };
+      // Timestamps: prefer sessionMeta, fallback to sidecar updated_at from DB
+      let lastActive = 0;
+      if (sm?.modified) lastActive = new Date(sm.modified).getTime();
+      else if (sm?.created) lastActive = new Date(sm.created).getTime();
+      else if (s.updated_at) lastActive = new Date(s.updated_at).getTime();
+      const effort = s.data?.effortLevel || '';
+      return { id: s.id, proj, cost, turns, totalTok, cacheHit, modelShort, modelsUsed, input, cr, cw, output, c, lt, summary, lastActive, effort };
     });
 
     _slRender(el);
@@ -183,7 +184,7 @@ function _slRender(el) {
   const sort = el._slSort;
 
   if (rows.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="8" class="empty">No sessions</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="9" class="empty">No sessions</td></tr>';
     _slUpdateHeaders(el, sort);
     return;
   }
@@ -195,7 +196,8 @@ function _slRender(el) {
     let va, vb;
     switch (sort.col) {
       case 'id':       va = a.id; vb = b.id; return va < vb ? -dir : va > vb ? dir : 0;
-      case 'project':  va = a.proj.toLowerCase(); vb = b.proj.toLowerCase(); return va < vb ? -dir : va > vb ? dir : 0;
+      case 'project':  va = (a.summary||a.proj).toLowerCase(); vb = (b.summary||b.proj).toLowerCase(); return va < vb ? -dir : va > vb ? dir : 0;
+      case 'lastActive': return (a.lastActive - b.lastActive) * dir;
       case 'cost':     return (a.cost - b.cost) * dir;
       case 'turns':    return (a.turns - b.turns) * dir;
       case 'tokens':   return (a.totalTok - b.totalTok) * dir;
@@ -208,6 +210,19 @@ function _slRender(el) {
   const fmtK = Periscope.fmtK || (n => n >= 1e6 ? (n/1e6).toFixed(1)+'M' : n >= 1e3 ? (n/1e3).toFixed(1)+'K' : n.toString());
   const fmtCost = Periscope.fmtCost || (v => v >= 10 ? '$'+v.toFixed(1) : '$'+v.toFixed(2));
   const fmtPlain = n => n >= 1e6 ? (n/1e6).toFixed(1)+'M' : n >= 1e3 ? (n/1e3).toFixed(1)+'K' : n.toLocaleString();
+  const fmtAgo = ts => {
+    if (!ts) return '--';
+    const sec = Math.floor((Date.now() - ts) / 1000);
+    if (sec < 60) return 'just now';
+    const min = Math.floor(sec / 60);
+    if (min < 60) return min + 'm ago';
+    const hr = Math.floor(min / 60);
+    if (hr < 24) return hr + 'h ago';
+    const days = Math.floor(hr / 24);
+    if (days < 7) return days + 'd ago';
+    if (days < 30) return Math.floor(days / 7) + 'w ago';
+    return new Date(ts).toLocaleDateString([], {month:'short', day:'numeric'});
+  };
 
   // Determine cost threshold for highlighting (top 20% get danger color)
   const costs = sorted.map(r => r.cost).filter(c => c > 0);
@@ -230,15 +245,21 @@ function _slRender(el) {
     const expandedClass = isExpanded ? ' row-expanded' : '';
 
     var slabel = (typeof sessionLabel === 'function' && el._slFullData) ? sessionLabel(r.id, el._slFullData) : sid;
-    html += `<tr class="row-data${expandedClass}" data-sid="${r.id}">
+    var projName = (typeof sessionProject === 'function' && el._slFullData) ? sessionProject(r.id, el._slFullData) : shortProj(r.proj);
+    var esc = typeof escHtml === 'function' ? escHtml : function(s){return s||''};
+    var summaryText = r.summary || slabel || shortProj(r.proj) || '--';
+    var projSub = projName && projName !== summaryText ? '<div class="proj-sub">' + esc(projName) + '</div>' : '';
+    const activeTitle = r.lastActive ? new Date(r.lastActive).toLocaleString() : '';
+    html += `<tr class="row-data${expandedClass}" data-sid="${esc(r.id)}">
       <td class="num-col">${rowNum}</td>
-      <td class="sid" title="${r.id}">${sid}</td>
-      <td class="col-proj proj" title="${r.proj.replace(/"/g,'&quot;')}">${r.summary || slabel || shortProj(r.proj) || '--'}</td>
+      <td class="sid" title="${esc(r.id)}">${esc(sid)}</td>
+      <td class="col-proj proj" title="${esc(r.proj)}">${esc(summaryText)}${projSub}</td>
+      <td class="time-val" title="${activeTitle}">${fmtAgo(r.lastActive)}</td>
       <td class="${costClass}">${r.c ? fmtCost(r.cost) : '<span class="null-val">--</span>'}</td>
       <td>${r.c ? r.turns : '<span class="null-val">--</span>'}</td>
       <td>${r.c ? fmtK(r.totalTok) : '<span class="null-val">--</span>'}</td>
       <td class="${cacheClass}">${r.c ? r.cacheHit + '%' : '<span class="null-val">--</span>'}</td>
-      <td class="col-model model-val">${r.modelShort || '<span class="null-val">--</span>'}</td>
+      <td class="col-model model-val">${Object.keys(r.modelsUsed).length > 0 ? Object.entries(r.modelsUsed).map(([m,n]) => m + ':' + n).join(' ') : (r.modelShort || '<span class="null-val">--</span>')}${r.effort ? ' <span class="effort-tag effort-' + r.effort + '">' + r.effort[0].toUpperCase() + '</span>' : ''}</td>
     </tr>`;
 
     if (isExpanded) {
@@ -345,7 +366,7 @@ function _slDetailRow(r, fmtK, fmtCost, fmtPlain) {
       ${lastTurnHtml}
     </div>`;
 
-  return `<tr class="row-detail"><td colspan="8"><div class="detail-panel">
+  return `<tr class="row-detail"><td colspan="9"><div class="detail-panel">
     ${tokSection}${costSection}${turnSection}${toolSection}${lastSection}
   </div></td></tr>`;
 }

@@ -23,11 +23,6 @@ rule       = "rgba(167,139,250,0.1)"
 glow       = "rgba(167,139,250,0.25)"
 signal     = "#67e8f9"
 
-[terminal]
-bg1 = 234; bg2 = 236; fg = 252; dim = 242
-blue = 69; purple = 135; cyan = 44
-green = 78; yellow = 220; red = 196; peach = 209
-
 [brand]
 primary = "#a78bfa"
 accent  = "#f472b6"

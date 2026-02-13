@@ -74,6 +74,11 @@ func migrate(db *sql.DB) error {
 		CREATE INDEX IF NOT EXISTS idx_history_ts ON history(ts);
 		CREATE INDEX IF NOT EXISTS idx_limit_history_ts ON limit_history(ts);
 	`)
+	if err != nil {
+		log.Printf("[DB] schema migration failed: %v", err)
+	} else {
+		log.Printf("[DB] schema initialized")
+	}
 	return err
 }
 
@@ -108,8 +113,10 @@ func importFileData(app *App) error {
 func importSidecars(app *App) error {
 	entries, err := os.ReadDir(app.DataDir)
 	if err != nil {
+		log.Printf("[IMPORT] sidecars read dir failed: %v", err)
 		return err
 	}
+	imported := 0
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") || sidecarExclude[e.Name()] {
 			continue
@@ -117,12 +124,18 @@ func importSidecars(app *App) error {
 		sid := strings.TrimSuffix(e.Name(), ".json")
 		data, err := os.ReadFile(filepath.Join(app.DataDir, e.Name()))
 		if err != nil {
+			log.Printf("[IMPORT] sidecar %s read failed: %v", e.Name(), err)
 			continue
 		}
 		data = stripBOM(data)
-		app.DB.Exec(`INSERT OR REPLACE INTO sessions(id, data, updated_at) VALUES(?, ?, CURRENT_TIMESTAMP)`,
-			sid, string(data))
+		if _, err := app.DB.Exec(`INSERT OR REPLACE INTO sessions(id, data, updated_at) VALUES(?, ?, CURRENT_TIMESTAMP)`,
+			sid, string(data)); err != nil {
+			log.Printf("[IMPORT] sidecar %s insert failed: %v", sid, err)
+		} else {
+			imported++
+		}
 	}
+	log.Printf("[IMPORT] sidecars: %d imported", imported)
 	return nil
 }
 
@@ -131,8 +144,10 @@ func importJSONL(app *App, filename, table string) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
+			log.Printf("[IMPORT] %s: file not found (skipping)", filename)
 			return nil
 		}
+		log.Printf("[IMPORT] %s read failed: %v", filename, err)
 		return err
 	}
 	data = stripBOM(data)
@@ -143,21 +158,26 @@ func importJSONL(app *App, filename, table string) error {
 
 	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
 	if count >= len(lines) {
+		log.Printf("[IMPORT] %s: already up to date (%d lines)", filename, count)
 		return nil // Already up to date
 	}
 
 	tx, err := app.DB.Begin()
 	if err != nil {
+		log.Printf("[IMPORT] %s transaction failed: %v", filename, err)
 		return err
 	}
 	defer tx.Rollback()
 
 	stmt, err := tx.Prepare(fmt.Sprintf("INSERT INTO %s(ts, data) VALUES(?, ?)", table))
 	if err != nil {
+		log.Printf("[IMPORT] %s prepare failed: %v", filename, err)
 		return err
 	}
 	defer stmt.Close()
 
+	imported := 0
+	skipped := 0
 	for _, line := range lines[count:] {
 		line = strings.TrimSpace(line)
 		if line == "" {
@@ -166,15 +186,25 @@ func importJSONL(app *App, filename, table string) error {
 		// Extract ts field for indexing
 		var obj map[string]any
 		if err := json.Unmarshal([]byte(line), &obj); err != nil {
+			skipped++
 			continue
 		}
 		ts, _ := obj["ts"].(string)
 		if ts == "" {
 			ts = time.Now().UTC().Format(time.RFC3339)
 		}
-		stmt.Exec(ts, line)
+		if _, err := stmt.Exec(ts, line); err == nil {
+			imported++
+		} else {
+			skipped++
+		}
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		log.Printf("[IMPORT] %s commit failed: %v", filename, err)
+		return err
+	}
+	log.Printf("[IMPORT] %s: %d imported, %d skipped", filename, imported, skipped)
+	return nil
 }
 
 func importKV(app *App, filename, key string) {
@@ -203,14 +233,17 @@ func importSessionMeta(app *App) {
 	projectsDir := filepath.Join(app.ClaudeDir, "projects")
 	entries, err := os.ReadDir(projectsDir)
 	if err != nil {
+		log.Printf("[IMPORT] session meta: projects dir read failed: %v", err)
 		return
 	}
 
 	meta := make(map[string]any)
+	projectsScanned := 0
 	for _, e := range entries {
 		if !e.IsDir() {
 			continue
 		}
+		projectsScanned++
 		indexPath := filepath.Join(projectsDir, e.Name(), "sessions-index.json")
 		data, err := os.ReadFile(indexPath)
 		if err != nil {
@@ -221,6 +254,7 @@ func importSessionMeta(app *App) {
 			Entries []map[string]any `json:"entries"`
 		}
 		if err := json.Unmarshal(data, &index); err != nil {
+			log.Printf("[IMPORT] session meta: %s parse failed: %v", e.Name(), err)
 			continue
 		}
 		for _, entry := range index.Entries {
@@ -234,6 +268,9 @@ func importSessionMeta(app *App) {
 		data, _ := json.Marshal(meta)
 		app.DB.Exec(`INSERT OR REPLACE INTO kv(key, value, updated_at) VALUES(?, ?, CURRENT_TIMESTAMP)`,
 			"cache:session-meta", string(data))
+		log.Printf("[IMPORT] session meta: %d projects scanned, %d entries found", projectsScanned, len(meta))
+	} else {
+		log.Printf("[IMPORT] session meta: %d projects scanned, no entries found", projectsScanned)
 	}
 }
 
@@ -254,8 +291,9 @@ type DashboardData struct {
 }
 
 type SidecarEntry struct {
-	ID   string          `json:"id"`
-	Data json.RawMessage `json:"data"`
+	ID        string          `json:"id"`
+	Data      json.RawMessage `json:"data"`
+	UpdatedAt string          `json:"updated_at,omitempty"`
 }
 
 func buildDashboardData(app *App) (*DashboardData, error) {
@@ -264,18 +302,21 @@ func buildDashboardData(app *App) (*DashboardData, error) {
 		Sessions:    []any{},
 	}
 
-	// Sidecars from DB
-	if rows, err := app.DB.Query("SELECT id, data FROM sessions ORDER BY updated_at DESC"); err == nil {
+	// Sidecars from DB (include updated_at for "Last Active" timestamps)
+	if rows, err := app.DB.Query("SELECT id, data, updated_at FROM sessions ORDER BY updated_at DESC"); err == nil {
 		for rows.Next() {
-			var id, data string
-			if rows.Scan(&id, &data) == nil {
+			var id, data, updatedAt string
+			if rows.Scan(&id, &data, &updatedAt) == nil {
 				d.Sidecars = append(d.Sidecars, SidecarEntry{
-					ID:   id,
-					Data: json.RawMessage(data),
+					ID:        id,
+					Data:      json.RawMessage(data),
+					UpdatedAt: updatedAt,
 				})
 			}
 		}
 		rows.Close()
+	} else {
+		log.Printf("[IMPORT] buildDashboardData: sidecars query failed: %v", err)
 	}
 	if d.Sidecars == nil {
 		d.Sidecars = []SidecarEntry{}
@@ -290,6 +331,8 @@ func buildDashboardData(app *App) (*DashboardData, error) {
 			}
 		}
 		rows.Close()
+	} else {
+		log.Printf("[IMPORT] buildDashboardData: history query failed: %v", err)
 	}
 	if d.History == nil {
 		d.History = []json.RawMessage{}
@@ -316,10 +359,15 @@ func buildDashboardData(app *App) (*DashboardData, error) {
 			}
 		}
 		rows.Close()
+	} else {
+		log.Printf("[IMPORT] buildDashboardData: limit_history query failed: %v", err)
 	}
 	if d.LimitHistory == nil {
 		d.LimitHistory = []json.RawMessage{}
 	}
+
+	log.Printf("[IMPORT] buildDashboardData: %d sidecars, %d history, %d limit_history",
+		len(d.Sidecars), len(d.History), len(d.LimitHistory))
 
 	// KV lookups
 	d.UsageConfig = kvGet(app.DB, "config:usage")
@@ -374,6 +422,7 @@ func getOAuthToken(app *App) (string, error) {
 func fetchUsage(app *App) (json.RawMessage, error) {
 	token, err := getOAuthToken(app)
 	if err != nil {
+		log.Printf("[API] fetchUsage: OAuth token failed: %v", err)
 		return nil, err
 	}
 
@@ -387,17 +436,21 @@ func fetchUsage(app *App) (json.RawMessage, error) {
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
+		log.Printf("[API] fetchUsage: HTTP request failed: %v", err)
 		return nil, err
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
+		log.Printf("[API] fetchUsage: body read failed: %v", err)
 		return nil, err
 	}
 	if resp.StatusCode != 200 {
+		log.Printf("[API] fetchUsage: HTTP %d: %s", resp.StatusCode, string(body))
 		return nil, fmt.Errorf("API returned %d: %s", resp.StatusCode, string(body))
 	}
+	log.Printf("[API] fetchUsage: HTTP 200, %d bytes", len(body))
 
 	// Parse the API response
 	var apiResp struct {
@@ -569,14 +622,20 @@ func refreshProfileIfStale(app *App) {
 // snapshotSidecarsToHistory reads all current sidecar states and inserts a history
 // entry for each active session. This runs every 30s so the usage timeline has
 // continuous data even when no hooks are firing.
+// lastSessionSnapshot tracks the last cost snapshot per session to avoid recording stale data
+var lastSessionSnapshot = map[string]float64{}
+
 func snapshotSidecarsToHistory(app *App) {
 	rows, err := app.DB.Query("SELECT id, data FROM sessions")
 	if err != nil {
+		log.Printf("[SNAPSHOT] sidecars query failed: %v", err)
 		return
 	}
 	defer rows.Close()
 
 	now := time.Now().UTC().Format("2006-01-02T15:04:05Z")
+	snapshotted := 0
+	skipped := 0
 
 	for rows.Next() {
 		var sid, raw string
@@ -599,6 +658,15 @@ func snapshotSidecarsToHistory(app *App) {
 			continue
 		}
 		c := sc.Cumulative
+
+		// Skip sessions that haven't changed since last snapshot (stale sidecars)
+		cost := math.Round(c.Cost*100) / 100
+		if prev, ok := lastSessionSnapshot[sid]; ok && prev == cost {
+			skipped++
+			continue
+		}
+		lastSessionSnapshot[sid] = cost
+
 		shortSid := sid
 		if len(shortSid) > 8 {
 			shortSid = shortSid[:8]
@@ -610,11 +678,16 @@ func snapshotSidecarsToHistory(app *App) {
 			"cr":    c.CacheRead,
 			"cw":    c.CacheWrite,
 			"out":   c.Output,
-			"cost":  math.Round(c.Cost*100) / 100,
+			"cost":  cost,
 			"turns": c.AgentCalls + c.ToolCalls + c.ChatCalls,
 		}
 		data, _ := json.Marshal(entry)
-		app.DB.Exec("INSERT INTO history(ts, data) VALUES(?, ?)", now, string(data))
+		if _, err := app.DB.Exec("INSERT INTO history(ts, data) VALUES(?, ?)", now, string(data)); err == nil {
+			snapshotted++
+		}
+	}
+	if snapshotted > 0 || skipped > 0 {
+		log.Printf("[SNAPSHOT] sidecars: %d snapshotted, %d skipped (stale)", snapshotted, skipped)
 	}
 }
 
@@ -638,19 +711,22 @@ func appendLimitSnapshot(app *App, liveUsage json.RawMessage) {
 
 			// Always enforce minimum 1-minute gap
 			if elapsed < 1*time.Minute {
+				log.Printf("[SNAPSHOT] limit: skipped (time dedup, %ds since last)", int(elapsed.Seconds()))
 				return
 			}
 
 			// Value dedup: skip if pct values haven't changed
 			// (reset timestamps have varying sub-second precision so we only compare pct)
-			// Allow heartbeat every 15 min even if unchanged (for chart continuity)
-			if lastData != "" && elapsed < 15*time.Minute {
+			// Allow heartbeat every 5 min even if unchanged — catches external usage
+			// (web, OpenClaw, etc.) and keeps chart lines continuous (GAP_MS = 10 min)
+			if lastData != "" && elapsed < 5*time.Minute {
 				var last map[string]any
 				if json.Unmarshal([]byte(lastData), &last) == nil {
 					same := fmt.Sprintf("%v", current["pct5hr"]) == fmt.Sprintf("%v", last["pct5hr"]) &&
 						fmt.Sprintf("%v", current["pctWeekly"]) == fmt.Sprintf("%v", last["pctWeekly"]) &&
 						fmt.Sprintf("%v", current["pctSonnet"]) == fmt.Sprintf("%v", last["pctSonnet"])
 					if same {
+						log.Printf("[SNAPSHOT] limit: skipped (value dedup)")
 						return // No change — skip
 					}
 				}
@@ -661,7 +737,11 @@ func appendLimitSnapshot(app *App, liveUsage json.RawMessage) {
 	now := time.Now().Format(time.RFC3339)
 	current["ts"] = now
 	dataWithTS, _ := json.Marshal(current)
-	app.DB.Exec("INSERT INTO limit_history(ts, data) VALUES(?, ?)", now, string(dataWithTS))
+	if _, err := app.DB.Exec("INSERT INTO limit_history(ts, data) VALUES(?, ?)", now, string(dataWithTS)); err != nil {
+		log.Printf("[SNAPSHOT] limit: insert failed: %v", err)
+		return
+	}
+	log.Printf("[SNAPSHOT] limit: written (5hr=%v%%, weekly=%v%%)", current["pct5hr"], current["pctWeekly"])
 
 	// Also append to JSONL for backward compat with statusline/hooks
 	f, err := os.OpenFile(filepath.Join(app.DataDir, "limit-history.jsonl"),
@@ -748,22 +828,29 @@ func compactLimitHistory(app *App) {
 	}
 
 	if len(deleteIDs) == 0 {
+		log.Printf("[COMPACT] limit_history: no entries pruned (%d total)", len(all))
 		return
 	}
 
 	// Delete pruned entries
 	tx, err := app.DB.Begin()
 	if err != nil {
+		log.Printf("[COMPACT] limit_history: transaction failed: %v", err)
 		return
 	}
 	for _, id := range deleteIDs {
 		tx.Exec("DELETE FROM limit_history WHERE id = ?", id)
 	}
-	tx.Commit()
+	if err := tx.Commit(); err != nil {
+		log.Printf("[COMPACT] limit_history: commit failed: %v", err)
+		return
+	}
+	log.Printf("[COMPACT] limit_history: pruned %d of %d entries", len(deleteIDs), len(all))
 
 	// Rewrite JSONL from surviving entries (inject ts if missing)
 	surviving, err := app.DB.Query("SELECT ts, data FROM limit_history ORDER BY ts ASC")
 	if err != nil {
+		log.Printf("[COMPACT] limit_history: surviving query failed: %v", err)
 		return
 	}
 	defer surviving.Close()
@@ -771,6 +858,7 @@ func compactLimitHistory(app *App) {
 	jsonlPath := filepath.Join(app.DataDir, "limit-history.jsonl")
 	f, err := os.Create(jsonlPath)
 	if err != nil {
+		log.Printf("[COMPACT] limit_history: JSONL rewrite failed: %v", err)
 		return
 	}
 	defer f.Close()
@@ -792,8 +880,6 @@ func compactLimitHistory(app *App) {
 			f.WriteString(data + "\n")
 		}
 	}
-
-	log.Printf("compaction: pruned %d of %d limit_history entries", len(deleteIDs), len(all))
 }
 
 // --- Pricing (LiteLLM) ---

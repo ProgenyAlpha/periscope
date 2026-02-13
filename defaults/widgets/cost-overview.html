@@ -1,24 +1,24 @@
 <style>
 .w-metrics .m-windows{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
 @media(max-width:900px){.w-metrics .m-windows{grid-template-columns:repeat(2,1fr)}}
-.w-metrics .m-win{background:var(--bg-inset);border:1px solid var(--rule);border-radius:var(--radius,6px);padding:8px 10px;position:relative;transition:border-color 0.2s;overflow:hidden}
+.w-metrics .m-win{background:var(--bg-inset);border:1px solid var(--rule);border-radius:var(--radius,6px);padding:7px 8px;position:relative;transition:border-color 0.2s;overflow:hidden}
 .w-metrics .m-win:hover{border-color:color-mix(in srgb,var(--rule) 50%,var(--text-dim))}
 .w-metrics .m-win::before{content:'';position:absolute;left:0;top:0;bottom:0;width:3px;border-radius:1px 0 0 1px}
 .w-metrics .m-win.w-1h::before{background:var(--c-tertiary)}
 .w-metrics .m-win.w-5h::before{background:var(--c-primary)}
 .w-metrics .m-win.w-24h::before{background:var(--c-warm)}
 .w-metrics .m-win.w-life::before{background:var(--c-accent)}
-.w-metrics .m-win-label{font-size:0.52rem;text-transform:uppercase;letter-spacing:1.5px;color:var(--text-dim);margin-bottom:6px;line-height:1;display:flex;justify-content:space-between;align-items:center}
+.w-metrics .m-win-label{font-size:0.5rem;text-transform:uppercase;letter-spacing:1.5px;color:var(--text-dim);margin-bottom:3px;line-height:1;display:flex;justify-content:space-between;align-items:center}
 .w-metrics .m-win-sessions{font-size:0.48rem;color:var(--text-dim);font-family:var(--font-mono);letter-spacing:0}
-.w-metrics .m-win-cost{font-size:1.5rem;font-weight:600;font-family:var(--font-mono);color:var(--text-bright);line-height:1.1}
-.w-metrics .m-win-tokens{font-size:0.62rem;color:var(--text-dim);font-family:var(--font-mono);margin-top:4px}
-.w-metrics .m-win-turns{font-size:0.52rem;color:var(--text-dim);font-family:var(--font-mono);margin-top:2px}
+.w-metrics .m-win-cost{font-size:1.2rem;font-weight:600;font-family:var(--font-mono);color:var(--text-bright);line-height:1.1}
+.w-metrics .m-win-tokens{font-size:0.58rem;color:var(--text-dim);font-family:var(--font-mono);margin-top:2px}
+.w-metrics .m-win-turns{font-size:0.5rem;color:var(--text-dim);font-family:var(--font-mono);margin-top:1px}
 
-.w-metrics .m-stats{display:flex;gap:8px;margin-top:8px;flex-wrap:wrap}
-.w-metrics .m-stat{flex:1;min-width:100px;background:var(--bg-inset);border:1px solid var(--rule);border-radius:var(--radius,6px);padding:6px 10px;display:flex;align-items:center;gap:8px}
+.w-metrics .m-stats{display:flex;gap:6px;margin-top:6px;flex-wrap:wrap}
+.w-metrics .m-stat{flex:1;min-width:80px;background:var(--bg-inset);border:1px solid var(--rule);border-radius:var(--radius,6px);padding:4px 8px;display:flex;align-items:center;gap:6px}
 .w-metrics .m-stat-icon{font-size:0.65rem;font-family:var(--font-mono);color:var(--text-dim);width:14px;text-align:center;flex-shrink:0}
 .w-metrics .m-stat-body{min-width:0}
-.w-metrics .m-stat-val{font-size:1rem;font-weight:600;font-family:var(--font-mono);color:var(--text-bright);line-height:1}
+.w-metrics .m-stat-val{font-size:0.85rem;font-weight:600;font-family:var(--font-mono);color:var(--text-bright);line-height:1}
 .w-metrics .m-stat-label{font-size:0.48rem;text-transform:uppercase;letter-spacing:1px;color:var(--text-dim);margin-top:2px}
 </style>
 <script>
@@ -111,16 +111,58 @@ Periscope.registerWidget({
       lifeIn += c.input||0;
     }
 
-    // --- Compute windows ---
+    // Reset labels to defaults (in case previously escalated)
+    var defaultLabels = {'1h':'Last Hour','5h':'Last 5 Hours','24h':'Last 24 Hours'};
+    for (var pfx in defaultLabels) {
+      var winEl = el.querySelector('#km-' + pfx);
+      if (winEl) { var lbl = winEl.querySelector('.m-win-label'); if (lbl) lbl.childNodes[0].textContent = defaultLabels[pfx]; }
+    }
+
+    // --- Compute windows with auto-escalation ---
+    // If a window has zero activity, escalate to the next larger window
     var w1h = windowStats(3600e3);
     var w5h = windowStats(5*3600e3);
     var w24h = windowStats(24*3600e3);
+    var w7d = windowStats(7*24*3600e3);
+
+    // Auto-escalate: pick the smallest non-empty window for each slot
+    function escalate(preferred, fallbacks, labels) {
+      if (preferred.data.sessions > 0) return preferred;
+      for (var i = 0; i < fallbacks.length; i++) {
+        if (fallbacks[i].data.sessions > 0) {
+          // Update the label to show escalated window
+          var el2 = document.querySelector('#km-' + preferred.pfx);
+          if (el2) {
+            var lbl = el2.querySelector('.m-win-label');
+            if (lbl) lbl.childNodes[0].textContent = labels[i] + ' ';
+          }
+          return { pfx: preferred.pfx, data: fallbacks[i].data };
+        }
+      }
+      return preferred;
+    }
+
+    var slot1 = escalate(
+      { pfx: '1h', data: w1h },
+      [{ data: w5h }, { data: w24h }],
+      ['Last 5 Hours', 'Last 24 Hours']
+    );
+    var slot2 = escalate(
+      { pfx: '5h', data: w5h },
+      [{ data: w24h }, { data: w7d }],
+      ['Last 24 Hours', 'Last 7 Days']
+    );
+    var slot3 = escalate(
+      { pfx: '24h', data: w24h },
+      [{ data: w7d }],
+      ['Last 7 Days']
+    );
 
     // --- Render window cards ---
     var windows = [
-      { pfx: '1h', data: w1h },
-      { pfx: '5h', data: w5h },
-      { pfx: '24h', data: w24h },
+      slot1,
+      slot2,
+      slot3,
       { pfx: 'life', data: { cost: lifeCost, tokens: lifeTokens, turns: lifeTurns, sessions: sidecars.length } }
     ];
 
@@ -137,13 +179,14 @@ Periscope.registerWidget({
 
       el.querySelector('#km-' + w.pfx + '-tok').textContent = fmtK(d.tokens) + ' tokens';
       el.querySelector('#km-' + w.pfx + '-turns').textContent = d.turns + ' turns';
-      el.querySelector('#km-' + w.pfx + '-s').textContent = d.sessions + 's';
+      el.querySelector('#km-' + w.pfx + '-s').textContent = d.sessions + ' sess';
     }
 
-    // --- Burn rate (from 5h window) ---
+    // --- Burn rate (best available window) ---
     var burnVal = el.querySelector('#km-burn-val');
-    if (w5h.spanHrs > 0.05 && w5h.cost > 0) {
-      var rate = w5h.cost / w5h.spanHrs;
+    var burnSrc = w5h.spanHrs > 0.05 && w5h.cost > 0 ? w5h : w24h.spanHrs > 0.05 && w24h.cost > 0 ? w24h : w7d;
+    if (burnSrc.spanHrs > 0.05 && burnSrc.cost > 0) {
+      var rate = burnSrc.cost / burnSrc.spanHrs;
       burnVal.textContent = '$' + rate.toFixed(2) + '/hr' + cs;
       burnVal.style.color = rate > 15 ? 'var(--c-danger)' : rate > 5 ? 'var(--c-warm)' : '';
     } else {

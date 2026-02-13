@@ -1,6 +1,6 @@
 <style>
-.w-tokens .grid-2{display:grid;grid-template-columns:1fr 1fr;gap:8px}
-.w-tokens .token-type{display:flex;flex-direction:column;gap:3px;padding:6px 8px;background:var(--bg-inset);border-radius:4px;border:1px solid var(--rule)}
+.w-tokens .grid-2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.w-tokens .token-type{display:flex;flex-direction:column;gap:3px;padding:10px 8px;background:var(--bg-inset);border-radius:4px;border:1px solid var(--rule)}
 .w-tokens .tt-header{display:flex;justify-content:space-between;align-items:baseline}
 .w-tokens .tt-label{font-size:0.58rem;text-transform:uppercase;letter-spacing:1px;color:var(--text-dim);font-weight:600}
 .w-tokens .tt-pct{font-size:0.58rem;font-family:var(--font-mono);color:var(--text-dim)}
@@ -17,7 +17,7 @@
 .w-tokens .t-out{color:var(--c-primary)}
 .w-tokens .t-out .tt-fill{background:var(--c-primary)}
 .w-tokens .divider{grid-column:1/-1;height:1px;background:var(--rule);margin:2px 0}
-.w-tokens .totals-row{grid-column:1/-1;display:flex;gap:16px;justify-content:center}
+.w-tokens .totals-row{grid-column:1/-1;display:flex;gap:16px;justify-content:center;padding-top:4px}
 .w-tokens .tot{display:flex;flex-direction:column;align-items:center;gap:2px}
 .w-tokens .tot-val{font-size:1rem;font-weight:600;font-family:var(--font-mono);color:var(--text-bright)}
 .w-tokens .tot-label{font-size:0.5rem;text-transform:uppercase;letter-spacing:1px;color:var(--text-dim)}
@@ -80,12 +80,12 @@ Periscope.registerWidget({
     const fmtC = v => v >= 100 ? '$'+v.toFixed(0) : v >= 10 ? '$'+v.toFixed(1) : '$'+v.toFixed(2);
     const pct = (v) => total > 0 ? Math.round(v/total*100) : 0;
 
-    // Estimate per-type cost (using Opus 4.6 rates as default)
-    const rates = {input: 5, cr: 0.5, cw: 6.25, output: 25}; // $/MTok
-    const inCost = (input/1e6)*rates.input;
-    const crCost = (cr/1e6)*rates.cr;
-    const cwCost = (cw/1e6)*rates.cw;
-    const outCost = (output/1e6)*rates.output;
+    // Estimate per-type cost using shared pricing (falls back to Opus if unknown)
+    const pricing = (typeof getModelPricing === 'function') ? getModelPricing() : {input:5,cache_read:0.5,cache_write:6.25,output:25};
+    const inCost = (input/1e6)*pricing.input;
+    const crCost = (cr/1e6)*pricing.cache_read;
+    const cwCost = (cw/1e6)*pricing.cache_write;
+    const outCost = (output/1e6)*pricing.output;
 
     // Set values
     el.querySelector('#td-in-val').textContent = fmt(input);

@@ -9,7 +9,7 @@
 .w-rli .tog:hover:not(.active):not(:disabled){background:var(--bg-hover);color:var(--text)}
 .w-rli .tog.active{background:var(--c-primary);color:var(--bg-void);border-color:var(--c-primary)}
 .w-rli .tog:disabled{opacity:0.3;pointer-events:none;cursor:default}
-.w-rli .limit-chart-wrap{height:255px;position:relative}
+.w-rli .limit-chart-wrap{height:280px;position:relative}
 .w-rli canvas{display:block}
 .w-rli .burn-overlay{position:absolute;top:-46px;left:0;right:0;display:flex;align-items:flex-start;justify-content:center;pointer-events:none;z-index:10;opacity:0;transition:opacity 0.4s ease}
 .w-rli .burn-overlay.active{opacity:1}
@@ -38,10 +38,10 @@
 .w-rli .intel-card.session .intel-label{color:var(--c-primary)}
 .w-rli .intel-card.weekly .intel-label{color:var(--c-tertiary)}
 .w-rli .intel-card.capacity .intel-label{color:var(--c-accent)}
-.w-rli .intel-card .intel-body{font-size:11px;line-height:1.7}
+.w-rli .intel-card .intel-body{font-size:11px;line-height:1.5}
 .w-rli .intel-card .intel-row{display:flex;justify-content:space-between;align-items:baseline;gap:6px}
 .w-rli .intel-card .intel-val{font-weight:600;font-family:var(--font-mono);font-variant-numeric:tabular-nums;white-space:nowrap}
-.w-rli .intel-readout{background:rgba(0,0,0,0.4);border:1px solid rgba(255,255,255,0.06);border-radius:3px;padding:5px 12px;text-align:center;font-family:var(--font-mono);font-size:11px;font-weight:700;letter-spacing:2px;margin-bottom:6px;text-shadow:0 0 8px currentColor;text-transform:uppercase}
+.w-rli .intel-readout{background:rgba(0,0,0,0.4);border:1px solid rgba(255,255,255,0.06);border-radius:3px;padding:4px 10px;text-align:center;font-family:var(--font-mono);font-size:11px;font-weight:700;letter-spacing:2px;margin-bottom:4px;text-shadow:0 0 8px currentColor;text-transform:uppercase}
 .w-rli .intel-ref{margin-top:6px;font-size:9px;color:var(--text-dim);opacity:0.5;text-align:center}
 </style>
 <script>
@@ -190,8 +190,9 @@ Periscope.registerWidget({
         if (resetChanged || bigDrop) {
           out.push({x: new Date(lastTs.getTime() + 1000), y: null});
         } else if (bigGap) {
-          out.push({x: new Date(lastTs.getTime() + 60000), y: lastVal});
-          out.push({x: new Date(lastTs.getTime() + 61000), y: null});
+          // Carry last known value forward through the gap (e.g. PC sleep)
+          // so the line stays flat instead of disappearing
+          out.push({x: new Date(p.ts.getTime() - 30000), y: lastVal});
         }
       }
       out.push({x: p.ts, y: val});
@@ -645,10 +646,13 @@ Periscope.registerWidget({
     }
 
     // ── HEAVY BURN / EXTRA USAGE overlay ──
+    // Dynamic threshold: fire if current rate exceeds safe rate by 5%/hr
     const effectiveRate5hr = rate5hr != null ? rate5hr : burn5hr;
     const effectiveRateWeekly = rateWeekly > 0 ? rateWeekly : burnWeekly;
-    const heavySession = effectiveRate5hr > 15;
-    const heavyWeekly = projWeekly > 100;
+    const safeRate5hr = remaining5hr > 0.05 ? (100 - pct5) / remaining5hr : Infinity;
+    const safeRateWk = remainingWeekly > 0.5 ? (100 - pctW) / remainActiveWk : Infinity;
+    const heavySession = effectiveRate5hr > safeRate5hr * 1.05;
+    const heavyWeekly = burnWeeklyActive > safeRateWk * 1.05;
     const eu = rd.lu.extra_usage;
     const anyAtLimit = pct5 >= 100 || pctW >= 100;
     const burningExtra = anyAtLimit && eu && eu.is_enabled && (eu.used_credits || 0) > 0;
@@ -743,14 +747,34 @@ Periscope.registerWidget({
       col2 += row('Extra $', euVal);
     }
 
-    // COL 3: Capacity
+    // COL 3: Capacity — compute window-scoped deltas from raw history
     let col3 = '';
-    if (data.historyDeduped && data.historyDeduped.length > 0) {
+    if (data.history && data.history.length > 0) {
       for (const [wnd, wStart, pctNow, label] of [['5hr', start5hr, pct5, '5hr'], ['weekly', startWeekly, pctW, 'Wk']]) {
         if (!wStart || pctNow <= 0) continue;
+        // Group snapshots by session, find first/last within window
+        const bySid = {};
+        for (const h of data.history) {
+          const hts = new Date(h.ts);
+          if (hts < wStart) {
+            // Track the last snapshot before the window as baseline
+            if (!bySid[h.sid]) bySid[h.sid] = { before: null, first: null, last: null };
+            bySid[h.sid].before = h;
+          } else {
+            if (!bySid[h.sid]) bySid[h.sid] = { before: null, first: null, last: null };
+            if (!bySid[h.sid].first || hts < new Date(bySid[h.sid].first.ts)) bySid[h.sid].first = h;
+            if (!bySid[h.sid].last || hts > new Date(bySid[h.sid].last.ts)) bySid[h.sid].last = h;
+          }
+        }
         let wt = 0;
-        for (const h of data.historyDeduped) {
-          if (new Date(h.ts) >= wStart) wt += weightedTokens(h.input, h.cr, h.cw, h.out);
+        for (const sid in bySid) {
+          const s = bySid[sid];
+          if (!s.last) continue; // no data in window
+          const lastWt = weightedTokens(s.last.input, s.last.cr, s.last.cw, s.last.out);
+          // Subtract baseline (before window or first-in-window)
+          const base = s.before || s.first;
+          const baseWt = base && base !== s.last ? weightedTokens(base.input, base.cr, base.cw, base.out) : 0;
+          wt += Math.max(0, lastWt - baseWt);
         }
         if (wt > 0) {
           const snapLimit = Math.round(wt / (pctNow/100));

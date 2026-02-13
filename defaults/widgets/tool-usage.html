@@ -2,7 +2,7 @@
 .w-tools .tool-controls{display:flex;justify-content:space-between;align-items:center;margin-bottom:4px}
 .w-tools .tool-filter{font-family:var(--font-mono);font-size:0.58rem;background:var(--bg-inset);border:1px solid var(--rule);border-radius:3px;color:var(--text);padding:3px 6px;cursor:pointer;max-width:160px}
 .w-tools .tool-filter:hover{border-color:var(--c-primary)}
-.w-tools .tool-list{display:flex;flex-direction:column;gap:4px}
+.w-tools .tool-list{display:flex;flex-direction:column;gap:3px}
 .w-tools .tool-row{display:flex;align-items:center;gap:10px}
 .w-tools .tool-rank{width:16px;font-size:0.55rem;color:var(--text-dim);font-family:var(--font-mono);text-align:right;flex-shrink:0}
 .w-tools .tool-info{flex:1;min-width:0}
@@ -13,7 +13,7 @@
 .w-tools .tool-bar{height:3px;background:var(--bg-inset);border-radius:2px;overflow:hidden;margin-top:3px}
 .w-tools .tool-fill{height:100%;border-radius:2px;transition:width 0.5s ease;background:linear-gradient(90deg,var(--c-primary),var(--c-secondary))}
 .w-tools .tool-empty{text-align:center;color:var(--text-dim);padding:16px;font-size:0.68rem;font-style:italic}
-.w-tools .tool-summary{display:flex;gap:16px;margin-top:6px;padding-top:6px;border-top:1px solid var(--rule)}
+.w-tools .tool-summary{display:flex;gap:16px;margin-top:4px;padding-top:4px;border-top:1px solid var(--rule)}
 .w-tools .ts-item{display:flex;flex-direction:column;gap:2px}
 .w-tools .ts-val{font-size:0.9rem;font-weight:600;font-family:var(--font-mono);color:var(--text-bright)}
 .w-tools .ts-label{font-size:0.55rem;text-transform:uppercase;letter-spacing:1px;color:var(--text-dim)}
@@ -109,9 +109,10 @@ Periscope.registerWidget({
     }
 
     var maxCalls = sorted[0][1].calls || 1;
-    var topN = sorted.slice(0, 7);
+    var topN = sorted.slice(0, 8);
     var fmtN = function(n) { return n >= 1e6 ? (n/1e6).toFixed(1)+'M' : n >= 1e3 ? (n/1e3).toFixed(1)+'K' : n.toString(); };
 
+    var esc = typeof escHtml === 'function' ? escHtml : function(s){return s||''};
     list.innerHTML = topN.map(function(entry, i) {
       var name = entry[0];
       var s = entry[1];
@@ -120,7 +121,7 @@ Periscope.registerWidget({
         '<span class="tool-rank">' + (i + 1) + '</span>' +
         '<div class="tool-info">' +
           '<div class="tool-head">' +
-            '<span class="tool-name" title="' + name + '">' + name + '</span>' +
+            '<span class="tool-name" title="' + esc(name) + '">' + esc(name) + '</span>' +
             '<span class="tool-calls">' + fmtN(s.calls) + ' calls' + sessInfo + '</span>' +
           '</div>' +
           '<div class="tool-bar"><div class="tool-fill" style="width:' + (s.calls / maxCalls * 100).toFixed(1) + '%"></div></div>' +

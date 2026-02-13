@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/BurntSushi/toml"
+	"golang.org/x/term"
 )
 
 // --- Statusline Input (piped from Claude Code via stdin) ---
@@ -21,9 +22,10 @@ import (
 type StatuslineInput struct {
 	Workspace *struct {
 		CurrentDir string `json:"current_dir"`
+		ProjectDir string `json:"project_dir"`
 	} `json:"workspace"`
 	Model *struct {
-		ModelID     string `json:"model_id"`
+		ModelID     string `json:"id"`
 		DisplayName string `json:"display_name"`
 	} `json:"model"`
 	ContextWindow *struct {
@@ -353,8 +355,12 @@ func segGit(input *StatuslineInput, theme *TerminalTheme) segment {
 
 	dir := input.Workspace.CurrentDir
 
-	// Try to get git branch
+	// Try to get git branch — fall back to project_dir if cwd isn't a repo
 	branch := gitBranch(dir)
+	if branch == "" && input.Workspace.ProjectDir != "" && input.Workspace.ProjectDir != dir {
+		dir = input.Workspace.ProjectDir
+		branch = gitBranch(dir)
+	}
 	if branch == "" {
 		return segment{empty: true}
 	}
@@ -430,21 +436,13 @@ func findGitDir(dir string) string {
 }
 
 func segModel(input *StatuslineInput, theme *TerminalTheme) segment {
-	if input.Model == nil || input.Model.ModelID == "" {
+	if input.Model == nil || (input.Model.ModelID == "" && input.Model.DisplayName == "") {
 		return segment{empty: true}
 	}
-	model := input.Model.ModelID
-	switch {
-	case strings.Contains(model, "opus"):
-		model = "opus"
-	case strings.Contains(model, "sonnet"):
-		model = "sonnet"
-	case strings.Contains(model, "haiku"):
-		model = "haiku"
-	default:
-		if input.Model.DisplayName != "" {
-			model = input.Model.DisplayName
-		}
+	// Prefer display_name (e.g. "Opus 4.6") — has version info
+	model := input.Model.DisplayName
+	if model == "" {
+		model = input.Model.ModelID
 	}
 	return segment{text: " \U000f09a1 " + model, color: theme.Cyan}
 }
@@ -551,7 +549,7 @@ func segCache(sc slSidecar, theme *TerminalTheme) segment {
 	if !sc.HasSidecar {
 		return segment{empty: true}
 	}
-	return segment{text: fmt.Sprintf(" \uf0e7 %d%%", sc.CachePct), color: theme.Green}
+	return segment{text: fmt.Sprintf(" \uf0e7%d%%", sc.CachePct), color: theme.Green}
 }
 
 func segTools(sc slSidecar, theme *TerminalTheme) segment {
@@ -581,7 +579,7 @@ func segContext(input *StatuslineInput, opts StatuslineOptions, theme *TerminalT
 	emptyBarStr := strings.Repeat("\u2591", emptyW)
 
 	return segment{
-		text:      fmt.Sprintf(" %s%s %d%%", filledStr, emptyBarStr, ctxPct),
+		text:      fmt.Sprintf(" ctx:%s%s %d%%", filledStr, emptyBarStr, ctxPct),
 		color:     barCol,
 		barCol:    barCol,
 		dimCol:    theme.Dim,
@@ -702,11 +700,21 @@ func getTerminalWidth() int {
 			return n
 		}
 	}
-	return 80
+	// Try stderr (stays connected to terminal even when stdin/stdout are piped)
+	if w, _, err := term.GetSize(int(os.Stderr.Fd())); err == nil && w > 0 {
+		return w
+	}
+	// Try stdout
+	if w, _, err := term.GetSize(int(os.Stdout.Fd())); err == nil && w > 0 {
+		return w
+	}
+	return 120 // sensible default when detection fails
 }
 
 func visibleLen(s string) int {
-	return len(ansiEscRe.ReplaceAllString(s, ""))
+	stripped := ansiEscRe.ReplaceAllString(s, "")
+	// Count runes (display characters), not bytes — Unicode icons/bars are multi-byte
+	return len([]rune(stripped))
 }
 
 // --- Main Statusline Command ---
@@ -771,12 +779,12 @@ func cmdStatusline() {
 
 	// Default row assignments: 1=top (work), 2=bottom (rates)
 	defaultRow := map[string]int{
-		"dir": 1, "git": 1, "model": 1, "turns": 1, "cost": 1, "tools": 1, "vim": 1,
+		"dir": 1, "git": 1, "model": 1, "turns": 1, "cost": 1, "tools": 1,
 		"rate-5hr": 2, "rate-weekly": 2, "rate-sonnet": 2, "reset": 2, "proj": 2, "cache": 2, "context": 2,
 	}
 
 	// Segment order — use config order if set, else default
-	defaultOrder := []string{"dir", "git", "model", "turns", "cost", "tools", "vim",
+	defaultOrder := []string{"dir", "git", "model", "turns", "cost", "tools",
 		"rate-5hr", "rate-weekly", "rate-sonnet", "reset", "proj", "cache", "context"}
 	segOrder := defaultOrder
 	if len(cfg.Order) > 0 {

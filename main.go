@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -33,11 +34,34 @@ type ServerConfig struct {
 	Host string `toml:"host"`
 }
 
+func setupLogging(logPath string) {
+	// Rotate if log file exceeds 5MB
+	if stat, err := os.Stat(logPath); err == nil {
+		if stat.Size() > 5*1024*1024 {
+			os.Truncate(logPath, 0)
+		}
+	}
+
+	// Open log file
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		log.Printf("warning: cannot open log file %s: %v", logPath, err)
+		return
+	}
+
+	// Write to both stderr and log file
+	multiWriter := io.MultiWriter(os.Stderr, logFile)
+	log.SetOutput(multiWriter)
+	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds)
+}
+
 func main() {
 	if len(os.Args) < 2 {
 		printUsage()
 		os.Exit(1)
 	}
+
+	log.Printf("[MAIN] periscope v0.1.0 invoked: %s", os.Args[1])
 
 	switch os.Args[1] {
 	case "init":
@@ -90,9 +114,12 @@ func newApp() (*App, error) {
 	// Load config if it exists
 	configPath := filepath.Join(app.HomeDir, "config.toml")
 	if data, err := os.ReadFile(configPath); err == nil {
+		log.Printf("[MAIN] Loading config from %s", configPath)
 		if _, err := toml.Decode(string(data), &app.Config); err != nil {
-			log.Printf("warning: config.toml parse error: %v", err)
+			log.Printf("[MAIN] warning: config.toml parse error: %v", err)
 		}
+	} else {
+		log.Printf("[MAIN] No config.toml found, using defaults")
 	}
 
 	// Apply defaults
@@ -104,8 +131,10 @@ func newApp() (*App, error) {
 	}
 	if app.Config.DataDir != "" {
 		app.DataDir = app.Config.DataDir
+		log.Printf("[MAIN] DataDir override: %s", app.DataDir)
 	}
 
+	log.Printf("[MAIN] Config loaded: %s:%d", app.Config.Server.Host, app.Config.Server.Port)
 	return app, nil
 }
 
@@ -125,8 +154,14 @@ func cmdServe() {
 		log.Fatal(err)
 	}
 
+	// Set up log file with rotation
+	logPath := filepath.Join(app.HomeDir, "periscope.log")
+	setupLogging(logPath)
+	log.Printf("[MAIN] Logging to %s", logPath)
+
 	// Ensure initialized
 	if _, err := os.Stat(app.PluginDir); os.IsNotExist(err) {
+		log.Printf("[MAIN] First run detected, running init")
 		fmt.Println("First run detected — running init...")
 		if err := install(app); err != nil {
 			log.Fatal(err)
@@ -135,33 +170,39 @@ func cmdServe() {
 
 	// Open database
 	dbPath := filepath.Join(app.HomeDir, "periscope.db")
+	log.Printf("[MAIN] Opening database: %s", dbPath)
 	app.DB, err = openDB(dbPath)
 	if err != nil {
-		log.Fatalf("database: %v", err)
+		log.Fatalf("[MAIN] database: %v", err)
 	}
 	defer app.DB.Close()
 
 	// Import file data into DB
+	log.Printf("[MAIN] Importing file data")
 	if err := importFileData(app); err != nil {
-		log.Printf("warning: data import: %v", err)
+		log.Printf("[MAIN] warning: data import: %v", err)
 	}
 
 	// Compact limit history (tiered dedup: recent=dense, old=sparse)
+	log.Printf("[MAIN] Compacting limit history")
 	compactLimitHistory(app)
 
 	// Start WebSocket hub
+	log.Printf("[MAIN] Starting WebSocket hub")
 	app.Hub = newHub()
 	go app.Hub.run()
 
 	// Start file watcher
+	log.Printf("[MAIN] Starting file watcher")
 	app.Watcher, err = startWatcher(app)
 	if err != nil {
-		log.Printf("warning: file watcher: %v", err)
+		log.Printf("[MAIN] warning: file watcher: %v", err)
 	} else {
 		defer app.Watcher.Close()
 	}
 
 	// Start HTTP server
+	log.Printf("[MAIN] Starting HTTP server on %s:%d", app.Config.Server.Host, app.Config.Server.Port)
 	startServer(app)
 }
 

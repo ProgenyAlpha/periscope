@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>PERISCOPE</title>
-<link href="https://fonts.googleapis.com/css2?family=Black+Ops+One&family=Space+Grotesk:wght@300;400;500;600&family=Rajdhani:wght@500;600;700&family=Fira+Code:wght@400;600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Black+Ops+One&family=Space+Grotesk:wght@300;400;500;600&family=Rajdhani:wght@500;600;700&family=Fira+Code:wght@400;600&family=Michroma&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
 <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3"></script>
 <link rel="stylesheet" href="/api/plugins/vendor/gridstack.min.css">
@@ -28,17 +28,17 @@ html,body{min-height:100%;background:var(--bg-void);color:var(--text);font-famil
 a{color:var(--c-primary);text-decoration:none}
 
 /* Header */
-.top-bar{display:flex;align-items:flex-end;justify-content:space-between;padding:16px 20px;max-width:1480px;margin:0 auto;border-bottom:1px solid var(--rule);margin-bottom:20px;flex-wrap:wrap;gap:12px}
+.top-bar{display:flex;align-items:center;justify-content:space-between;padding:14px 20px;max-width:1480px;margin:0 auto;border-bottom:1px solid var(--rule);margin-bottom:20px;flex-wrap:wrap;gap:8px}
 .brand{font-family:'Black Ops One',cursive;font-size:22px;color:var(--c-primary);letter-spacing:3px;text-shadow:0 0 20px var(--glow);display:flex;align-items:baseline;gap:8px}
 .brand span{font-family:'Rajdhani',sans-serif;font-weight:600;font-size:14px;color:var(--text-dim);letter-spacing:4px}
-.status-strip{display:flex;align-items:center;gap:14px}
+.status-strip{display:flex;align-items:center;gap:8px;flex-wrap:wrap;flex-shrink:1;min-width:0}
 .acct-strip{display:flex;align-items:center;gap:8px;flex-wrap:nowrap;flex-shrink:1;overflow:hidden}
 .signal{display:flex;align-items:center;gap:6px}
 .signal-dot{width:8px;height:8px;border-radius:50%;background:var(--c-secondary);box-shadow:0 0 8px var(--c-secondary);animation:pulse 2s ease-in-out infinite}
 .signal-dot.off{background:var(--c-danger);box-shadow:0 0 8px var(--c-danger);animation:none}
 @keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.5;transform:scale(.8)}}
 .signal-label{font-family:var(--font-mono);font-size:10px;color:var(--c-secondary);letter-spacing:1px}
-.chip{font-family:var(--font-mono);font-size:11px;font-weight:600;padding:3px 10px;border:1px solid var(--rule);background:var(--bg-inset);color:var(--text)}
+.chip{font-family:var(--font-mono);font-size:10px;font-weight:600;padding:2px 8px;border:1px solid var(--rule);background:var(--bg-inset);color:var(--text);white-space:nowrap}
 .chip.amber{color:var(--c-primary);border-color:rgba(var(--rgb-primary),0.25)}
 .chip.green{color:var(--c-secondary);border-color:rgba(var(--rgb-secondary),0.25)}
 .chip.cyan{color:var(--c-tertiary);border-color:rgba(var(--rgb-tertiary),0.25)}
@@ -77,6 +77,19 @@ a{color:var(--c-primary);text-decoration:none}
   color:var(--text-dim);margin-bottom:5px;cursor:grab}
 .widget-title:active{cursor:grabbing}
 .widget-loading{color:var(--text-dim);font-size:0.8rem;font-style:italic}
+/* Widget hide button */
+.widget-hide-btn{position:absolute;top:4px;right:8px;cursor:pointer;color:var(--text-dim);font-size:16px;line-height:1;z-index:10;opacity:0;transition:opacity 0.2s,color 0.2s}
+.grid-stack-item-content:hover .widget-hide-btn{opacity:0.6}
+.widget-hide-btn:hover{opacity:1!important;color:var(--c-danger)}
+/* Widget drawer */
+.widget-drawer{position:relative;z-index:200}
+.widget-drawer-btn{background:var(--bg-inset);border:1px solid var(--rule);color:var(--text);padding:4px 8px;font-family:var(--font-mono);font-size:11px;cursor:pointer;height:28px;border-radius:3px;display:flex;align-items:center;gap:5px;user-select:none}
+.widget-drawer-btn:hover{border-color:var(--c-primary)}
+.widget-drawer-badge{display:none;align-items:center;justify-content:center;background:var(--c-primary);color:var(--bg-void);font-size:9px;font-weight:700;min-width:16px;height:16px;border-radius:8px;padding:0 4px}
+.widget-drawer-menu{display:none;position:absolute;top:100%;right:0;margin-top:2px;min-width:180px;background:var(--bg-panel);border:1px solid var(--rule);border-radius:3px;box-shadow:0 8px 24px rgba(0,0,0,.5);max-height:300px;overflow-y:auto}
+.widget-drawer.open .widget-drawer-menu{display:block}
+.wd-sep{height:1px;background:var(--rule);margin:4px 0}
+.wd-section{font-family:var(--font-mono);font-size:9px;color:var(--text-dim);text-transform:uppercase;letter-spacing:1px;padding:6px 12px 2px;user-select:none}
 /* Drag placeholder */
 .grid-stack-placeholder>.placeholder-content{
   background:rgba(var(--rgb-primary),0.08)!important;
@@ -145,7 +158,27 @@ a{color:var(--c-primary);text-decoration:none}
 .tog-group{display:flex;gap:2px}.tog{background:var(--bg-inset);border:1px solid var(--rule);color:var(--text-dim);font-family:var(--font-mono);font-size:0.6rem;padding:3px 8px;cursor:pointer;transition:all 0.15s}
 .tog:hover{border-color:var(--c-primary);color:var(--text)}.tog.active{background:var(--c-primary);color:var(--bg-void);border-color:var(--c-primary)}
 
-@media(max-width:768px){.top-bar{flex-direction:column;align-items:stretch;padding:12px 10px}.brand{justify-content:center}}
+/* Responsive header — progressive collapse */
+@media(max-width:1200px){
+  .top-bar{gap:8px;padding:12px 16px}
+  .clock{display:none}
+  .acct-strip{display:none}
+}
+@media(max-width:900px){
+  .top-bar{flex-wrap:wrap}
+  .top-controls{order:10;width:100%;justify-content:flex-end}
+}
+@media(max-width:640px){
+  .top-bar{padding:10px;gap:6px}
+  .brand{font-size:18px}
+  .brand span{font-size:11px}
+  .status-strip{gap:4px}
+  .chip{font-size:9px;padding:2px 6px}
+  .top-controls{gap:4px}
+  .theme-drop-btn{min-width:90px;font-size:10px;height:24px}
+  .widget-drawer-btn{font-size:10px;height:24px;padding:3px 6px}
+  .btn{font-size:10px;padding:3px 8px}
+}
 .mono{font-family:var(--font-mono)}.dim{color:var(--text-dim)}.bright{color:var(--text-bright)}
 .metric{font-size:1.8rem;font-weight:600;line-height:1.1;font-family:var(--font-mono)}
 .metric-label{font-size:0.65rem;text-transform:uppercase;letter-spacing:1px;color:var(--text-dim);margin-top:4px}
@@ -153,23 +186,25 @@ a{color:var(--c-primary);text-decoration:none}
 
 /* ═══ STARFIELD DARK ═══ */
 [data-theme="starfield-dark"]{
-  --bg-void:#14181e;--bg-panel:rgba(10,14,20,0.90);--bg-inset:rgba(16,20,28,0.92);--bg-hover:rgba(24,28,36,0.88);
+  --bg-void:#14181e;--bg-panel:rgba(10,14,20,0.55);--bg-inset:rgba(16,20,28,0.60);--bg-hover:rgba(24,28,36,0.55);
   --c-primary:#E06236;--c-secondary:#D7AB61;--c-tertiary:#2F4C79;--c-accent:#E06236;--c-danger:#C82337;--c-warm:#E06236;
   --text:#e8e0d4;--text-dim:#5a6270;--text-bright:#f4f0e8;
   --rule:rgba(224,98,54,0.12);--glow:rgba(224,98,54,0.18);
   --sf-metal:#6a747e}
-[data-theme="starfield-dark"] body{background:#1a1e24}
-[data-theme="starfield-dark"] .grid-stack-item-content{backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);border-color:rgba(100,115,130,0.22);border-radius:2px;position:relative}
+[data-theme="starfield-dark"] body{background:transparent}
+[data-theme="starfield-dark"] .top-bar{position:relative;z-index:10}
+[data-theme="starfield-dark"] .grid-stack,[data-theme="starfield-dark"] .status-bar{position:relative;z-index:1}
+[data-theme="starfield-dark"] .grid-stack-item-content{backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);border-color:rgba(100,115,130,0.22);border-radius:2px;position:relative}
 [data-theme="starfield-dark"] .grid-stack-item-content::after{content:'';position:absolute;bottom:0;left:0;right:0;height:3px;background:linear-gradient(90deg,#C82337 0%,#C82337 25%,#E06236 25%,#E06236 50%,#D7AB61 50%,#D7AB61 75%,#2F4C79 75%,#2F4C79 100%);opacity:0.6;border-radius:0 0 2px 2px;pointer-events:none}
-[data-theme="starfield-dark"] .chip{border-color:rgba(100,115,130,0.3);background:rgba(10,14,20,0.75);border-radius:2px}
-[data-theme="starfield-dark"] .btn{border-color:rgba(100,115,130,0.3);background:rgba(10,14,20,0.65);border-radius:2px}
+[data-theme="starfield-dark"] .chip{border-color:rgba(100,115,130,0.3);background:rgba(10,14,20,0.50);border-radius:2px}
+[data-theme="starfield-dark"] .btn{border-color:rgba(100,115,130,0.3);background:rgba(10,14,20,0.45);border-radius:2px}
 [data-theme="starfield-dark"] .btn:hover{border-color:rgba(224,98,54,0.5);box-shadow:0 0 8px rgba(224,98,54,0.12)}
 [data-theme="starfield-dark"] .tog{border-radius:2px}
 [data-theme="starfield-dark"] .tog.active{background:rgba(224,98,54,0.18);border-color:rgba(224,98,54,0.5)}
-[data-theme="starfield-dark"] .theme-drop-btn{background:rgba(10,14,20,0.8);border-color:rgba(100,115,130,0.3);color:#e8e0d4;border-radius:2px}
-[data-theme="starfield-dark"] .theme-drop-menu{background:rgba(10,14,20,0.95);border-color:rgba(100,115,130,0.3)}
+[data-theme="starfield-dark"] .theme-drop-btn{background:rgba(10,14,20,0.55);border-color:rgba(100,115,130,0.3);color:#e8e0d4;border-radius:2px}
+[data-theme="starfield-dark"] .theme-drop-menu{background:rgba(10,14,20,0.85);border-color:rgba(100,115,130,0.3);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px)}
 [data-theme="starfield-dark"] .theme-drop-item.active{background:#E06236}
-[data-theme="starfield-dark"] .intel-card{background:rgba(16,20,28,0.85);border-color:rgba(100,115,130,0.2);border-radius:2px}
+[data-theme="starfield-dark"] .intel-card{background:rgba(16,20,28,0.55);border-color:rgba(100,115,130,0.2);border-radius:2px}
 [data-theme="starfield-dark"] .top-bar{border-radius:0}
 [data-theme="starfield-dark"] .brand{color:#D7AB61;text-shadow:0 0 15px rgba(215,171,97,0.2);font-family:'Space Grotesk',sans-serif;letter-spacing:3px;font-weight:400}
 [data-theme="starfield-dark"] .brand span{color:#E06236}
@@ -188,7 +223,9 @@ a{color:var(--c-primary);text-decoration:none}
   --text:#1a1e24;--text-dim:#5a6270;--text-bright:#0e1218;
   --rule:rgba(192,64,32,0.15);--glow:rgba(192,64,32,0.12);
   --sf-metal:#a0a8b0}
-[data-theme="starfield-light"] body{background:#a8b0b8}
+[data-theme="starfield-light"] body{background:transparent}
+[data-theme="starfield-light"] .top-bar{position:relative;z-index:10}
+[data-theme="starfield-light"] .grid-stack,[data-theme="starfield-light"] .status-bar{position:relative;z-index:1}
 [data-theme="starfield-light"] .grid-stack-item-content{backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);border-color:rgba(50,60,70,0.22);border-radius:2px;box-shadow:0 1px 4px rgba(0,0,0,0.15);position:relative}
 [data-theme="starfield-light"] .grid-stack-item-content::after{content:'';position:absolute;bottom:0;left:0;right:0;height:3px;background:linear-gradient(90deg,#C82337 0%,#C82337 25%,#E06236 25%,#E06236 50%,#D7AB61 50%,#D7AB61 75%,#2F4C79 75%,#2F4C79 100%);opacity:0.7;border-radius:0 0 2px 2px;pointer-events:none}
 [data-theme="starfield-light"] .chip{border-color:rgba(50,60,70,0.15);background:rgba(253,248,243,0.8);border-radius:2px;color:#1a1e24}
@@ -218,7 +255,7 @@ a{color:var(--c-primary);text-decoration:none}
 [data-theme="starfield-light"] .metric{color:#1a1e24}
 
 /* Starfield background canvas */
-#starfield-bg{display:none;position:fixed;top:0;left:0;width:100%;height:100%;z-index:-1;pointer-events:none}
+#starfield-bg{display:none;position:fixed;top:0;left:0;width:100%;height:100%;z-index:0;pointer-events:none}
 [data-theme="starfield-dark"] #starfield-bg,
 [data-theme="starfield-light"] #starfield-bg{display:block}
 </style>
@@ -237,6 +274,7 @@ a{color:var(--c-primary);text-decoration:none}
     <span class="chip cyan" id="badge-model">--</span>
     <span class="chip dim" id="badge-sessions">--</span>
     <span class="chip amber" id="badge-cost">--</span>
+    <span class="chip" id="badge-effort" title="Current effort level">--</span>
   </div>
   <div class="acct-strip">
     <span class="chip dim editable" id="badge-operator" onclick="editOperatorName(this)">--</span>
@@ -257,7 +295,10 @@ a{color:var(--c-primary);text-decoration:none}
         <div class="theme-drop-item" data-value="catppuccin-mocha">Catppuccin Mocha</div>
       </div>
     </div>
-    <button class="btn" onclick="Periscope.resetLayout()" title="Reset layout (L)">RESET LAYOUT</button>
+    <div class="widget-drawer" id="widget-drawer">
+      <button class="widget-drawer-btn" id="widget-drawer-btn">LAYOUT <span class="widget-drawer-badge" id="widget-drawer-badge"></span></button>
+      <div class="widget-drawer-menu" id="widget-drawer-menu"></div>
+    </div>
     <button class="btn" onclick="Periscope.refreshData()">REFRESH</button>
     <button class="btn" onclick="toggleKB()" title="Keyboard shortcuts (?)">?</button>
   </div>
@@ -293,6 +334,7 @@ if (typeof Chart !== 'undefined') {
 }
 
 // --- Shared Formatters ---
+function escHtml(s) { if (!s) return ''; var d=document.createElement('div'); d.textContent=s; return d.innerHTML; }
 function fmt(n) { return typeof n === 'number' ? n.toLocaleString() : '--'; }
 function fmtK(n) { return typeof n === 'number' ? (n >= 1e6 ? (n/1e6).toFixed(1)+'M' : (n >= 1e3 ? (n/1e3).toFixed(0)+'K' : n.toString())) : '--'; }
 function fmtCost(n) { return typeof n === 'number' ? '$'+n.toFixed(2) : '--'; }
@@ -311,11 +353,11 @@ function sessionLabel(sid, data) {
   // Priority 1: User-set custom title
   if (m && m.customTitle) return m.customTitle;
   // Priority 2: Claude-generated summary
-  if (m && m.summary) return m.summary.length > 30 ? m.summary.substring(0,27) + '...' : m.summary;
+  if (m && m.summary) return m.summary.length > 50 ? m.summary.substring(0,47) + '...' : m.summary;
   // Priority 3: First prompt (cleaned)
   if (m && m.firstPrompt) {
     var fp = String(m.firstPrompt).replace(/<[^>]+>/g,'').trim();
-    return fp.length > 30 ? fp.substring(0,27) + '...' : fp;
+    return fp.length > 50 ? fp.substring(0,47) + '...' : fp;
   }
   // Priority 4: Project directory from sidecar
   if (data && data.sidecars) {
@@ -334,6 +376,28 @@ function sessionLabel(sid, data) {
   }
   // Fallback: short hex
   return sid.substring(0,8);
+}
+function sessionProject(sid, data) {
+  var meta = data && data.sessionMeta;
+  var m = null;
+  if (meta) {
+    m = meta[sid];
+    if (!m) { for (var k in meta) { if (k.startsWith(sid.substring(0,8)) || sid.startsWith(k.substring(0,8))) { m = meta[k]; break; } } }
+  }
+  if (m && m.projectPath) {
+    var segs = m.projectPath.replace(/\\/g,'/').split('/').filter(Boolean);
+    return segs.length > 0 ? segs[segs.length-1] : '';
+  }
+  if (data && data.sidecars) {
+    for (var i = 0; i < data.sidecars.length; i++) {
+      var sc = data.sidecars[i];
+      if (sc.id === sid && sc.data && sc.data.project) {
+        var segs = sc.data.project.replace(/\\/g,'/').split('/').filter(Boolean);
+        return segs.length > 0 ? segs[segs.length-1] : '';
+      }
+    }
+  }
+  return '';
 }
 function fmtTime(ts) {
   if (!ts) return '--';
@@ -500,8 +564,8 @@ function prepRateLimitData(D) {
   const pctS = lu.pctSonnet || 0;
   const burn5hr = elapsed5hr > 0.05 ? (pct5 / elapsed5hr) : 0;
   const burnWeekly = elapsedWeekly > 0.5 ? (pctW / elapsedWeekly) : 0;
-  const ttl5hr = burn5hr > 0 ? ((100 - pct5) / burn5hr) : Infinity;
-  const ttlWeekly = burnWeekly > 0 ? ((100 - pctW) / burnWeekly) : Infinity;
+  const ttl5hr = burn5hr > 0 ? Math.min((100 - pct5) / burn5hr, remaining5hr) : Infinity;
+  const ttlWeekly = burnWeekly > 0 ? Math.min((100 - pctW) / burnWeekly, remainingWeekly) : Infinity;
   const lhEarly = (D.limitHistory || []).concat([]);
   lhEarly.push({ts: now.toISOString(), pct5hr: pct5, pctWeekly: pctW, pctSonnet: pctS,
     reset5hr: lu.reset5hr || '', resetWeekly: lu.resetWeekly || ''});
@@ -657,6 +721,7 @@ const DEFAULT_LAYOUT = {
   'cost-timeline':       {x:6,  y:27, w:6,  h:4},
   'tool-usage':          {x:0,  y:31, w:6,  h:5},
   'last-turn':           {x:6,  y:31, w:6,  h:5},
+  'model-usage':         {x:6,  y:36, w:6,  h:5},
   'statusline-settings': {x:0,  y:36, w:6,  h:7},
   'session-list':        {x:0,  y:43, w:12, h:7},
 };
@@ -673,10 +738,14 @@ const Periscope = {
   _layoutDebounce: null,
   _layoutReady: false,
   _widgetOrder: 0,
+  _hiddenWidgets: new Set(),
 
   // Widget API — same contract as before: { id, title, size, priority, init(el), render(el, data), destroy() }
   registerWidget(config) {
     this._widgets.set(config.id, config);
+
+    // Skip hidden widgets — they stay registered but not rendered
+    if (this._hiddenWidgets.has(config.id)) return;
 
     // Determine Gridstack size from config.size (sm/md/lg/xl)
     const sz = GS_SIZE[config.size] || GS_SIZE.sm;
@@ -712,9 +781,98 @@ const Periscope = {
     const contentEl = outerEl.querySelector('.grid-stack-item-content');
     if (contentEl) {
       contentEl.dataset.widget = config.id;
+      // Add hide button to widget
+      const hideBtn = document.createElement('span');
+      hideBtn.className = 'widget-hide-btn';
+      hideBtn.title = 'Hide widget';
+      hideBtn.textContent = '\u00d7';
+      hideBtn.onclick = (e) => { e.stopPropagation(); this.hideWidget(config.id); };
+      contentEl.prepend(hideBtn);
       if (config.init) config.init(contentEl);
       if (this._data && config.render) config.render(contentEl, this._data);
     }
+  },
+
+  hideWidget(id) {
+    this._hiddenWidgets.add(id);
+    this._saveHiddenWidgets();
+    // Remove from grid
+    if (this._grid) {
+      const el = this._grid.getGridItems().find(item => {
+        const c = item.querySelector('.grid-stack-item-content');
+        return c && c.dataset.widget === id;
+      });
+      if (el) this._grid.removeWidget(el, true);
+    }
+    this._updateWidgetDrawer();
+    this._saveLayout();
+  },
+
+  showWidget(id) {
+    this._hiddenWidgets.delete(id);
+    this._saveHiddenWidgets();
+    const config = this._widgets.get(id);
+    if (!config) return;
+    // Re-add to grid
+    const sz = GS_SIZE[config.size] || GS_SIZE.sm;
+    const defaults = DEFAULT_LAYOUT[id];
+    const opts = { id, w: defaults ? defaults.w : sz.w, h: defaults ? defaults.h : sz.h, autoPosition: true };
+    const outerEl = this._grid.addWidget(opts);
+    const contentEl = outerEl.querySelector('.grid-stack-item-content');
+    if (contentEl) {
+      contentEl.dataset.widget = id;
+      const hideBtn = document.createElement('span');
+      hideBtn.className = 'widget-hide-btn';
+      hideBtn.title = 'Hide widget';
+      hideBtn.textContent = '\u00d7';
+      hideBtn.onclick = (e) => { e.stopPropagation(); this.hideWidget(id); };
+      contentEl.prepend(hideBtn);
+      if (config.init) config.init(contentEl);
+      if (this._data && config.render) config.render(contentEl, this._data);
+    }
+    this._updateWidgetDrawer();
+    this._saveLayout();
+  },
+
+  _saveHiddenWidgets() {
+    localStorage.setItem('periscope-hidden', JSON.stringify([...this._hiddenWidgets]));
+  },
+
+  _loadHiddenWidgets() {
+    try {
+      const stored = localStorage.getItem('periscope-hidden');
+      if (stored) this._hiddenWidgets = new Set(JSON.parse(stored));
+    } catch(e) { /* ignore */ }
+  },
+
+  _updateWidgetDrawer() {
+    const menu = document.getElementById('widget-drawer-menu');
+    const badge = document.getElementById('widget-drawer-badge');
+    if (!menu) return;
+    const hidden = [...this._hiddenWidgets];
+    if (badge) badge.textContent = hidden.length || '';
+    if (badge) badge.style.display = hidden.length ? 'inline-flex' : 'none';
+    let html = '<div class="theme-drop-item" data-action="reset">Reset to Default</div>';
+    if (hidden.length > 0) {
+      html += '<div class="wd-sep"></div>';
+      html += '<div class="wd-section">Restore Widgets</div>';
+      html += hidden.map(id => {
+        const w = this._widgets.get(id);
+        const label = w ? w.title : id;
+        return '<div class="theme-drop-item" data-show="' + id + '">' + label + '</div>';
+      }).join('');
+    }
+    menu.innerHTML = html;
+    menu.querySelector('[data-action="reset"]').addEventListener('click', () => {
+      document.getElementById('widget-drawer').classList.remove('open');
+      this.resetLayout();
+    });
+    menu.querySelectorAll('[data-show]').forEach(item => {
+      item.addEventListener('click', () => {
+        this.showWidget(item.dataset.show);
+        document.getElementById('widget-drawer').classList.remove('open');
+      });
+    });
   },
 
   // Layout persistence
@@ -733,7 +891,8 @@ const Periscope = {
   },
 
   resetLayout() {
-    // Save DEFAULT_LAYOUT as the active layout, then reload
+    // Clear hidden widgets and restore default layout, then reload
+    localStorage.removeItem('periscope-hidden');
     localStorage.setItem('periscope-layout', JSON.stringify(DEFAULT_LAYOUT));
     fetch('/api/layout', {method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify(DEFAULT_LAYOUT)}).then(()=>location.reload());
@@ -768,6 +927,27 @@ const Periscope = {
     const totalCost = sidecars.reduce((s, sc) => s + (sc.data && sc.data.cumulative ? sc.data.cumulative.cost || 0 : 0), 0);
     const cs = typeof costSuffix === 'function' ? costSuffix(data) : '';
     document.getElementById('badge-cost').textContent = fmtCost(totalCost) + cs;
+    // Effort level badge — find from most recent sidecar
+    const effortEl = document.getElementById('badge-effort');
+    if (effortEl) {
+      let effort = '';
+      for (let i = sidecars.length - 1; i >= 0; i--) {
+        if (sidecars[i].data && sidecars[i].data.effortLevel) {
+          effort = sidecars[i].data.effortLevel;
+          break;
+        }
+      }
+      if (effort) {
+        effortEl.textContent = effort.toUpperCase();
+        const eColors = {low:'var(--c-secondary)',medium:'var(--c-primary)',high:'var(--c-danger)'};
+        effortEl.style.color = eColors[effort] || 'var(--text-dim)';
+        effortEl.style.borderColor = eColors[effort] ? 'color-mix(in srgb, ' + eColors[effort] + ' 30%, transparent)' : 'var(--rule)';
+      } else {
+        effortEl.textContent = 'EFFORT: --';
+        effortEl.style.color = '';
+        effortEl.style.borderColor = '';
+      }
+    }
     if (data.profile) {
       if (data.profile.subscription) {
         const sub = data.profile.subscription;
@@ -907,6 +1087,8 @@ const Periscope = {
     ws.onopen = () => {
       this._wsRetry = 0;
       document.getElementById('signal-text').textContent = 'LIVE';
+      // Stop polling when WS is live — no need for duplicate traffic
+      if (this._pollTimer) { clearInterval(this._pollTimer); this._pollTimer = null; }
     };
     ws.onmessage = (e) => {
       try {
@@ -921,6 +1103,8 @@ const Periscope = {
     };
     ws.onclose = () => {
       document.getElementById('signal-text').textContent = 'RECONNECTING';
+      // Resume polling as fallback while WS is down
+      if (!this._pollTimer) this._startPolling();
       const delay = Math.min(1000 * Math.pow(2, this._wsRetry++), 30000);
       setTimeout(() => this._connectWS(), delay);
     };
@@ -1022,6 +1206,9 @@ const Periscope = {
       if (resp.ok) this._data = await resp.json();
     } catch(e) { /* will retry via polling */ }
 
+    // Load hidden widgets
+    this._loadHiddenWidgets();
+
     // Load saved layout: API data → localStorage → DEFAULT_LAYOUT
     if (this._data && this._data.layout) {
       this._savedLayout = this._data.layout;
@@ -1062,6 +1249,9 @@ const Periscope = {
 
     // Now that all widgets are placed, enable layout persistence
     this._layoutReady = true;
+
+    // Initialize widget drawer
+    this._updateWidgetDrawer();
 
     // If we have data, render all widgets
     if (this._data) this._update(this._data);
@@ -1110,6 +1300,9 @@ setInterval(updateClock, 1000);
   btn.addEventListener('click', function(e) {
     e.stopPropagation();
     drop.classList.toggle('open');
+    // Close widget drawer if open
+    var wd = document.getElementById('widget-drawer');
+    if (wd) wd.classList.remove('open');
   });
   // Select item
   menu.addEventListener('click', function(e) {
@@ -1123,6 +1316,22 @@ setInterval(updateClock, 1000);
   });
   // Close on outside click
   document.addEventListener('click', function() { drop.classList.remove('open'); });
+})();
+
+// Widget drawer toggle
+(function() {
+  const drawer = document.getElementById('widget-drawer');
+  const drawerBtn = document.getElementById('widget-drawer-btn');
+  if (drawer && drawerBtn) {
+    drawerBtn.addEventListener('click', function(e) {
+      e.stopPropagation();
+      drawer.classList.toggle('open');
+      // Close theme dropdown if open
+      document.getElementById('theme-drop').classList.remove('open');
+    });
+    document.addEventListener('click', function() { drawer.classList.remove('open'); });
+    drawer.querySelector('.widget-drawer-menu').addEventListener('click', function(e) { e.stopPropagation(); });
+  }
 })();
 
 // Editable operator name — contentEditable, zero layout change (exact monolith port)

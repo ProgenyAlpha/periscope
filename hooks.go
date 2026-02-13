@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"math"
 	"net/http"
 	"os"
@@ -23,8 +24,8 @@ type HookPayload struct {
 // --- Transcript Entry ---
 
 type TranscriptEntry struct {
-	Type    string           `json:"type"`
-	Message *TranscriptMsg   `json:"message,omitempty"`
+	Type    string         `json:"type"`
+	Message *TranscriptMsg `json:"message,omitempty"`
 }
 
 type TranscriptMsg struct {
@@ -43,24 +44,27 @@ type TokenUsage struct {
 // --- Sidecar State ---
 
 type SidecarState struct {
-	LastOffset int64       `json:"lastOffset"`
-	Project    string      `json:"project,omitempty"`
-	Cumulative *Cumulative `json:"cumulative"`
-	LastTurn   *LastTurn   `json:"lastTurn"`
+	LastOffset  int64          `json:"lastOffset"`
+	Project     string         `json:"project,omitempty"`
+	EffortLevel string         `json:"effortLevel,omitempty"`
+	FirstPrompt string         `json:"firstPrompt,omitempty"`
+	Cumulative  *Cumulative    `json:"cumulative"`
+	LastTurn    *LastTurn      `json:"lastTurn"`
+	Models      map[string]int `json:"models,omitempty"`
 }
 
 type Cumulative struct {
-	Input      int64              `json:"input"`
-	CacheRead  int64              `json:"cache_read"`
-	CacheWrite int64              `json:"cache_write"`
-	Output     int64              `json:"output"`
-	Cost       float64            `json:"cost"`
-	AgentCost  float64            `json:"agent_cost"`
-	ToolCost   float64            `json:"tool_cost"`
-	ChatCost   float64            `json:"chat_cost"`
-	AgentCalls int                `json:"agent_calls"`
-	ToolCalls  int                `json:"tool_calls"`
-	ChatCalls  int                `json:"chat_calls"`
+	Input      int64                `json:"input"`
+	CacheRead  int64                `json:"cache_read"`
+	CacheWrite int64                `json:"cache_write"`
+	Output     int64                `json:"output"`
+	Cost       float64              `json:"cost"`
+	AgentCost  float64              `json:"agent_cost"`
+	ToolCost   float64              `json:"tool_cost"`
+	ChatCost   float64              `json:"chat_cost"`
+	AgentCalls int                  `json:"agent_calls"`
+	ToolCalls  int                  `json:"tool_calls"`
+	ChatCalls  int                  `json:"chat_calls"`
 	Tools      map[string]*ToolStat `json:"tools"`
 }
 
@@ -114,11 +118,76 @@ func getModelRates(model string) ModelRates {
 
 // --- Hook: Stop ---
 
+func extractFirstPrompt(transcriptPath string) string {
+	f, err := os.Open(transcriptPath)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 256*1024), 1024*1024)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		var entry struct {
+			Type    string `json:"type"`
+			Message struct {
+				Content json.RawMessage `json:"content"`
+			} `json:"message"`
+		}
+		if json.Unmarshal([]byte(line), &entry) != nil {
+			continue
+		}
+		if entry.Type != "human" {
+			continue
+		}
+		// Content can be string or array of content blocks
+		content := entry.Message.Content
+		if len(content) == 0 {
+			continue
+		}
+		var text string
+		if content[0] == '"' {
+			json.Unmarshal(content, &text)
+		} else if content[0] == '[' {
+			var blocks []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			}
+			if json.Unmarshal(content, &blocks) == nil {
+				for _, b := range blocks {
+					if b.Type == "text" && b.Text != "" {
+						text = b.Text
+						break
+					}
+				}
+			}
+		}
+		text = strings.TrimSpace(text)
+		if text == "" || strings.HasPrefix(text, "[Request interrupted") {
+			continue
+		}
+		// Truncate to 120 chars
+		if len(text) > 120 {
+			text = text[:117] + "..."
+		}
+		return text
+	}
+	return ""
+}
+
 func hookStop() {
+	log.Println("[HOOK] Stop hook triggered")
 	payload := readHookPayload()
 	if payload == nil || payload.TranscriptPath == "" || payload.SessionID == "" {
+		log.Println("[HOOK] Stop hook: invalid or missing payload, skipping")
 		return
 	}
+
+	log.Printf("[HOOK] Stop hook: processing session %s", payload.SessionID[:8])
 
 	home, _ := os.UserHomeDir()
 	stateDir := filepath.Join(home, ".claude", "hooks", "cost-state")
@@ -139,9 +208,11 @@ func hookStop() {
 	// Check for compaction (file got smaller)
 	fi, err := os.Stat(payload.TranscriptPath)
 	if err != nil {
+		log.Printf("[HOOK] Stop hook: cannot stat transcript %s: %v", payload.TranscriptPath, err)
 		return
 	}
 	if state.LastOffset > fi.Size() {
+		log.Printf("[HOOK] Stop hook: transcript compacted (was %d, now %d), resetting state", state.LastOffset, fi.Size())
 		state.LastOffset = 0
 		state.Cumulative = newCumulative()
 	}
@@ -149,6 +220,7 @@ func hookStop() {
 	// Read new bytes from transcript
 	f, err := os.Open(payload.TranscriptPath)
 	if err != nil {
+		log.Printf("[HOOK] Stop hook: cannot open transcript: %v", err)
 		return
 	}
 	defer f.Close()
@@ -170,6 +242,8 @@ func hookStop() {
 	}
 
 	newOffset, _ := f.Seek(0, io.SeekCurrent)
+
+	log.Printf("[HOOK] Stop hook: parsed %d new entries from transcript", len(entries))
 
 	// Reset last turn
 	turn := &LastTurn{Type: "chat"}
@@ -235,6 +309,20 @@ func hookStop() {
 			}
 		}
 
+		// Track model usage
+		mShort := model
+		mShort = strings.TrimPrefix(mShort, "claude-")
+		// Strip date suffix like -20250929
+		if idx := strings.LastIndex(mShort, "-20"); idx > 0 && len(mShort)-idx <= 9 {
+			mShort = mShort[:idx]
+		}
+		if mShort != "" {
+			if state.Models == nil {
+				state.Models = map[string]int{}
+			}
+			state.Models[mShort]++
+		}
+
 		// This turn
 		turn.Cost += cost
 		turn.Input += usage.InputTokens
@@ -257,9 +345,29 @@ func hookStop() {
 		state.Project = projectSlug
 	}
 
+	// Extract first user prompt if not already captured
+	if state.FirstPrompt == "" {
+		state.FirstPrompt = extractFirstPrompt(payload.TranscriptPath)
+	}
+
+	// Read current effort level from settings.json
+	settingsPath := filepath.Join(home, ".claude", "settings.json")
+	if raw, err := os.ReadFile(settingsPath); err == nil {
+		var settings struct {
+			EffortLevel string `json:"effortLevel"`
+		}
+		if json.Unmarshal(raw, &settings) == nil && settings.EffortLevel != "" {
+			state.EffortLevel = settings.EffortLevel
+		}
+	}
+
 	// Write sidecar
 	data, _ := json.Marshal(state)
-	os.WriteFile(statePath, data, 0644)
+	if err := os.WriteFile(statePath, data, 0644); err != nil {
+		log.Printf("[HOOK] Stop hook: failed to write sidecar to %s: %v", statePath, err)
+	} else {
+		log.Printf("[HOOK] Stop hook: sidecar saved to %s (cost: $%.4f, calls: %d)", statePath, state.Cumulative.Cost, state.Cumulative.AgentCalls+state.Cumulative.ToolCalls+state.Cumulative.ChatCalls)
+	}
 
 	// Append to usage-history.jsonl
 	totalCalls := state.Cumulative.AgentCalls + state.Cumulative.ToolCalls + state.Cumulative.ChatCalls
@@ -278,22 +386,32 @@ func hookStop() {
 		"cost":  math.Round(state.Cumulative.Cost*100) / 100,
 		"turns": totalCalls,
 	}
+	if state.EffortLevel != "" {
+		historyEntry["effort"] = state.EffortLevel
+	}
 	line, _ := json.Marshal(historyEntry)
 
 	histPath := filepath.Join(stateDir, "usage-history.jsonl")
 	if hf, err := os.OpenFile(histPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); err == nil {
 		hf.Write(append(line, '\n'))
 		hf.Close()
+		log.Printf("[HOOK] Stop hook: appended history entry to %s", histPath)
+	} else {
+		log.Printf("[HOOK] Stop hook: failed to append to history: %v", err)
 	}
 }
 
 // --- Hook: Display ---
 
 func hookDisplay() {
+	log.Println("[HOOK] Display hook triggered")
 	payload := readHookPayload()
 	if payload == nil || payload.SessionID == "" {
+		log.Println("[HOOK] Display hook: invalid or missing payload, skipping")
 		return
 	}
+
+	log.Printf("[HOOK] Display hook: processing session %s", payload.SessionID[:8])
 
 	home, _ := os.UserHomeDir()
 	stateDir := filepath.Join(home, ".claude", "hooks", "cost-state")
@@ -301,9 +419,11 @@ func hookDisplay() {
 	statePath := filepath.Join(stateDir, payload.SessionID+".json")
 
 	if _, err := os.Stat(statePath); os.IsNotExist(err) {
+		log.Println("[HOOK] Display hook: no sidecar found (first turn)")
+
 		output := map[string]any{
 			"hookSpecificOutput": map[string]any{
-				"hookEventName":    "UserPromptSubmit",
+				"hookEventName":     "UserPromptSubmit",
 				"additionalContext": "TELEMETRY - First turn - tracking starts next message.",
 			},
 		}
@@ -314,14 +434,18 @@ func hookDisplay() {
 
 	stateData, err := os.ReadFile(statePath)
 	if err != nil {
+		log.Printf("[HOOK] Display hook: failed to read sidecar: %v", err)
 		return
 	}
 	stateData = stripBOM(stateData)
 
 	var state SidecarState
 	if json.Unmarshal(stateData, &state) != nil || state.Cumulative == nil {
+		log.Println("[HOOK] Display hook: failed to parse sidecar JSON or missing cumulative data")
 		return
 	}
+
+	log.Printf("[HOOK] Display hook: loaded sidecar (cost: $%.4f, calls: %d)", state.Cumulative.Cost, state.Cumulative.AgentCalls+state.Cumulative.ToolCalls+state.Cumulative.ChatCalls)
 
 	c := state.Cumulative
 	totalCalls := c.AgentCalls + c.ToolCalls + c.ChatCalls
@@ -346,6 +470,9 @@ func hookDisplay() {
 	if hf, err := os.OpenFile(histPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); err == nil {
 		hf.Write(append(histLine, '\n'))
 		hf.Close()
+		log.Printf("[HOOK] Display hook: appended history entry to %s", histPath)
+	} else {
+		log.Printf("[HOOK] Display hook: failed to append to history: %v", err)
 	}
 
 	// Cache hit rate
@@ -419,12 +546,14 @@ func hookDisplay() {
 
 	// Record limit-history snapshot (throttled to 5min intervals)
 	if usage != nil && pct5hr >= 0 {
+		log.Printf("[HOOK] Display hook: recording rate limit snapshot (5hr: %d%%, weekly: %d%%)", pct5hr, pctWk)
 		hookRecordSnapshot(stateDir, usage)
 	}
 
 	// Build forecast projection
 	forecastStr := ""
 	if usage != nil && pct5hr >= 0 {
+		log.Println("[HOOK] Display hook: building forecast projection")
 		forecastStr = hookBuildForecast(stateDir, usage)
 	}
 
@@ -447,12 +576,13 @@ func hookDisplay() {
 
 	output := map[string]any{
 		"hookSpecificOutput": map[string]any{
-			"hookEventName":    "UserPromptSubmit",
+			"hookEventName":     "UserPromptSubmit",
 			"additionalContext": strings.Join(lines, "\n"),
 		},
 	}
 	data, _ := json.Marshal(output)
 	fmt.Print(string(data))
+	log.Println("[HOOK] Display hook: output sent to Claude")
 }
 
 // hookRefreshUsage returns current usage data, refreshing from the Anthropic API if the
@@ -465,16 +595,22 @@ func hookRefreshUsage(stateDir, claudeDir string) map[string]any {
 	cached := readUsageCache(cachePath)
 	if cached != nil {
 		if fetched, ok := cached["fetched_at"].(float64); ok {
-			if time.Since(time.Unix(int64(fetched), 0)) < 30*time.Second {
+			age := time.Since(time.Unix(int64(fetched), 0))
+			if age < 30*time.Second {
+				log.Printf("[HOOK] Usage cache fresh (age: %.0fs), using cached data", age.Seconds())
 				return cached // Fresh enough
 			}
+			log.Printf("[HOOK] Usage cache stale (age: %.0fs), fetching from API", age.Seconds())
 		}
+	} else {
+		log.Println("[HOOK] No usage cache found, fetching from API")
 	}
 
 	// Need refresh — read OAuth token
 	credPath := filepath.Join(claudeDir, ".credentials.json")
 	credData, err := os.ReadFile(credPath)
 	if err != nil {
+		log.Printf("[HOOK] Cannot read credentials: %v, using stale cache", err)
 		return cached // No creds, use stale cache
 	}
 	var creds struct {
@@ -483,10 +619,12 @@ func hookRefreshUsage(stateDir, claudeDir string) map[string]any {
 		} `json:"claudeAiOauth"`
 	}
 	if json.Unmarshal(credData, &creds) != nil || creds.ClaudeAiOauth.AccessToken == "" {
+		log.Println("[HOOK] Invalid credentials or missing OAuth token, using stale cache")
 		return cached
 	}
 
 	// Fetch from Anthropic API (3s timeout — acceptable in UserPromptSubmit hook)
+	log.Println("[HOOK] Fetching usage data from Anthropic API")
 	req, _ := http.NewRequest("GET", "https://api.anthropic.com/api/oauth/usage", nil)
 	req.Header.Set("Authorization", "Bearer "+creds.ClaudeAiOauth.AccessToken)
 	req.Header.Set("User-Agent", "periscope-hook")
@@ -497,12 +635,14 @@ func hookRefreshUsage(stateDir, claudeDir string) map[string]any {
 	client := &http.Client{Timeout: 3 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
+		log.Printf("[HOOK] API request failed: %v, using stale cache", err)
 		return cached
 	}
 	defer resp.Body.Close()
 
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != 200 {
+		log.Printf("[HOOK] API returned status %d, using stale cache", resp.StatusCode)
 		return cached
 	}
 
@@ -518,8 +658,11 @@ func hookRefreshUsage(stateDir, claudeDir string) map[string]any {
 		} `json:"extra_usage"`
 	}
 	if json.Unmarshal(body, &apiResp) != nil {
+		log.Println("[HOOK] Failed to parse API response, using stale cache")
 		return cached
 	}
+
+	log.Println("[HOOK] Usage data fetched successfully from API")
 
 	usage := map[string]any{
 		"fetched_at": time.Now().Unix(),
@@ -554,7 +697,11 @@ func hookRefreshUsage(stateDir, claudeDir string) map[string]any {
 
 	// Write cache file (same format the server uses)
 	result, _ := json.Marshal(usage)
-	os.WriteFile(cachePath, result, 0644)
+	if err := os.WriteFile(cachePath, result, 0644); err != nil {
+		log.Printf("[HOOK] Failed to write usage cache: %v", err)
+	} else {
+		log.Printf("[HOOK] Usage cache written to %s", cachePath)
+	}
 
 	return usage
 }

@@ -10,7 +10,7 @@
 .w-ut-controls input[type="datetime-local"]{font-size:10px;padding:3px 6px;font-family:var(--font-mono);background:var(--bg-inset);border:1px solid var(--rule);border-radius:var(--radius);color:var(--text);cursor:pointer}
 .w-ut-controls input[type="datetime-local"]::-webkit-calendar-picker-indicator{filter:invert(0.7)}
 .w-ut-timeframe{font-family:var(--font-mono);font-size:0.65rem;color:var(--text-dim);letter-spacing:0.5px;margin-bottom:6px;min-height:1.2em}
-.w-ut-chart{position:relative;height:180px}
+.w-ut-chart{position:relative;height:195px}
 .w-ut-chart canvas{width:100%!important;height:100%!important;display:block}
 </style>
 <script>
@@ -194,14 +194,48 @@ Periscope.registerWidget({
     // --- Build datasets ---
     var datasets = [];
 
-    if (st.range === '5h') {
-      // Session-colored lines, no fill
-      var sessions = {};
-      for (var i = 0; i < inWindow.length; i++) {
-        var h = inWindow[i];
-        if (!sessions[h.sid]) sessions[h.sid] = [];
-        sessions[h.sid].push({ x: new Date(h.ts), y: metricVal(h) });
+    // Helper: group by session, filter stale, and downsample for clean lines
+    function activeSessionData(pts, maxPerSession) {
+      var bySession = {};
+      for (var i = 0; i < pts.length; i++) {
+        var h = pts[i];
+        if (!bySession[h.sid]) bySession[h.sid] = [];
+        bySession[h.sid].push({ x: new Date(h.ts), y: metricVal(h) });
       }
+      var active = {};
+      var sids = Object.keys(bySession);
+      for (var j = 0; j < sids.length; j++) {
+        var arr = bySession[sids[j]];
+        // Skip sessions with < 2 data points (no meaningful activity)
+        if (arr.length < 2) continue;
+        // Filter stale sessions (value never changed in this window)
+        if (arr[0].y === arr[arr.length - 1].y) continue;
+        // Downsample: keep key points (value changes + evenly spaced)
+        active[sids[j]] = downsample(arr, maxPerSession || 80);
+      }
+      return active;
+    }
+
+    // Downsample while preserving shape: keep points where value changes + evenly spaced samples
+    function downsample(pts, maxPts) {
+      if (pts.length <= maxPts) return pts;
+      var result = [pts[0]];
+      var step = (pts.length - 1) / (maxPts - 1);
+      var lastY = pts[0].y;
+      for (var i = 1; i < pts.length - 1; i++) {
+        var isStep = Math.round(i % step) === 0;
+        var yChanged = pts[i].y !== lastY;
+        if (isStep || yChanged) {
+          result.push(pts[i]);
+          lastY = pts[i].y;
+        }
+      }
+      result.push(pts[pts.length - 1]);
+      return result;
+    }
+
+    if (st.range === '5h') {
+      var sessions = activeSessionData(inWindow, 80);
       var si = 0;
       var sids = Object.keys(sessions);
       for (var j = 0; j < sids.length; j++) {
@@ -211,21 +245,16 @@ Periscope.registerWidget({
           data: sessions[sid],
           borderColor: palette[si % palette.length],
           backgroundColor: 'transparent',
-          tension: 0.3,
-          pointRadius: 2,
-          borderWidth: 2
+          tension: 0.35,
+          pointRadius: 0,
+          pointHitRadius: 6,
+          borderWidth: 1.5
         });
         si++;
       }
 
     } else if (st.range === '24h') {
-      // Session-colored lines with light fill
-      var sessions24 = {};
-      for (var k = 0; k < inWindow.length; k++) {
-        var h2 = inWindow[k];
-        if (!sessions24[h2.sid]) sessions24[h2.sid] = [];
-        sessions24[h2.sid].push({ x: new Date(h2.ts), y: metricVal(h2) });
-      }
+      var sessions24 = activeSessionData(inWindow, 120);
       var si2 = 0;
       var sids2 = Object.keys(sessions24);
       for (var l = 0; l < sids2.length; l++) {
@@ -235,10 +264,11 @@ Periscope.registerWidget({
           label: sessionLabel(sid2, data),
           data: sessions24[sid2],
           borderColor: c,
-          backgroundColor: c + '18',
-          tension: 0.3,
-          pointRadius: 2,
-          borderWidth: 2,
+          backgroundColor: c + '10',
+          tension: 0.35,
+          pointRadius: 0,
+          pointHitRadius: 6,
+          borderWidth: 1.5,
           fill: true
         });
         si2++;
