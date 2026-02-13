@@ -272,9 +272,8 @@ a{color:var(--c-primary);text-decoration:none}
     </div>
     <span class="chip green" id="badge-sub">--</span>
     <span class="chip cyan" id="badge-model">--</span>
-    <span class="chip dim" id="badge-sessions">--</span>
-    <span class="chip amber" id="badge-cost">--</span>
     <span class="chip" id="badge-effort" title="Current effort level">--</span>
+    <span class="chip dim" id="badge-sessions">--</span>
   </div>
   <div class="acct-strip">
     <span class="chip dim editable" id="badge-operator" onclick="editOperatorName(this)">--</span>
@@ -924,9 +923,7 @@ const Periscope = {
     const model = latest && latest.data && latest.data.lastTurn ? latest.data.lastTurn.model : 'unknown';
     document.getElementById('badge-model').textContent = model.replace('claude-','').replace('-',' ');
     document.getElementById('badge-sessions').textContent = nSessions + ' sessions';
-    const totalCost = sidecars.reduce((s, sc) => s + (sc.data && sc.data.cumulative ? sc.data.cumulative.cost || 0 : 0), 0);
-    const cs = typeof costSuffix === 'function' ? costSuffix(data) : '';
-    document.getElementById('badge-cost').textContent = fmtCost(totalCost) + cs;
+    // badge-cost removed from header per user request
     // Effort level badge — find from most recent sidecar
     const effortEl = document.getElementById('badge-effort');
     if (effortEl) {

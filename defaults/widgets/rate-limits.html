@@ -65,8 +65,9 @@
 .hud-mode-toggle.active{background:rgba(var(--rgb-tertiary,var(--rgb-primary)),0.08);border-color:var(--c-tertiary,var(--c-primary));color:var(--c-tertiary,var(--c-primary))}
 
 /* Chronomark gauge panel — each gauge column: gauge on top, stats underneath */
-.w-rlhud .chrono-panel{flex:1;display:flex;gap:12px;justify-content:center;flex-wrap:wrap;min-width:0}
+.w-rlhud .chrono-panel{flex:1;display:flex;gap:12px;justify-content:center;align-items:flex-start;flex-wrap:wrap;min-width:0}
 .w-rlhud .chrono-col{display:flex;flex-direction:column;align-items:center;gap:4px;flex:1;min-width:240px;max-width:420px}
+.w-rlhud .effort-col{display:flex;flex-direction:column;align-items:center;width:58px;min-width:58px;flex-shrink:0;padding-top:0}
 .w-rlhud .chrono-col svg{overflow:visible;width:100%;height:auto}
 .w-rlhud .chrono-substats{display:flex;gap:6px;width:100%}
 .w-rlhud .cs-item{flex:1;text-align:center;padding:5px 8px;background:rgba(var(--rgb-tertiary,var(--rgb-primary)),0.03);border:1px solid rgba(var(--rgb-tertiary,var(--rgb-primary)),0.08);border-radius:var(--radius,4px)}
@@ -176,6 +177,7 @@ Periscope.registerWidget({
             '<div data-chrono-svg></div>' +
             '<div class="chrono-substats" data-chrono-stats></div>' +
           '</div>' +
+          '<div class="effort-col" data-effort-gauge></div>' +
           '<div class="chrono-col" data-chrono="weekly">' +
             '<div data-chrono-svg></div>' +
             '<div class="chrono-substats" data-chrono-stats></div>' +
@@ -563,8 +565,8 @@ Periscope.registerWidget({
             '<text x="'+CX+'" y="86" text-anchor="middle" font-family="Rajdhani,sans-serif" font-size="18" font-weight="700" fill="'+nColor+'">' + (pace<=0.1?'IDLE':pace.toFixed(2)+'x') + '</text>' +
             // Label
             '<text x="'+CX+'" y="100" text-anchor="middle" font-family="Michroma,sans-serif" font-size="5" fill="rgba('+rgbSafe+',0.7)" letter-spacing="2px" font-weight="bold">'+label+'</text>' +
-            // Vertical capsule gauges in dead space
-            buildSideGauges(sides||[], rgbSafe, cSafe, cWarn, cDanger, hexRgb) +
+            // Vertical capsule gauges in dead space (disabled for now)
+            // buildSideGauges(sides||[], rgbSafe, cSafe, cWarn, cDanger, hexRgb) +
           '</svg>';
         }
 
@@ -572,13 +574,12 @@ Periscope.registerWidget({
         function buildSideGauges(items, rgbSafe, cSafe, cWarn, cDanger, hexRgb) {
           if (!items || !items.length) return '';
           var s = '';
-          // Position configs: tucked into far corners outside the arc housing
+          // Position configs: outside the arc housing, well spread
           var positions = [
-            {x:4, anchor:'start'},
-            {x:13, anchor:'start'},
-            {x:196, anchor:'end'}
+            {x:-17, anchor:'start'},
+            {x:217, anchor:'end'}
           ];
-          var BY=6, BH=45, BW=4, BR=2;
+          var BY=34, BH=68, BW=12, BR=4; // raised bottom: top=34, bottom=102
           for (var i = 0; i < Math.min(items.length, 3); i++) {
             var it = items[i];
             var pos = positions[i];
@@ -595,12 +596,14 @@ Periscope.registerWidget({
               s += '<rect x="'+bx+'" y="'+BY+'" width="'+BW+'" height="'+BH+'" rx="'+BR+'" ry="'+BR+'" fill="'+barColor+'" opacity="0.6" clip-path="url(#'+clipId+')"/>';
               s += '<rect x="'+(bx-1)+'" y="'+(fillY-1).toFixed(1)+'" width="'+(BW+2)+'" height="3" rx="1" fill="'+barColor+'" opacity="0.3" clip-path="url(#'+clipId+')"/>';
             }
-            for (var t = 0; t <= 4; t++) {
-              var ty = BY + (t/4) * BH;
-              s += '<line x1="'+(bx-1)+'" y1="'+ty.toFixed(1)+'" x2="'+bx+'" y2="'+ty.toFixed(1)+'" stroke="rgba('+rgbSafe+',0.15)" stroke-width="0.3"/>';
+            // Per-item tick segments
+            var nTicks = it.ticks || 4;
+            for (var t = 0; t <= nTicks; t++) {
+              var ty = BY + (t/nTicks) * BH;
+              s += '<line x1="'+(bx-2)+'" y1="'+ty.toFixed(1)+'" x2="'+bx+'" y2="'+ty.toFixed(1)+'" stroke="rgba('+rgbSafe+',0.2)" stroke-width="0.4"/>';
             }
-            s += '<text x="'+pos.x+'" y="'+(BY+BH+7)+'" text-anchor="middle" font-family="Rajdhani,sans-serif" font-size="5" font-weight="700" fill="'+barColor+'">'+it.value+'</text>';
-            s += '<text x="'+pos.x+'" y="'+(BY-2)+'" text-anchor="middle" font-family="Michroma,sans-serif" font-size="2.5" fill="rgba('+rgbSafe+',0.45)" letter-spacing="0.8px">'+it.label+'</text>';
+            s += '<text x="'+pos.x+'" y="'+(BY+BH+12)+'" text-anchor="middle" font-family="Rajdhani,sans-serif" font-size="9" font-weight="700" fill="'+barColor+'">'+it.value+'</text>';
+            s += '<text x="'+pos.x+'" y="'+(BY-5)+'" text-anchor="middle" font-family="Michroma,sans-serif" font-size="5.5" fill="rgba('+rgbSafe+',0.55)" letter-spacing="0.8px">'+it.label+'</text>';
           }
           return s;
         }
@@ -621,19 +624,20 @@ Periscope.registerWidget({
         var _cPri = _cs.getPropertyValue('--c-primary').trim()||'#f59e0b';
         var _cSec = _cs.getPropertyValue('--c-secondary').trim()||'#06b6d4';
         var _cDng = _cs.getPropertyValue('--c-danger').trim()||'#ef4444';
+        function hexRgb(h){if(h.charAt(0)==='#'){var v=parseInt(h.slice(1),16);return(h.length===4)?((v>>8&0xf)*17)+','+((v>>4&0xf)*17)+','+(((v&0xf)*17)):(v>>16&255)+','+(v>>8&255)+','+(v&255)}return'6,182,212'}
         var _cTrt = _cs.getPropertyValue('--c-tertiary').trim()||_cSec;
         var pColor5 = rd.proj5hr >= 90 ? _cDng : rd.proj5hr >= 70 ? _cPri : _cSec;
         var pColorW = rd.projWeekly >= 90 ? _cDng : rd.projWeekly >= 70 ? _cPri : _cSec;
 
+        // 5hr: PROJ, ELAPSED (USED removed — redundant with round gauges)
         var sides5 = [
-          {label:'PROJECTED', value:(rd.proj5hr>=100?'OVER':rd.proj5hr+'%'), pct:proj5Pct, color:pColor5},
-          {label:'WINDOW', value:fH(rd.remaining5hr||0), pct:win5Pct, color:_cPri},
-          {label:'DUTY', value:activeRatio+'%', pct:dutyPct, color:_cTrt}
+          {label:'PROJ', value:(rd.proj5hr>=100?'OVER':rd.proj5hr+'%'), pct:proj5Pct, color:pColor5, ticks:4},
+          {label:'ELAPSED', value:fH(rd.elapsed5hr||0), pct:win5Pct, color:_cPri, ticks:5}
         ];
+        // Weekly: PROJ, ELAPSED
         var sidesW = [
-          {label:'PROJECTED', value:(rd.projWeekly>=100?'OVER':rd.projWeekly+'%'), pct:projWPct, color:pColorW},
-          {label:'WINDOW', value:fH(rd.remainingWeekly||0), pct:winWPct, color:_cPri},
-          {label:'DUTY', value:activeRatio+'%', pct:dutyPct, color:_cTrt}
+          {label:'PROJ', value:(rd.projWeekly>=100?'OVER':rd.projWeekly+'%'), pct:projWPct, color:pColorW, ticks:4},
+          {label:'ELAPSED', value:fH(rd.elapsedWeekly||0), pct:winWPct, color:_cPri, ticks:7}
         ];
 
         if (col5) {
@@ -658,6 +662,166 @@ Periscope.registerWidget({
             '<div class="cs-item"><div class="cs-label">Burn Rate</div><div class="cs-val" style="color:'+(wkAtLimit?'var(--c-danger)':'var(--c-secondary)')+'">'+((burnWk||0).toFixed(2))+'%/h</div></div>' +
             '<div class="cs-item"><div class="cs-label">To Limit</div><div class="cs-val" style="color:'+ttlWColor+'">'+ttlWVal+'</div></div>' +
             '<div class="cs-item"><div class="cs-label">To Reset</div><div class="cs-val" style="color:var(--c-tertiary,var(--c-primary))">'+ttrW+'</div></div>';
+        }
+
+        // --- Effort Gauge: vertical aircraft-style indicator ---
+        var effortEl = chronoPanel.querySelector('[data-effort-gauge]');
+        if (effortEl) {
+          // Compute weighted effort from all active sidecars
+          var sidecars = data.sidecars || [];
+          var totalTokens = 0, weightedSum = 0;
+          var effortWeights = {low:0, medium:0.5, high:1.0};
+          for (var si = 0; si < sidecars.length; si++) {
+            var sc = sidecars[si];
+            if (!sc.data) continue;
+            var eff = sc.data.effortLevel || 'medium';
+            var cum = sc.data.cumulative;
+            var toks = cum ? (cum.input||0) + (cum.cache_read||0) + (cum.cache_write||0) + (cum.output||0) : 0;
+            if (toks > 0) {
+              totalTokens += toks;
+              weightedSum += toks * (effortWeights[eff] != null ? effortWeights[eff] : 0.5);
+            }
+          }
+          var effortPct = window._effortOverride != null ? window._effortOverride : (totalTokens > 0 ? weightedSum / totalTokens : 0.5);
+          // Current session effort label
+          var curEffort = '--';
+          for (var si2 = sidecars.length - 1; si2 >= 0; si2--) {
+            if (sidecars[si2].data && sidecars[si2].data.effortLevel) {
+              curEffort = sidecars[si2].data.effortLevel.toUpperCase();
+              break;
+            }
+          }
+
+          // SVG dimensions — vacuum tube effort gauge
+          var EW = 50, EH = 160;
+          var tubeW = 18, tubeH = 92, tubeX = (EW - tubeW) / 2, tubeY = 24;
+          var tubeCX = tubeX + tubeW/2;
+          var rgbSec = hexRgb(_cSec), rgbPri = hexRgb(_cPri), rgbDng = hexRgb(_cDng);
+
+          // Zone boundaries — inset from rounded caps so zones don't bleed into the curve
+          var capInset = tubeW / 2; // radius of rounded ends
+          var zoneTop = tubeY + capInset, zoneBot = tubeY + tubeH - capInset;
+          var zoneH = zoneBot - zoneTop;
+          var zHighH = zoneH * 0.33, zMedH = zoneH * 0.34, zLowH = zoneH * 0.33;
+          var zHighY = zoneTop;
+          var zMedY = zoneTop + zHighH;
+          var zLowY = zoneTop + zHighH + zMedH;
+
+          // Active zone
+          var activeZone = effortPct > 0.67 ? 'high' : (effortPct > 0.33 ? 'med' : 'low');
+          var activeZoneY = activeZone === 'high' ? zHighY : (activeZone === 'med' ? zMedY : zLowY);
+          var activeZoneH = activeZone === 'high' ? zHighH : (activeZone === 'med' ? zMedH : zLowH);
+          var bulbRgb = activeZone === 'high' ? rgbDng : (activeZone === 'med' ? rgbPri : rgbSec);
+          var nColor = activeZone === 'high' ? _cDng : (activeZone === 'med' ? _cPri : _cSec);
+
+          // Needle Y — mapped to inset zone range
+          var needleY = zoneBot - (effortPct * zoneH);
+
+          var uid = (Math.random()*1e6|0);
+          var svg = '<svg viewBox="0 0 '+EW+' '+EH+'" xmlns="http://www.w3.org/2000/svg" style="overflow:visible">';
+
+          // --- Defs ---
+          svg += '<defs>';
+          // Tube clip
+          svg += '<clipPath id="tc'+uid+'"><rect x="'+tubeX+'" y="'+tubeY+'" width="'+tubeW+'" height="'+tubeH+'" rx="'+tubeW/2+'"/></clipPath>';
+          // Segment clip — glow fills entire tube section (extends to caps for H/L)
+          var glowY = activeZone === 'high' ? tubeY : activeZoneY;
+          var glowBot = activeZone === 'low' ? (tubeY + tubeH) : (activeZoneY + activeZoneH);
+          var glowH = glowBot - glowY;
+          svg += '<clipPath id="sc'+uid+'"><rect x="'+(tubeX-4)+'" y="'+glowY.toFixed(1)+'" width="'+(tubeW+8)+'" height="'+glowH.toFixed(1)+'"/></clipPath>';
+          // Incandescent glow — tight blur
+          svg += '<filter id="fg'+uid+'"><feGaussianBlur stdDeviation="3"/></filter>';
+          // Hot core glow — tighter
+          svg += '<filter id="fh'+uid+'"><feGaussianBlur stdDeviation="1.5"/></filter>';
+          // Glass sheen gradient
+          svg += '<linearGradient id="gs'+uid+'" x1="0" y1="0" x2="1" y2="0">';
+          svg += '<stop offset="0%" stop-color="white" stop-opacity="0.06"/>';
+          svg += '<stop offset="35%" stop-color="white" stop-opacity="0.02"/>';
+          svg += '<stop offset="65%" stop-color="white" stop-opacity="0"/>';
+          svg += '<stop offset="100%" stop-color="white" stop-opacity="0.03"/>';
+          svg += '</linearGradient>';
+          svg += '</defs>';
+
+          // --- EFFORT title top ---
+          svg += '<text x="'+tubeCX+'" y="'+(tubeY-8)+'" text-anchor="middle" font-family="Michroma,sans-serif" font-size="5" font-weight="700" fill="rgba('+rgbSec+',0.6)" letter-spacing="1.5px">EFFORT</text>';
+
+          // --- Tube caps (top & bottom metal ends) ---
+          svg += '<rect x="'+(tubeX-2)+'" y="'+(tubeY-3)+'" width="'+(tubeW+4)+'" height="6" rx="2" fill="rgba('+rgbSec+',0.12)" stroke="rgba('+rgbSec+',0.2)" stroke-width="0.5"/>';
+          svg += '<rect x="'+(tubeX-2)+'" y="'+(tubeY+tubeH-3)+'" width="'+(tubeW+4)+'" height="6" rx="2" fill="rgba('+rgbSec+',0.12)" stroke="rgba('+rgbSec+',0.2)" stroke-width="0.5"/>';
+
+          // --- Glass tube body ---
+          svg += '<rect x="'+tubeX+'" y="'+tubeY+'" width="'+tubeW+'" height="'+tubeH+'" rx="'+(tubeW/2)+'" fill="rgba(8,10,16,0.9)" stroke="rgba('+rgbSec+',0.18)" stroke-width="0.8"/>';
+
+          // --- Zone tints (dim) ---
+          svg += '<rect x="'+tubeX+'" y="'+zHighY+'" width="'+tubeW+'" height="'+zHighH+'" fill="rgba('+rgbDng+',0.04)" clip-path="url(#tc'+uid+')"/>';
+          svg += '<rect x="'+tubeX+'" y="'+zMedY+'" width="'+tubeW+'" height="'+zMedH+'" fill="rgba('+rgbPri+',0.04)" clip-path="url(#tc'+uid+')"/>';
+          svg += '<rect x="'+tubeX+'" y="'+zLowY+'" width="'+tubeW+'" height="'+zLowH+'" fill="rgba('+rgbSec+',0.04)" clip-path="url(#tc'+uid+')"/>';
+
+          // --- Incandescent glow (fills full tube section including caps for H/L) ---
+          var glowCY = glowY + glowH / 2;
+          // Outer warm aura
+          svg += '<ellipse cx="'+tubeCX+'" cy="'+glowCY.toFixed(1)+'" rx="'+(tubeW*0.6)+'" ry="'+(glowH*0.4).toFixed(1)+'" fill="rgba('+bulbRgb+',0.25)" filter="url(#fg'+uid+')" clip-path="url(#sc'+uid+')"/>';
+          // Full section fill — lit up
+          svg += '<rect x="'+tubeX+'" y="'+glowY.toFixed(1)+'" width="'+tubeW+'" height="'+glowH.toFixed(1)+'" fill="rgba('+bulbRgb+',0.2)" clip-path="url(#tc'+uid+')"/>';
+          // Hot filament core
+          svg += '<rect x="'+(tubeX+4)+'" y="'+(glowY+2).toFixed(1)+'" width="'+(tubeW-8)+'" height="'+(Math.max(glowH-4,3)).toFixed(1)+'" rx="'+(tubeW/4)+'" fill="rgba('+bulbRgb+',0.5)" filter="url(#fh'+uid+')" clip-path="url(#tc'+uid+')"/>';
+          // White-hot center
+          svg += '<rect x="'+(tubeX+6)+'" y="'+(glowY+4).toFixed(1)+'" width="'+(tubeW-12)+'" height="'+(Math.max(glowH-8,2)).toFixed(1)+'" rx="2" fill="rgba(255,255,255,0.08)" clip-path="url(#tc'+uid+')"/>';
+
+          // --- Zone divider wires ---
+          svg += '<line x1="'+tubeX+'" y1="'+zMedY.toFixed(1)+'" x2="'+(tubeX+tubeW)+'" y2="'+zMedY.toFixed(1)+'" stroke="rgba('+rgbSec+',0.3)" stroke-width="0.6"/>';
+          svg += '<line x1="'+tubeX+'" y1="'+zLowY.toFixed(1)+'" x2="'+(tubeX+tubeW)+'" y2="'+zLowY.toFixed(1)+'" stroke="rgba('+rgbSec+',0.3)" stroke-width="0.6"/>';
+
+          // --- Glass sheen overlay ---
+          svg += '<rect x="'+tubeX+'" y="'+tubeY+'" width="'+tubeW+'" height="'+tubeH+'" rx="'+(tubeW/2)+'" fill="url(#gs'+uid+')"/>';
+
+          // --- Tick marks (left side) ---
+          for (var t = 0; t <= 10; t++) {
+            var ty = tubeY + (t/10) * tubeH;
+            var tw = (t % 5 === 0) ? 5 : 2.5;
+            svg += '<line x1="'+(tubeX-tw-1)+'" y1="'+ty.toFixed(1)+'" x2="'+(tubeX-1)+'" y2="'+ty.toFixed(1)+'" stroke="rgba('+rgbSec+',0.3)" stroke-width="0.5"/>';
+          }
+
+          // --- Zone labels (left side) ---
+          var lblX = tubeX - 9;
+          svg += '<text x="'+lblX+'" y="'+(zHighY+zHighH/2+2)+'" text-anchor="middle" font-family="Michroma,sans-serif" font-size="5.5" font-weight="700" fill="'+_cDng+'" opacity="'+(activeZone==='high'?'1':'0.3')+'">H</text>';
+          svg += '<text x="'+lblX+'" y="'+(zMedY+zMedH/2+2)+'" text-anchor="middle" font-family="Michroma,sans-serif" font-size="5.5" font-weight="700" fill="'+_cPri+'" opacity="'+(activeZone==='med'?'1':'0.3')+'">M</text>';
+          svg += '<text x="'+lblX+'" y="'+(zLowY+zLowH/2+2)+'" text-anchor="middle" font-family="Michroma,sans-serif" font-size="5.5" font-weight="700" fill="'+_cSec+'" opacity="'+(activeZone==='low'?'1':'0.3')+'">L</text>';
+
+          // --- Needle — pointer from RIGHT, arrow points LEFT (<) ---
+          var arrowBase = tubeX + tubeW + 8;
+          var arrowTip = tubeX + tubeW + 1;
+          svg += '<polygon points="'+arrowTip+','+needleY.toFixed(1)+' '+arrowBase+','+(needleY-3.5).toFixed(1)+' '+arrowBase+','+(needleY+3.5).toFixed(1)+'" fill="'+nColor+'"/>';
+          // Needle glow
+          svg += '<polygon points="'+arrowTip+','+needleY.toFixed(1)+' '+arrowBase+','+(needleY-3.5).toFixed(1)+' '+arrowBase+','+(needleY+3.5).toFixed(1)+'" fill="'+nColor+'" opacity="0.3" filter="url(#fh'+uid+')"/>';
+          // Crosshair line through tube at needle
+          svg += '<line x1="'+tubeX+'" y1="'+needleY.toFixed(1)+'" x2="'+(tubeX+tubeW)+'" y2="'+needleY.toFixed(1)+'" stroke="'+nColor+'" stroke-width="1.2" opacity="0.9" clip-path="url(#tc'+uid+')"/>';
+          svg += '<line x1="'+tubeX+'" y1="'+needleY.toFixed(1)+'" x2="'+(tubeX+tubeW)+'" y2="'+needleY.toFixed(1)+'" stroke="white" stroke-width="0.4" opacity="0.3" clip-path="url(#tc'+uid+')"/>';
+
+          // --- Bottom readout ---
+          svg += '<text x="'+tubeCX+'" y="'+(tubeY+tubeH+16)+'" text-anchor="middle" font-family="Rajdhani,sans-serif" font-size="12" font-weight="700" fill="'+nColor+'">'+curEffort+'</text>';
+          svg += '<text x="'+tubeCX+'" y="'+(tubeY+tubeH+26)+'" text-anchor="middle" font-family="var(--font-mono)" font-size="5.5" fill="rgba('+bulbRgb+',0.6)">'+Math.round(effortPct*100)+'%w</text>';
+
+          svg += '</svg>';
+          // TEMP: debug slider to preview effort gauge animation
+          var sliderId = 'eft-slider-'+uid;
+          var sliderExists = effortEl.querySelector('input[type=range]');
+          var sliderVal = sliderExists ? sliderExists.value : null;
+          effortEl.innerHTML = svg +
+            '<input type="range" id="'+sliderId+'" min="0" max="100" value="'+(sliderVal != null ? sliderVal : Math.round(effortPct*100))+'" ' +
+            'style="width:100%;margin-top:4px;accent-color:'+nColor+';cursor:pointer" title="Effort preview slider (TEMP)">';
+          var slider = effortEl.querySelector('#'+sliderId);
+          slider.addEventListener('input', function() {
+            // Store override and re-trigger gauge render
+            window._effortOverride = parseInt(this.value) / 100;
+            // Re-render just the gauge section
+            var fakeData = Object.assign({}, data);
+            Periscope._widgets.get('rate-limits').render(el, fakeData);
+          });
+          // Use override if set
+          if (window._effortOverride != null) {
+            // Already used above via effortPct override
+          }
         }
       }
 
