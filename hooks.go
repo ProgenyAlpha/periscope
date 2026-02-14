@@ -11,11 +11,12 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"time"
-	"unicode"
-	"unicode/utf8"
+
+	"github.com/shawnwakeman/periscope/internal/anthropic"
+	"github.com/shawnwakeman/periscope/internal/pricing"
+	"github.com/shawnwakeman/periscope/internal/store"
 )
 
 // --- Hook Payload (from Claude's hook system via stdin) ---
@@ -89,38 +90,6 @@ type LastTurn struct {
 	Tools      []string `json:"tools"`
 }
 
-// --- Model Pricing ---
-
-type ModelRates struct {
-	Input      float64
-	CacheRead  float64
-	CacheWrite float64
-	Output     float64
-}
-
-var modelPricing = map[string]ModelRates{
-	"claude-opus-4-6":            {5, 0.50, 6.25, 25},
-	"claude-opus-4-5":            {5, 0.50, 6.25, 25},
-	"claude-opus-4-1":            {15, 1.50, 18.75, 75},
-	"claude-sonnet-4-5-20250929": {3, 0.30, 3.75, 15},
-	"claude-haiku-4-5-20251001":  {1, 0.10, 1.25, 5},
-	"claude-haiku-3-5":           {0.80, 0.08, 1.00, 4},
-}
-
-// Token weights for rate limit calculation
-var tokenWeights = struct {
-	Input, CacheRead, CacheWrite, Output float64
-}{1.0, 0, 1.0, 5.0}
-
-func getModelRates(model string) ModelRates {
-	for prefix, rates := range modelPricing {
-		if strings.HasPrefix(model, prefix) {
-			return rates
-		}
-	}
-	return modelPricing["claude-opus-4-6"] // default
-}
-
 // --- Hook: Stop ---
 
 func extractFirstPrompt(transcriptPath string) string {
@@ -182,56 +151,6 @@ func extractFirstPrompt(transcriptPath string) string {
 		return text
 	}
 	return ""
-}
-
-// --- Prompt Cleanup Regexes (compiled once) ---
-
-var (
-	reSlashCmd  = regexp.MustCompile(`^/\w+\s*`)
-	reAgentMention = regexp.MustCompile(`^@[\w-]+\s*`)
-	reHTMLTags  = regexp.MustCompile(`<[^>]*>`)
-	reWhitespace = regexp.MustCompile(`[\s]+`)
-)
-
-// cleanFirstPrompt strips slash commands, @mentions, HTML, collapses whitespace,
-// capitalizes first char, and truncates at ~50 chars on word boundary.
-func cleanFirstPrompt(raw string) string {
-	s := raw
-
-	// Strip leading slash commands (e.g. "/plan ", "/workflow feature")
-	s = reSlashCmd.ReplaceAllString(s, "")
-	// Strip leading @agent mentions
-	s = reAgentMention.ReplaceAllString(s, "")
-	// Strip HTML tags
-	s = reHTMLTags.ReplaceAllString(s, "")
-	// Collapse whitespace
-	s = reWhitespace.ReplaceAllString(s, " ")
-	s = strings.TrimSpace(s)
-
-	if s == "" {
-		return raw // fallback to original if cleanup ate everything
-	}
-
-	// Capitalize first character
-	if r, size := utf8.DecodeRuneInString(s); size > 0 {
-		s = string(unicode.ToUpper(r)) + s[size:]
-	}
-
-	// Truncate at word boundary ~50 chars
-	if len(s) > 50 {
-		cut := 50
-		// Walk back to last space
-		for cut > 30 && s[cut] != ' ' {
-			cut--
-		}
-		if s[cut] == ' ' {
-			s = s[:cut] + "..."
-		} else {
-			s = s[:50] + "..."
-		}
-	}
-
-	return s
 }
 
 // extractUserPrompts collects up to n human messages from a transcript.
@@ -301,21 +220,11 @@ func extractUserPrompts(transcriptPath string, n int) []string {
 func generateSessionTitle(statePath string, prompts []string) {
 	log.Printf("[TITLE] Generating session title for %s (%d prompts)", filepath.Base(statePath), len(prompts))
 
-	// Read OAuth token
 	home, _ := os.UserHomeDir()
-	credPath := filepath.Join(home, ".claude", ".credentials.json")
-	credData, err := os.ReadFile(credPath)
+	claudeDir := filepath.Join(home, ".claude")
+	client, err := anthropic.NewClientFromDisk(claudeDir)
 	if err != nil {
-		log.Printf("[TITLE] Cannot read credentials: %v", err)
-		return
-	}
-	var creds struct {
-		ClaudeAiOauth struct {
-			AccessToken string `json:"accessToken"`
-		} `json:"claudeAiOauth"`
-	}
-	if json.Unmarshal(credData, &creds) != nil || creds.ClaudeAiOauth.AccessToken == "" {
-		log.Printf("[TITLE] No OAuth token available")
+		log.Printf("[TITLE] No OAuth token available: %v", err)
 		return
 	}
 
@@ -337,14 +246,14 @@ func generateSessionTitle(statePath string, prompts []string) {
 	bodyBytes, _ := json.Marshal(reqBody)
 
 	req, _ := http.NewRequest("POST", "https://api.anthropic.com/v1/messages", bytes.NewReader(bodyBytes))
-	req.Header.Set("Authorization", "Bearer "+creds.ClaudeAiOauth.AccessToken)
+	req.Header.Set("Authorization", "Bearer "+client.Token)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("anthropic-version", "2023-06-01")
 	req.Header.Set("anthropic-beta", "oauth-2025-04-20")
 	req.Header.Set("User-Agent", "periscope-title-gen")
 
-	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Do(req)
+	httpClient := &http.Client{Timeout: 5 * time.Second}
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		log.Printf("[TITLE] API request failed: %v", err)
 		return
@@ -406,7 +315,10 @@ func hookStop() {
 
 	log.Printf("[HOOK] Stop hook: processing session %s", payload.SessionID[:8])
 
-	home, _ := os.UserHomeDir()
+	home, err := os.UserHomeDir()
+	if err != nil {
+		log.Fatalf("[HOOK] Cannot determine home directory: %v", err)
+	}
 	stateDir := filepath.Join(home, ".claude", "hooks", "cost-state")
 	os.MkdirAll(stateDir, 0755)
 	statePath := filepath.Join(stateDir, payload.SessionID+".json")
@@ -472,7 +384,7 @@ func hookStop() {
 
 		usage := entry.Message.Usage
 		model := entry.Message.Model
-		rates := getModelRates(model)
+		rates := pricing.GetRates(model)
 
 		cost := float64(usage.InputTokens)*rates.Input/1e6 +
 			float64(usage.CacheReadInputTokens)*rates.CacheRead/1e6 +
@@ -482,10 +394,10 @@ func hookStop() {
 		turnInfo := getTurnInfo(entry.Message.Content)
 
 		// Weighted tokens
-		weighted := float64(usage.InputTokens)*tokenWeights.Input +
-			float64(usage.CacheReadInputTokens)*tokenWeights.CacheRead +
-			float64(usage.CacheCreationInputTokens)*tokenWeights.CacheWrite +
-			float64(usage.OutputTokens)*tokenWeights.Output
+		weighted := float64(usage.InputTokens)*pricing.TokenWeights.Input +
+			float64(usage.CacheReadInputTokens)*pricing.TokenWeights.CacheRead +
+			float64(usage.CacheCreationInputTokens)*pricing.TokenWeights.CacheWrite +
+			float64(usage.OutputTokens)*pricing.TokenWeights.Output
 
 		// Accumulate
 		state.Cumulative.Input += usage.InputTokens
@@ -565,7 +477,7 @@ func hookStop() {
 	// Extract first user prompt if not already captured
 	if state.FirstPrompt == "" {
 		if raw := extractFirstPrompt(payload.TranscriptPath); raw != "" {
-			state.FirstPrompt = cleanFirstPrompt(raw)
+			state.FirstPrompt = store.CleanFirstPrompt(raw)
 		}
 	}
 
@@ -640,7 +552,10 @@ func hookDisplay() {
 
 	log.Printf("[HOOK] Display hook: processing session %s", payload.SessionID[:8])
 
-	home, _ := os.UserHomeDir()
+	home, err := os.UserHomeDir()
+	if err != nil {
+		log.Fatalf("[HOOK] Cannot determine home directory: %v", err)
+	}
 	stateDir := filepath.Join(home, ".claude", "hooks", "cost-state")
 	claudeDir := filepath.Join(home, ".claude")
 	statePath := filepath.Join(stateDir, payload.SessionID+".json")
@@ -825,7 +740,7 @@ func hookRefreshUsage(stateDir, claudeDir string) map[string]any {
 			age := time.Since(time.Unix(int64(fetched), 0))
 			if age < 30*time.Second {
 				log.Printf("[HOOK] Usage cache fresh (age: %.0fs), using cached data", age.Seconds())
-				return cached // Fresh enough
+				return cached
 			}
 			log.Printf("[HOOK] Usage cache stale (age: %.0fs), fetching from API", age.Seconds())
 		}
@@ -833,96 +748,23 @@ func hookRefreshUsage(stateDir, claudeDir string) map[string]any {
 		log.Println("[HOOK] No usage cache found, fetching from API")
 	}
 
-	// Need refresh — read OAuth token
-	credPath := filepath.Join(claudeDir, ".credentials.json")
-	credData, err := os.ReadFile(credPath)
+	// Fetch via anthropic client
+	client, err := anthropic.NewClientFromDisk(claudeDir)
 	if err != nil {
-		log.Printf("[HOOK] Cannot read credentials: %v, using stale cache", err)
-		return cached // No creds, use stale cache
-	}
-	var creds struct {
-		ClaudeAiOauth struct {
-			AccessToken string `json:"accessToken"`
-		} `json:"claudeAiOauth"`
-	}
-	if json.Unmarshal(credData, &creds) != nil || creds.ClaudeAiOauth.AccessToken == "" {
-		log.Println("[HOOK] Invalid credentials or missing OAuth token, using stale cache")
+		log.Printf("[HOOK] Cannot create API client: %v, using stale cache", err)
 		return cached
 	}
 
-	// Fetch from Anthropic API (3s timeout — acceptable in UserPromptSubmit hook)
-	log.Println("[HOOK] Fetching usage data from Anthropic API")
-	req, _ := http.NewRequest("GET", "https://api.anthropic.com/api/oauth/usage", nil)
-	req.Header.Set("Authorization", "Bearer "+creds.ClaudeAiOauth.AccessToken)
-	req.Header.Set("User-Agent", "periscope-hook")
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("anthropic-version", "2023-06-01")
-	req.Header.Set("anthropic-beta", "oauth-2025-04-20")
-
-	client := &http.Client{Timeout: 3 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := client.FetchUsage()
 	if err != nil {
 		log.Printf("[HOOK] API request failed: %v, using stale cache", err)
 		return cached
 	}
-	defer resp.Body.Close()
-
-	body, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != 200 {
-		log.Printf("[HOOK] API returned status %d, using stale cache", resp.StatusCode)
-		return cached
-	}
-
-	// Parse — same structure as store.go fetchUsage
-	var apiResp struct {
-		FiveHour       *usageWindow `json:"five_hour"`
-		SevenDay       *usageWindow `json:"seven_day"`
-		SevenDaySonnet *usageWindow `json:"seven_day_sonnet"`
-		ExtraUsage     *struct {
-			IsEnabled    bool     `json:"is_enabled"`
-			MonthlyLimit *float64 `json:"monthly_limit"`
-			UsedCredits  float64  `json:"used_credits"`
-		} `json:"extra_usage"`
-	}
-	if json.Unmarshal(body, &apiResp) != nil {
-		log.Println("[HOOK] Failed to parse API response, using stale cache")
-		return cached
-	}
 
 	log.Println("[HOOK] Usage data fetched successfully from API")
+	usage := anthropic.TransformUsage(resp)
 
-	usage := map[string]any{
-		"fetched_at": time.Now().Unix(),
-	}
-	if apiResp.FiveHour != nil {
-		usage["pct5hr"] = int(apiResp.FiveHour.Utilization + 0.5)
-		usage["reset5hr"] = apiResp.FiveHour.ResetsAt
-	} else {
-		usage["pct5hr"] = -1
-	}
-	if apiResp.SevenDay != nil {
-		usage["pctWeekly"] = int(apiResp.SevenDay.Utilization + 0.5)
-		usage["resetWeekly"] = apiResp.SevenDay.ResetsAt
-	} else {
-		usage["pctWeekly"] = -1
-	}
-	if apiResp.SevenDaySonnet != nil {
-		usage["pctSonnet"] = int(apiResp.SevenDaySonnet.Utilization + 0.5)
-	} else {
-		usage["pctSonnet"] = -1
-	}
-	if apiResp.ExtraUsage != nil {
-		eu := map[string]any{
-			"is_enabled":   apiResp.ExtraUsage.IsEnabled,
-			"used_credits": apiResp.ExtraUsage.UsedCredits / 100,
-		}
-		if apiResp.ExtraUsage.MonthlyLimit != nil {
-			eu["monthly_limit"] = *apiResp.ExtraUsage.MonthlyLimit / 100
-		}
-		usage["extra_usage"] = eu
-	}
-
-	// Write cache file (same format the server uses)
+	// Write cache file
 	result, _ := json.Marshal(usage)
 	if err := os.WriteFile(cachePath, result, 0644); err != nil {
 		log.Printf("[HOOK] Failed to write usage cache: %v", err)

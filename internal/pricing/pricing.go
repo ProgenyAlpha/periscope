@@ -27,6 +27,12 @@ var ModelPricing = map[string]ModelRates{
 	"claude-haiku-3-5":           {0.80, 0.08, 1.00, 4},
 }
 
+// TokenWeights defines the rate-limit token weights.
+// cache_read=0 (doesn't count toward ITPM), output=5 (OTPM limits ~5x tighter).
+var TokenWeights = struct {
+	Input, CacheRead, CacheWrite, Output float64
+}{1.0, 0, 1.0, 5.0}
+
 // GetRates return the pricing rates for a given model ID.
 // It matches by prefix if an exact match isn't found.
 func GetRates(model string) ModelRates {

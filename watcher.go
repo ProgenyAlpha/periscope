@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
+	"github.com/shawnwakeman/periscope/internal/store"
 )
 
 func startWatcher(app *App) (*fsnotify.Watcher, error) {
@@ -45,21 +46,22 @@ func startWatcher(app *App) (*fsnotify.Watcher, error) {
 }
 
 func watchLoop(app *App, watcher *fsnotify.Watcher) {
-	// Debounce: batch rapid file changes
+	// Debounce: batch rapid file changes using a channel to avoid cross-goroutine access
 	var debounceTimer *time.Timer
 	pendingDataReload := false
 	pendingPluginReloads := make(map[string]bool)
+	flushCh := make(chan struct{}, 1)
 
 	flush := func() {
 		if pendingDataReload {
 			log.Println("[WATCH] Debounced reload triggered for data files")
-			if err := importFileData(app); err != nil {
+			if err := store.ImportFileData(app.DB, app.DataDir, app.ClaudeDir); err != nil {
 				log.Printf("[WATCH] Import error: %v", err)
 			} else {
 				log.Println("[WATCH] Data reimport successful")
 			}
 			// Push fresh data to all WS clients
-			data, err := buildDashboardData(app)
+			data, err := store.BuildDashboardData(app.DB)
 			if err == nil {
 				app.Hub.broadcastJSON("data", data)
 				log.Println("[WATCH] Broadcasted updated data to WebSocket clients")
@@ -113,11 +115,19 @@ func watchLoop(app *App, watcher *fsnotify.Watcher) {
 				pendingPluginReloads[rel] = true
 			}
 
-			// Debounce: wait 500ms after last change before flushing
+			// Debounce: wait 500ms after last change, then signal the event loop
 			if debounceTimer != nil {
 				debounceTimer.Stop()
 			}
-			debounceTimer = time.AfterFunc(500*time.Millisecond, flush)
+			debounceTimer = time.AfterFunc(500*time.Millisecond, func() {
+				select {
+				case flushCh <- struct{}{}:
+				default:
+				}
+			})
+
+		case <-flushCh:
+			flush()
 
 		case err, ok := <-watcher.Errors:
 			if !ok {
