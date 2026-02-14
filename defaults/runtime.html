@@ -3,6 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#00ff88">
+<link rel="manifest" href="/manifest.json">
 <title>PERISCOPE</title>
 <link href="https://fonts.googleapis.com/css2?family=Black+Ops+One&family=Space+Grotesk:wght@300;400;500;600&family=Rajdhani:wght@500;600;700&family=Fira+Code:wght@400;600&family=Michroma&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
@@ -301,6 +303,7 @@ a{color:var(--c-primary);text-decoration:none}
       <button class="widget-drawer-btn" id="widget-drawer-btn">LAYOUT <span class="widget-drawer-badge" id="widget-drawer-badge"></span></button>
       <div class="widget-drawer-menu" id="widget-drawer-menu"></div>
     </div>
+    <button class="btn" id="push-btn" title="Push notifications" style="display:none" onclick="togglePush()">PUSH</button>
     <button class="btn" onclick="Periscope.refreshData()">REFRESH</button>
     <button class="btn" onclick="toggleKB()" title="Keyboard shortcuts (?)">?</button>
   </div>
@@ -1661,6 +1664,58 @@ document.addEventListener('keydown', function(e) {
   rebuild();
   draw();
 })();
+</script>
+<script>
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('/sw.js').then(reg => {
+    if ('PushManager' in window) {
+      const btn = document.getElementById('push-btn');
+      btn.style.display = '';
+      reg.pushManager.getSubscription().then(sub => {
+        if (sub) btn.textContent = 'PUSH ON';
+      });
+    }
+  }).catch(e => console.warn('SW registration failed:', e));
+}
+
+async function togglePush() {
+  const btn = document.getElementById('push-btn');
+  const reg = await navigator.serviceWorker.ready;
+  const existing = await reg.pushManager.getSubscription();
+  if (existing) {
+    await existing.unsubscribe();
+    btn.textContent = 'PUSH';
+    return;
+  }
+  try {
+    const resp = await fetch('/api/push/public-key');
+    const {publicKey} = await resp.json();
+    const sub = await reg.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: urlBase64ToUint8Array(publicKey)
+    });
+    const key = sub.toJSON();
+    await fetch('/api/push/subscribe', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({endpoint: key.endpoint, keys: key.keys})
+    });
+    btn.textContent = 'PUSH ON';
+    // Send test
+    fetch('/api/push/test', {method: 'POST'});
+  } catch(e) {
+    console.warn('Push subscribe failed:', e);
+  }
+}
+
+function urlBase64ToUint8Array(base64String) {
+  const padding = '='.repeat((4 - base64String.length % 4) % 4);
+  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const raw = atob(base64);
+  const arr = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) arr[i] = raw.charCodeAt(i);
+  return arr;
+}
 </script>
 </body>
 </html>
