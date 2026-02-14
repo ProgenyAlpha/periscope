@@ -115,10 +115,10 @@ func extractFirstPrompt(transcriptPath string) string {
 		if json.Unmarshal([]byte(line), &entry) != nil {
 			continue
 		}
-		if entry.Type != "human" {
+		if entry.Type != "human" && entry.Type != "user" {
 			continue
 		}
-		// Content can be string or array of content blocks
+		// "user" type has message.content; try top-level message first
 		content := entry.Message.Content
 		if len(content) == 0 {
 			continue
@@ -153,7 +153,7 @@ func extractFirstPrompt(transcriptPath string) string {
 	return ""
 }
 
-// extractUserPrompts collects up to n human messages from a transcript.
+// extractUserPrompts collects up to n human/user messages from a transcript.
 func extractUserPrompts(transcriptPath string, n int) []string {
 	f, err := os.Open(transcriptPath)
 	if err != nil {
@@ -178,7 +178,7 @@ func extractUserPrompts(transcriptPath string, n int) []string {
 		if json.Unmarshal([]byte(line), &entry) != nil {
 			continue
 		}
-		if entry.Type != "human" {
+		if entry.Type != "human" && entry.Type != "user" {
 			continue
 		}
 		content := entry.Message.Content
@@ -216,9 +216,9 @@ func extractUserPrompts(transcriptPath string, n int) []string {
 }
 
 // generateSessionTitle calls Haiku to generate a short dashboard title,
-// then writes it back to the sidecar JSON. Designed to run in a goroutine.
-func generateSessionTitle(statePath string, prompts []string) {
-	log.Printf("[TITLE] Generating session title for %s (%d prompts)", filepath.Base(statePath), len(prompts))
+// then writes it back to the sidecar JSON. Runs synchronously.
+func generateSessionTitle(statePath string, project string, prompts []string) {
+	log.Printf("[TITLE] Generating session title for %s (%d prompts, project=%s)", filepath.Base(statePath), len(prompts), project)
 
 	home, _ := os.UserHomeDir()
 	claudeDir := filepath.Join(home, ".claude")
@@ -228,8 +228,11 @@ func generateSessionTitle(statePath string, prompts []string) {
 		return
 	}
 
-	// Build numbered prompt list
+	// Build numbered prompt list with project context
 	var userContent strings.Builder
+	if project != "" {
+		fmt.Fprintf(&userContent, "Project: %s\n", project)
+	}
 	for i, p := range prompts {
 		fmt.Fprintf(&userContent, "%d. %s\n", i+1, p)
 	}
@@ -238,7 +241,7 @@ func generateSessionTitle(statePath string, prompts []string) {
 	reqBody := map[string]any{
 		"model":      "claude-haiku-4-5-20251001",
 		"max_tokens": 30,
-		"system":     "Generate a 3-7 word dashboard title for this coding session. Be specific about the technical work. Return ONLY the title, no quotes.",
+		"system":     "Generate a concise dashboard title for this coding session. Format: 'ProjectName: what was done' (e.g. 'Periscope: PWA + push notifications'). Max 8 words. Return ONLY the title, no quotes or explanation.",
 		"messages": []map[string]any{
 			{"role": "user", "content": userContent.String()},
 		},
@@ -505,7 +508,7 @@ func hookStop() {
 	if state.GeneratedTitle == "" && totalCalls >= 5 {
 		prompts := extractUserPrompts(payload.TranscriptPath, 3)
 		if len(prompts) >= 2 {
-			go generateSessionTitle(statePath, prompts)
+			generateSessionTitle(statePath, state.Project, prompts) // synchronous — must complete before process exits
 		}
 	}
 
