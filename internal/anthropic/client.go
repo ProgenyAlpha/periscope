@@ -2,6 +2,7 @@ package anthropic
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -9,6 +10,28 @@ import (
 	"path/filepath"
 	"time"
 )
+
+// APIError represents a non-200 response from the Anthropic API.
+type APIError struct {
+	StatusCode int
+	Body       string
+}
+
+func (e *APIError) Error() string {
+	return fmt.Sprintf("API returned %d: %s", e.StatusCode, e.Body)
+}
+
+// IsAuthError returns true if the error is a 401 Unauthorized.
+func IsAuthError(err error) bool {
+	var apiErr *APIError
+	return errors.As(err, &apiErr) && apiErr.StatusCode == 401
+}
+
+// IsRateLimited returns true if the error is a 429 Too Many Requests.
+func IsRateLimited(err error) bool {
+	var apiErr *APIError
+	return errors.As(err, &apiErr) && apiErr.StatusCode == 429
+}
 
 // Client handles communication with the Anthropic API.
 type Client struct {
@@ -72,7 +95,7 @@ func (c *Client) FetchUsage() (*APIResponse, error) {
 
 	if resp.StatusCode != 200 {
 		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("API returned %d: %s", resp.StatusCode, string(body))
+		return nil, &APIError{StatusCode: resp.StatusCode, Body: string(body)}
 	}
 
 	var parsed APIResponse
@@ -95,7 +118,8 @@ func (c *Client) FetchProfile() (map[string]any, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("API returned %d", resp.StatusCode)
+		body, _ := io.ReadAll(resp.Body)
+		return nil, &APIError{StatusCode: resp.StatusCode, Body: string(body)}
 	}
 
 	var parsed map[string]any
@@ -103,6 +127,60 @@ func (c *Client) FetchProfile() (map[string]any, error) {
 		return nil, err
 	}
 	return parsed, nil
+}
+
+// TransformUsage converts an APIResponse into the flat map[string]any format
+// used by the dashboard, hooks, and statusline cache.
+func TransformUsage(resp *APIResponse) map[string]any {
+	usage := map[string]any{
+		"fetched_at": time.Now().Unix(),
+	}
+
+	if resp.FiveHour != nil {
+		usage["pct5hr"] = int(resp.FiveHour.Utilization + 0.5)
+		usage["reset5hr"] = resp.FiveHour.ResetsAt
+	} else {
+		usage["pct5hr"] = -1
+	}
+	if resp.SevenDay != nil {
+		usage["pctWeekly"] = int(resp.SevenDay.Utilization + 0.5)
+		usage["resetWeekly"] = resp.SevenDay.ResetsAt
+	} else {
+		usage["pctWeekly"] = -1
+	}
+	if resp.SevenDaySonnet != nil {
+		usage["pctSonnet"] = int(resp.SevenDaySonnet.Utilization + 0.5)
+		usage["resetSonnet"] = resp.SevenDaySonnet.ResetsAt
+	} else {
+		usage["pctSonnet"] = -1
+	}
+	if resp.SevenDayOpus != nil {
+		usage["pctOpus"] = int(resp.SevenDayOpus.Utilization + 0.5)
+		usage["resetOpus"] = resp.SevenDayOpus.ResetsAt
+	}
+	if resp.SevenDayOauthApps != nil {
+		usage["pctOauthApps"] = int(resp.SevenDayOauthApps.Utilization + 0.5)
+		usage["resetOauthApps"] = resp.SevenDayOauthApps.ResetsAt
+	}
+	if resp.SevenDayCowork != nil {
+		usage["pctCowork"] = int(resp.SevenDayCowork.Utilization + 0.5)
+		usage["resetCowork"] = resp.SevenDayCowork.ResetsAt
+	}
+	if resp.ExtraUsage != nil {
+		eu := map[string]any{
+			"is_enabled":   resp.ExtraUsage.IsEnabled,
+			"used_credits": resp.ExtraUsage.UsedCredits / 100, // API returns cents
+		}
+		if resp.ExtraUsage.MonthlyLimit != nil {
+			eu["monthly_limit"] = *resp.ExtraUsage.MonthlyLimit / 100
+		}
+		if resp.ExtraUsage.Utilization != nil {
+			eu["utilization"] = *resp.ExtraUsage.Utilization
+		}
+		usage["extra_usage"] = eu
+	}
+
+	return usage
 }
 
 func (c *Client) setHeaders(req *http.Request) {

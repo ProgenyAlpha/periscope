@@ -1,29 +1,37 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"sync"
+	"syscall"
 
 	"github.com/BurntSushi/toml"
 	"github.com/fsnotify/fsnotify"
+	"github.com/shawnwakeman/periscope/internal/anthropic"
 	"github.com/shawnwakeman/periscope/internal/store"
 )
 
 // App holds all shared state for the periscope runtime.
 type App struct {
-	Config    AppConfig
-	DB        *sql.DB
-	Hub       *Hub
-	Watcher   *fsnotify.Watcher
-	HomeDir   string // ~/.periscope
-	ClaudeDir string // ~/.claude
-	DataDir   string // ~/.claude/hooks/cost-state
-	PluginDir string // ~/.periscope/plugins
+	Config          AppConfig
+	DB              *sql.DB
+	Hub             *Hub
+	Watcher         *fsnotify.Watcher
+	AnthropicClient *anthropic.Client
+	clientMu        sync.RWMutex // protects AnthropicClient
+	HomeDir         string       // ~/.periscope
+	ClaudeDir       string       // ~/.claude
+	DataDir         string       // ~/.claude/hooks/cost-state
+	PluginDir       string       // ~/.periscope/plugins
+	cancel          context.CancelFunc // triggers graceful shutdown
 }
 
 type AppConfig struct {
@@ -32,8 +40,9 @@ type AppConfig struct {
 }
 
 type ServerConfig struct {
-	Port int    `toml:"port"`
-	Host string `toml:"host"`
+	Port  int    `toml:"port"`
+	Host  string `toml:"host"`
+	Token string `toml:"token"`
 }
 
 func setupLogging(logPath string) {
@@ -156,6 +165,14 @@ func cmdServe() {
 		log.Fatal(err)
 	}
 
+	// Check if already running
+	resp, err := http.Get(fmt.Sprintf("http://%s:%d/api/health", app.Config.Server.Host, app.Config.Server.Port))
+	if err == nil {
+		resp.Body.Close()
+		fmt.Printf("Periscope already running on port %d\n", app.Config.Server.Port)
+		os.Exit(0)
+	}
+
 	// Set up log file with rotation
 	logPath := filepath.Join(app.HomeDir, "periscope.log")
 	setupLogging(logPath)
@@ -170,23 +187,53 @@ func cmdServe() {
 		}
 	}
 
-	// 3. Open DB
-	dbPath := filepath.Join(app.HomeDir, "periscope.db") // Changed periscopeDir to app.HomeDir for syntactic correctness
+	// Open DB
+	dbPath := filepath.Join(app.HomeDir, "periscope.db")
 	db, err := store.OpenDB(dbPath)
 	if err != nil {
 		log.Fatalf("Fatal: could not open DB: %v", err)
 	}
 	defer db.Close()
+	app.DB = db
+
+	// Initialize Anthropic client (optional — rate limit tracking needs OAuth)
+	if client, err := anthropic.NewClientFromDisk(app.ClaudeDir); err == nil {
+		app.AnthropicClient = client
+		log.Printf("[MAIN] Anthropic client initialized")
+	} else {
+		log.Printf("[MAIN] Anthropic client unavailable: %v", err)
+	}
 
 	// Import file data into DB
 	log.Printf("[MAIN] Importing file data")
-	if err := store.ImportFileData(db, app.DataDir, app.ClaudeDir); err != nil { // Changed app.DB to db
+	if err := store.ImportFileData(db, app.DataDir, app.ClaudeDir); err != nil {
 		log.Printf("[MAIN] warning: data import: %v", err)
 	}
 
 	// Compact limit history (tiered dedup: recent=dense, old=sparse)
 	log.Printf("[MAIN] Compacting limit history")
-	compactLimitHistory(app)
+	store.CompactLimitHistory(db, app.DataDir)
+
+	// Context for graceful shutdown
+	ctx, cancel := context.WithCancel(context.Background())
+	app.cancel = cancel
+
+	// Catch OS signals
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		sig := <-sigCh
+		log.Printf("[MAIN] Received signal %s, initiating shutdown", sig)
+		cancel()
+	}()
+
+	// Resolve auth token: env var takes priority over config
+	if envToken := os.Getenv("PERISCOPE_TOKEN"); envToken != "" {
+		app.Config.Server.Token = envToken
+		log.Printf("[MAIN] Auth token loaded from PERISCOPE_TOKEN env var")
+	} else if app.Config.Server.Token != "" {
+		log.Printf("[MAIN] Auth token loaded from config.toml")
+	}
 
 	// Start WebSocket hub
 	log.Printf("[MAIN] Starting WebSocket hub")
@@ -202,9 +249,10 @@ func cmdServe() {
 		defer app.Watcher.Close()
 	}
 
-	// Start HTTP server
+	// Start HTTP server (blocks until shutdown)
 	log.Printf("[MAIN] Starting HTTP server on %s:%d", app.Config.Server.Host, app.Config.Server.Port)
-	startServer(app)
+	startServer(ctx, app)
+	log.Printf("[MAIN] Periscope stopped")
 }
 
 func cmdStatus() {
