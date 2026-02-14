@@ -57,6 +57,18 @@
 .w-rlhud .hud-extra-fill{height:100%;border-radius:3px;transition:width 0.8s cubic-bezier(0.4,0,0.2,1),background 0.4s}
 .w-rlhud .hud-extra-val{font-family:var(--font-mono);font-size:9px;color:var(--text-dim);margin-top:2px;text-align:center}
 
+/* Phantom burn meter */
+.w-rlhud .hud-phantom{width:100%;margin-top:6px;display:none}
+.w-rlhud .hud-phantom.visible{display:block}
+.w-rlhud .hud-phantom-label{font-family:var(--font-mono);font-size:8px;color:var(--text-dim);text-transform:uppercase;letter-spacing:1px;margin-bottom:3px;display:flex;align-items:center;gap:6px}
+.w-rlhud .hud-phantom-label .ph-dot{width:5px;height:5px;border-radius:50%;background:#a855f7;box-shadow:0 0 6px rgba(168,85,247,0.6);flex-shrink:0}
+.w-rlhud .hud-phantom-bar{height:5px;background:var(--rule);border-radius:3px;overflow:hidden;display:flex}
+.w-rlhud .hud-phantom-fill-cli{height:100%;background:var(--c-primary);transition:width 0.8s cubic-bezier(0.4,0,0.2,1)}
+.w-rlhud .hud-phantom-fill-ghost{height:100%;background:#a855f7;transition:width 0.8s cubic-bezier(0.4,0,0.2,1)}
+.w-rlhud .hud-phantom-val{font-family:var(--font-mono);font-size:9px;color:var(--text-dim);margin-top:2px;display:flex;justify-content:space-between}
+.w-rlhud .hud-phantom-val .ph-cli{color:var(--c-primary)}
+.w-rlhud .hud-phantom-val .ph-ghost{color:#a855f7}
+
 /* Gauge mode toggle — instrument-style icon toggle */
 .hud-mode-toggle{display:inline-flex;align-items:center;gap:5px;padding:3px 10px 3px 6px;
   border:1px solid var(--rule);background:var(--bg-inset);color:var(--text-dim);cursor:pointer;
@@ -166,6 +178,8 @@ Periscope.registerWidget({
           '</div>' +
           /* Extra usage credit bar — hidden until data arrives */
           '<div class="hud-extra" data-extra="wrap"></div>' +
+          /* Phantom burn meter — purple, shows CLI vs phantom split */
+          '<div class="hud-phantom" data-phantom="wrap"></div>' +
         '</div>' +
 
         /* --- Intel cards 2x3 (text mode) --- */
@@ -366,6 +380,35 @@ Periscope.registerWidget({
       } else {
         extraWrap.classList.remove('visible');
         extraWrap.innerHTML = '';
+      }
+    }
+
+    // --- Phantom Burn Meter ---
+    var phantomWrap = el.querySelector('[data-phantom="wrap"]');
+    if (phantomWrap) {
+      var ph = data && data.phantomUsage;
+      if (ph && ph.source !== 'none' && (ph.phantomCost > 0.01 || ph.localSessionTotal > 0.01)) {
+        phantomWrap.classList.add('visible');
+        var phLocal = ph.localSessionTotal || 0;
+        var phGhost = ph.phantomCost || 0;
+        var phTotal = phLocal + phGhost;
+        var cliPct = phTotal > 0 ? (phLocal / phTotal * 100) : 100;
+        var ghostPct = phTotal > 0 ? (phGhost / phTotal * 100) : 0;
+        var fmtC = function(v) { return v >= 100 ? '$' + v.toFixed(0) : v >= 10 ? '$' + v.toFixed(1) : '$' + v.toFixed(2); };
+        var prefix = ph.confidence === 'estimated' ? '~' : '';
+        phantomWrap.innerHTML =
+          '<div class="hud-phantom-label"><span class="ph-dot"></span>PHANTOM BURN</div>' +
+          '<div class="hud-phantom-bar">' +
+            '<div class="hud-phantom-fill-cli" style="width:' + cliPct.toFixed(1) + '%"></div>' +
+            '<div class="hud-phantom-fill-ghost" style="width:' + ghostPct.toFixed(1) + '%"></div>' +
+          '</div>' +
+          '<div class="hud-phantom-val">' +
+            '<span class="ph-cli">CLI ' + fmtC(phLocal) + ' (' + Math.round(cliPct) + '%)</span>' +
+            '<span class="ph-ghost">Phantom ' + prefix + fmtC(phGhost) + ' (' + Math.round(ghostPct) + '%)</span>' +
+          '</div>';
+      } else {
+        phantomWrap.classList.remove('visible');
+        phantomWrap.innerHTML = '';
       }
     }
 

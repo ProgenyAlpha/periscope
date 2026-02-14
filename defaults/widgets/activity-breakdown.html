@@ -33,6 +33,8 @@
 .w-activity .cl-agent::before{background:var(--c-primary)}
 .w-activity .cl-tool::before{background:var(--c-secondary)}
 .w-activity .cl-chat::before{background:var(--c-tertiary)}
+.w-activity .cb-phantom{background:#a855f7}
+.w-activity .cl-phantom::before{background:#a855f7}
 
 @media (max-width: 480px) {
   .w-activity .stat-cards{flex-wrap:wrap}
@@ -83,11 +85,13 @@ Periscope.registerWidget({
           <div class="cb-seg cb-agent" id="ab-cb-agent" style="width:0%"></div>
           <div class="cb-seg cb-tool" id="ab-cb-tool" style="width:0%"></div>
           <div class="cb-seg cb-chat" id="ab-cb-chat" style="width:0%"></div>
+          <div class="cb-seg cb-phantom" id="ab-cb-phantom" style="width:0%;display:none"></div>
         </div>
         <div class="cost-legend">
           <span class="cl-agent" id="ab-cl-agent">Agent $0.00</span>
           <span class="cl-tool" id="ab-cl-tool">Tool $0.00</span>
           <span class="cl-chat" id="ab-cl-chat">Chat $0.00</span>
+          <span class="cl-phantom" id="ab-cl-phantom" style="display:none" title="Estimated cost from non-Periscope tools (Cursor, API, etc.)">Phantom ~$0.00</span>
         </div>
       </div>`;
 
@@ -200,6 +204,29 @@ Periscope.registerWidget({
     el.querySelector('#ab-cl-agent').textContent = 'Agent ' + fmtC(agentCost);
     el.querySelector('#ab-cl-tool').textContent = 'Tool ' + fmtC(toolCost);
     el.querySelector('#ab-cl-chat').textContent = 'Chat ' + fmtC(chatCost);
+
+    // Phantom usage segment
+    const ph = data.phantomUsage;
+    const phSeg = el.querySelector('#ab-cb-phantom');
+    const phLeg = el.querySelector('#ab-cl-phantom');
+    if (ph && ph.source !== 'none' && ph.phantomCost > 0.01) {
+      const grandTotal = totalCost + ph.phantomCost;
+      // Recalculate all segments as proportion of grand total
+      if (grandTotal > 0) {
+        el.querySelector('#ab-cb-agent').style.width = (agentCost / grandTotal * 100) + '%';
+        el.querySelector('#ab-cb-tool').style.width = (toolCost / grandTotal * 100) + '%';
+        el.querySelector('#ab-cb-chat').style.width = (chatCost / grandTotal * 100) + '%';
+        phSeg.style.width = (ph.phantomCost / grandTotal * 100) + '%';
+        phSeg.style.display = '';
+      }
+      const prefix = ph.confidence === 'estimated' ? '~' : '';
+      const suffix = ph.confidence === 'estimated' ? ' (est.)' : '';
+      phLeg.textContent = 'Phantom ' + prefix + fmtC(ph.phantomCost) + suffix;
+      phLeg.style.display = '';
+    } else {
+      phSeg.style.display = 'none';
+      phLeg.style.display = 'none';
+    }
   }
 });
 </script>
