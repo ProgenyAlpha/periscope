@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+
+	"github.com/shawnwakeman/periscope/internal/anthropic"
 )
 
 // ── UI helpers ──────────────────────────────────────────────────────────────
@@ -82,6 +84,7 @@ func install(app *App) error {
 		filepath.Join(app.PluginDir, "forecasters"),
 		filepath.Join(app.PluginDir, "canvas"),
 		filepath.Join(app.PluginDir, "vendor"),
+		filepath.Join(app.PluginDir, "static"),
 	}
 	dirsCreated := 0
 	dirsExisted := 0
@@ -172,7 +175,7 @@ port = %d
 	// ── Step 5: OAuth ──
 	iStep(5, totalSteps, "Verifying Anthropic connection")
 	log.Printf("[INSTALL] Verifying OAuth token")
-	if _, err := getOAuthToken(app); err != nil {
+	if _, err := anthropic.NewClientFromDisk(app.ClaudeDir); err != nil {
 		log.Printf("[INSTALL] OAuth token not found: %v", err)
 		iWarn("No OAuth token found")
 		iInfo("Rate limit tracking requires 'claude login' first")

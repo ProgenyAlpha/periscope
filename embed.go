@@ -7,5 +7,6 @@ import "embed"
 //go:embed defaults/forecasters/*.toml
 //go:embed defaults/widgets/*.html
 //go:embed defaults/vendor/*
+//go:embed defaults/static/*
 //go:embed defaults/runtime.html
 var defaultPlugins embed.FS
