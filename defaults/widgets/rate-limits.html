@@ -57,12 +57,19 @@
 .w-rlhud .hud-extra-fill{height:100%;border-radius:3px;transition:width 0.8s cubic-bezier(0.4,0,0.2,1),background 0.4s}
 .w-rlhud .hud-extra-val{font-family:var(--font-mono);font-size:9px;color:var(--text-dim);margin-top:2px;text-align:center}
 
-/* Gauge mode toggle — inherits theme vars (lives in .widget-title, outside .w-rlhud) */
-.hud-mode-toggle{font-family:var(--font-mono);font-size:8px;letter-spacing:1.5px;text-transform:uppercase;
-  padding:2px 8px;border:1px solid var(--rule);background:var(--bg-inset);color:var(--text-dim);cursor:pointer;
-  border-radius:var(--radius,3px);transition:all .15s;margin-left:auto;line-height:1.4}
-.hud-mode-toggle:hover{border-color:var(--c-tertiary,var(--c-primary));color:var(--c-tertiary,var(--c-primary));box-shadow:0 0 8px rgba(var(--rgb-tertiary,var(--rgb-primary)),0.15)}
-.hud-mode-toggle.active{background:rgba(var(--rgb-tertiary,var(--rgb-primary)),0.08);border-color:var(--c-tertiary,var(--c-primary));color:var(--c-tertiary,var(--c-primary))}
+/* Gauge mode toggle — instrument-style icon toggle */
+.hud-mode-toggle{display:inline-flex;align-items:center;gap:5px;padding:3px 10px 3px 6px;
+  border:1px solid var(--rule);background:var(--bg-inset);color:var(--text-dim);cursor:pointer;
+  border-radius:20px;transition:all .25s;margin-left:auto;line-height:1;font-family:var(--font-mono);
+  font-size:7.5px;letter-spacing:1.5px;text-transform:uppercase}
+.hud-mode-toggle svg{transition:all .3s;opacity:0.5}
+.hud-mode-toggle .toggle-label{transition:color .25s}
+.hud-mode-toggle:hover{border-color:var(--c-primary);box-shadow:0 0 12px rgba(var(--rgb-primary),0.12)}
+.hud-mode-toggle:hover svg{opacity:0.8}
+.hud-mode-toggle.active{background:rgba(var(--rgb-primary),0.08);border-color:var(--c-primary);color:var(--c-primary)}
+.hud-mode-toggle.active svg{opacity:1}
+.hud-mode-toggle.active .toggle-needle{animation:toggle-tick .4s cubic-bezier(0.34,1.56,0.64,1) forwards}
+@keyframes toggle-tick{0%{transform:rotate(-45deg)}60%{transform:rotate(50deg)}100%{transform:rotate(35deg)}}
 
 /* Chronomark gauge panel — each gauge column: gauge on top, stats underneath */
 .w-rlhud .chrono-panel{flex:1;display:flex;gap:4px;justify-content:center;align-items:flex-start;flex-wrap:wrap;min-width:0}
@@ -200,7 +207,13 @@ Periscope.registerWidget({
       var titleEl = el.querySelector('.widget-title');
       var toggleBtn = document.createElement('button');
       toggleBtn.className = 'hud-mode-toggle';
-      toggleBtn.textContent = 'GAUGES';
+      toggleBtn.innerHTML =
+        '<svg width="16" height="12" viewBox="0 0 20 14">' +
+          '<path d="M 2,13 A 10,10 0 0,1 18,13" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>' +
+          '<line class="toggle-needle" x1="10" y1="12" x2="10" y2="4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" style="transform-origin:10px 12px;transform:rotate(-45deg)"/>' +
+          '<circle cx="10" cy="12" r="1.5" fill="currentColor"/>' +
+        '</svg>' +
+        '<span class="toggle-label">Gauges</span>';
       titleEl.style.display = 'flex';
       titleEl.style.alignItems = 'center';
       titleEl.style.gap = '8px';
@@ -210,15 +223,18 @@ Periscope.registerWidget({
       var textView = el.querySelector('[data-view="text"]');
       var gaugeView = el.querySelector('[data-view="gauge"]');
 
+      var needleEl = toggleBtn.querySelector('.toggle-needle');
       function applyMode() {
         if (gaugeMode) {
           textView.style.display = 'none';
           gaugeView.style.display = '';
           toggleBtn.classList.add('active');
+          needleEl.style.transform = 'rotate(35deg)';
         } else {
           textView.style.display = '';
           gaugeView.style.display = 'none';
           toggleBtn.classList.remove('active');
+          needleEl.style.transform = 'rotate(-45deg)';
         }
       }
       applyMode();
@@ -371,12 +387,79 @@ Periscope.registerWidget({
       if (paceCard) paceCard.innerHTML = emptyMsg;
       if (dutyCard) dutyCard.innerHTML = emptyMsg;
     } else {
-      var wkAtLimit = rd.pctW >= 100;
-      var hrAtLimit = rd.pct5 >= 100;
+
+      // ========== SINGLE SOURCE OF TRUTH — all derived values ==========
+      // Limits
+      rd.wkAtLimit = rd.pctW >= 100;
+      rd.hrAtLimit = rd.pct5 >= 100;
+
+      // Burn rate (active-adjusted weekly, with fallback)
+      rd.burnWkDisplay = rd.burnWeeklyActive != null ? rd.burnWeeklyActive : rd.burnWeekly;
+
+      // Sustain rates (what burn rate = even consumption across window)
+      rd.sustainRate5 = 100 / 5;
+      rd.sustainRateWk = rd.duty ? 100 / (rd.duty.activeHrsPerDay * 7) : 100 / 168;
+
+      // Pace (burn / sustain — 1.0x = perfect even burn)
+      rd.pace5 = rd.burn5hr > 0 ? (rd.burn5hr / rd.sustainRate5) : 0;
+      rd.paceW = rd.burnWkDisplay > 0 ? (rd.burnWkDisplay / rd.sustainRateWk) : 0;
+
+      // Pace colors (threshold: <=0.85 safe, <=0.95 warn, >0.95 danger)
+      function paceColor(p) { return p <= 0.85 ? 'var(--c-secondary)' : p <= 0.95 ? 'var(--c-primary)' : 'var(--c-danger)'; }
+      rd.pace5Color = paceColor(rd.pace5);
+      rd.paceWColor = paceColor(rd.paceW);
+
+      // Pace labels
+      rd.pace5Label = rd.pace5 <= 0.1 ? 'IDLE' : rd.pace5.toFixed(2) + 'x';
+      rd.paceWLabel = rd.paceW <= 0.1 ? 'IDLE' : rd.paceW.toFixed(2) + 'x';
+
+      // Status text (matches gauge readout)
+      function paceStatus(p) { return p <= 0.1 ? 'IDLE' : p <= 0.85 ? 'NOMINAL' : p <= 0.95 ? 'ELEVATED' : 'CRITICAL'; }
+      rd.status5 = paceStatus(rd.pace5);
+      rd.statusW = paceStatus(rd.paceW);
+
+      // TTL-OK (time-to-limit is comfortable: either at infinity or exceeds remaining window)
+      rd.ttl5ok = !rd.hrAtLimit && (rd.ttl5hr >= rd.remaining5hr || rd.ttl5hr === Infinity);
+      rd.ttlWok = !rd.wkAtLimit && (rd.ttlWeekly >= rd.remainingWeekly || rd.ttlWeekly === Infinity);
+
+      // TTL display values
+      rd.ttl5Val = rd.hrAtLimit ? 'LIMIT' : (rd.ttl5ok ? 'NOMINAL' : fH(rd.ttl5hr));
+      rd.ttlWVal = rd.wkAtLimit ? 'LIMIT' : (rd.ttlWok ? 'NOMINAL' : fH(rd.ttlWeekly));
+      rd.ttl5Color = rd.hrAtLimit ? 'var(--c-danger)' : (rd.ttl5ok ? 'var(--c-secondary)' : 'var(--c-danger)');
+      rd.ttlWColor = rd.wkAtLimit ? 'var(--c-danger)' : (rd.ttlWok ? 'var(--c-secondary)' : 'var(--c-danger)');
+
+      // Time-to-reset display
+      rd.ttr5 = rd.remaining5hr != null ? fH(rd.remaining5hr) : '--';
+      rd.ttrW = rd.remainingWeekly != null ? fH(rd.remainingWeekly) : '--';
+
+      // Resolved CSS colors (for inline SVG — can't use var() in SVG attributes)
+      var _cs = getComputedStyle(document.documentElement);
+      rd.css = {
+        pri: _cs.getPropertyValue('--c-primary').trim() || '#f59e0b',
+        sec: _cs.getPropertyValue('--c-secondary').trim() || '#06b6d4',
+        dng: _cs.getPropertyValue('--c-danger').trim() || '#ef4444',
+        trt: _cs.getPropertyValue('--c-tertiary').trim() || (_cs.getPropertyValue('--c-secondary').trim() || '#06b6d4')
+      };
+      // Hex→rgb helper (single definition)
+      function hexRgb(h) { if (h.charAt(0)==='#') { var v=parseInt(h.slice(1),16); return (h.length===4) ? ((v>>8&0xf)*17)+','+((v>>4&0xf)*17)+','+(((v&0xf)*17)) : (v>>16&255)+','+(v>>8&255)+','+(v&255); } return '6,182,212'; }
+      rd.hexRgb = hexRgb;
+
+      // Projection colors (4-tier, matches runtime projColor — resolved to hex for SVG)
+      function projColorResolved(p) {
+        if (p >= 100) return rd.css.dng;
+        if (p >= 80) return (_cs.getPropertyValue('--c-warm').trim() || rd.css.pri);
+        if (p >= 50) return rd.css.pri;
+        return rd.css.sec;
+      }
+      rd.proj5Color = projColorResolved(rd.proj5hr);
+      rd.projWColor = projColorResolved(rd.projWeekly);
+
+      // Shorthand aliases used by consumers
+      var wkAtLimit = rd.wkAtLimit, hrAtLimit = rd.hrAtLimit;
+      // ========== END derived values ==========
 
       // Burn Rate card
       if (burnCard) {
-        var burnWkVal = rd.burnWeeklyActive != null ? rd.burnWeeklyActive : rd.burnWeekly;
         burnCard.innerHTML =
           '<div class="ic-label">Burn Rate</div>' +
           '<div class="ic-val-row">' +
@@ -384,7 +467,7 @@ Periscope.registerWidget({
             '<span class="ic-tag">5hr</span>' +
           '</div>' +
           '<div class="ic-val-row">' +
-            '<span class="ic-val" style="color:' + (wkAtLimit ? 'var(--c-danger)' : 'var(--c-secondary)') + '">' + (burnWkVal || 0).toFixed(2) + '%/h</span>' +
+            '<span class="ic-val" style="color:' + (wkAtLimit ? 'var(--c-danger)' : 'var(--c-secondary)') + '">' + (rd.burnWkDisplay || 0).toFixed(2) + '%/h</span>' +
             '<span class="ic-tag">wk(active)</span>' +
           '</div>' +
           (wkAtLimit ? '<div class="ic-status" style="color:var(--c-danger)">WEEKLY RATE EXCEEDED</div>' :
@@ -452,22 +535,14 @@ Periscope.registerWidget({
 
       // Budget Pace card (text mode — always rendered)
       if (paceCard) {
-        var sustainRate5 = 100 / 5;
-        var sustainRateWk = rd.duty ? 100 / (rd.duty.activeHrsPerDay * 7) : 100 / 168;
-        var pace5x = rd.burn5hr > 0 ? (rd.burn5hr / sustainRate5) : 0;
-        var paceWx = rd.burnWeeklyActive > 0 ? (rd.burnWeeklyActive / sustainRateWk) : 0;
-        var pace5Color = pace5x <= 0.85 ? 'var(--c-secondary)' : pace5x <= 0.95 ? 'var(--c-primary)' : 'var(--c-danger)';
-        var paceWColor = paceWx <= 0.85 ? 'var(--c-secondary)' : paceWx <= 0.95 ? 'var(--c-primary)' : 'var(--c-danger)';
-        var pace5Label = pace5x <= 0.1 ? 'IDLE' : pace5x.toFixed(2) + 'x';
-        var paceWLabel = paceWx <= 0.1 ? 'IDLE' : paceWx.toFixed(2) + 'x';
         paceCard.innerHTML =
           '<div class="ic-label">Budget Pace</div>' +
           '<div class="ic-val-row">' +
-            '<span class="ic-val" style="color:' + pace5Color + '">' + pace5Label + '</span>' +
+            '<span class="ic-val" style="color:' + rd.pace5Color + '">' + rd.pace5Label + '</span>' +
             '<span class="ic-tag">5hr</span>' +
           '</div>' +
           '<div class="ic-val-row">' +
-            '<span class="ic-val" style="color:' + paceWColor + '">' + paceWLabel + '</span>' +
+            '<span class="ic-val" style="color:' + rd.paceWColor + '">' + rd.paceWLabel + '</span>' +
             '<span class="ic-tag">weekly</span>' +
           '</div>' +
           '<div class="ic-sub">1.0x = even burn across window</div>';
@@ -476,24 +551,37 @@ Periscope.registerWidget({
       // Chronomark gauge panel (gauge mode — only rendered when visible)
       var chronoPanel = el.querySelector('[data-view="gauge"]');
       if (chronoPanel && chronoPanel.style.display !== 'none') {
-        var sustainRate5 = sustainRate5 || 100/5;
-        var sustainRateWk = sustainRateWk || (rd.duty ? 100/(rd.duty.activeHrsPerDay*7) : 100/168);
-        var p5x = rd.burn5hr > 0 ? (rd.burn5hr / sustainRate5) : 0;
-        var pWx = rd.burnWeeklyActive > 0 ? (rd.burnWeeklyActive / sustainRateWk) : 0;
+
+        // Theme-aware gauge palette
+        var isLight = (document.documentElement.getAttribute('data-theme') || '').indexOf('light') !== -1;
+        var gp = isLight
+          ? { housing: 'rgba(210,200,185,0.55)', housingStroke: 'rgba(90,98,112,0.4)',
+              baseline: 'rgba(90,98,112,0.3)', hub: 'rgba(230,222,210,0.9)',
+              capsule: 'rgba(210,200,185,0.5)', tube: 'rgba(215,207,195,0.85)',
+              constellAlpha: '0.25', tickAlpha: '0.5', zoneAlpha: '0.12',
+              glowAlpha: '0.45', coreAlpha: '0.7', whiteHotAlpha: '0.2',
+              sheenStops: ['0.15','0.06','0','0.08'],
+              capFill: '0.25', capStroke: '0.4', tubeStroke: '0.35',
+              wireAlpha: '0.45', tickStrokeAlpha: '0.45',
+              crosshairColor: 'rgba(0,0,0,0.25)', titleAlpha: '0.8' }
+          : { housing: 'rgba(8,14,20,0.6)', housingStroke: 'rgba(26,37,53,0.6)',
+              baseline: 'rgba(26,37,53,0.4)', hub: 'rgba(10,16,24,0.8)',
+              capsule: 'rgba(8,14,20,0.7)', tube: 'rgba(8,10,16,0.9)',
+              constellAlpha: '0.1', tickAlpha: '0.5', zoneAlpha: '0.04',
+              glowAlpha: '0.25', coreAlpha: '0.6', whiteHotAlpha: '0.08',
+              sheenStops: ['0.06','0.02','0','0.03'],
+              capFill: '0.12', capStroke: '0.2', tubeStroke: '0.18',
+              wireAlpha: '0.3', tickStrokeAlpha: '0.3',
+              crosshairColor: 'rgba(255,255,255,0.3)', titleAlpha: '0.6' };
 
         // Chronomark half-gauge builder — full-size (200x115 viewBox)
         // sides: [{label, value, pct, color}] — up to 3 vertical capsule gauges
         function buildChrono(pace, label, uid, sides) {
           var CX=100,CY=108,R=80,DEG=Math.PI/180,MAX=1.5;
           var AS=-150,AE=-30;
-          // Resolve theme colors from CSS variables
-          var cs=getComputedStyle(document.documentElement);
-          var cSafe=cs.getPropertyValue('--c-secondary').trim()||'#06b6d4';
-          var cWarn=cs.getPropertyValue('--c-primary').trim()||'#f59e0b';
-          var cDanger=cs.getPropertyValue('--c-danger').trim()||'#ef4444';
-          var cAccent=cs.getPropertyValue('--c-tertiary').trim()||cSafe;
-          // Hex→rgb helper for opacity variants
-          function hexRgb(h){if(h.charAt(0)==='#'){var v=parseInt(h.slice(1),16);return(h.length===4)?((v>>8&0xf)*17)+','+((v>>4&0xf)*17)+','+(((v&0xf)*17)):(v>>16&255)+','+(v>>8&255)+','+(v&255)}return'6,182,212'}
+          // Use centralized CSS colors and hexRgb from rd
+          var cSafe=rd.css.sec, cWarn=rd.css.pri, cDanger=rd.css.dng, cAccent=rd.css.trt;
+          var hexRgb=rd.hexRgb;
           var rgbSafe=hexRgb(cSafe);
           function pol(r,a){return{x:CX+r*Math.cos(a*DEG),y:CY+r*Math.sin(a*DEG)}}
           function arc(r,s,e){var p1=pol(r,s),p2=pol(r,e);var lg=(e-s)>180?1:0;return'M '+p1.x.toFixed(1)+','+p1.y.toFixed(1)+' A '+r+','+r+' 0 '+lg+',1 '+p2.x.toFixed(1)+','+p2.y.toFixed(1)}
@@ -510,7 +598,7 @@ Periscope.registerWidget({
             var tp=(i/15)*MAX,ta=AS+((tp/MAX)*(AE-AS));
             var maj=i%5===0,mid=i%5!==0&&i%2===0;
             var inn=pol(maj?60:(mid?66:70),ta),out=pol(76,ta);
-            tks+='<line x1="'+inn.x.toFixed(1)+'" y1="'+inn.y.toFixed(1)+'" x2="'+out.x.toFixed(1)+'" y2="'+out.y.toFixed(1)+'" stroke="rgba('+rgbSafe+','+(maj?'0.5':(mid?'0.2':'0.08'))+')" stroke-width="'+(maj?'1.2':(mid?'0.6':'0.3'))+'"/>';
+            tks+='<line x1="'+inn.x.toFixed(1)+'" y1="'+inn.y.toFixed(1)+'" x2="'+out.x.toFixed(1)+'" y2="'+out.y.toFixed(1)+'" stroke="rgba('+rgbSafe+','+(maj?gp.tickAlpha:(mid?'0.2':'0.08'))+')" stroke-width="'+(maj?'1.2':(mid?'0.6':'0.3'))+'"/>';
             if(maj){var lp=pol(52,ta);tks+='<text x="'+lp.x.toFixed(1)+'" y="'+(lp.y+2.5).toFixed(1)+'" text-anchor="middle" font-family="Rajdhani,sans-serif" font-size="8" fill="rgba('+rgbSafe+',0.45)" font-weight="600">'+tp.toFixed(1)+'</text>';}
           }
           // Sweep animation on first render
@@ -527,19 +615,32 @@ Periscope.registerWidget({
           var warnLight='<circle cx="'+wlPos.x.toFixed(1)+'" cy="'+wlPos.y.toFixed(1)+'" r="3.5" fill="'+(warnLit?cDanger:'rgba('+rgbDanger+',0.12)')+'" stroke="rgba('+rgbDanger+',0.3)" stroke-width="0.5"/>';
           if(warnLit) warnLight+='<circle cx="'+wlPos.x.toFixed(1)+'" cy="'+wlPos.y.toFixed(1)+'" r="6" fill="none" stroke="'+cDanger+'" stroke-width="0.4" opacity="0.3"/><circle cx="'+wlPos.x.toFixed(1)+'" cy="'+wlPos.y.toFixed(1)+'" r="3.5" fill="'+cDanger+'" opacity="0.6"><animate attributeName="opacity" values="0.6;0.2;0.6" dur="1.2s" repeatCount="indefinite"/></circle>';
 
+          // Ambient glow params — randomized per gauge
+          var gPulseDur = (3.0 + Math.random() * 2.5).toFixed(1);
+          var gPulseMin = (0.35 + Math.random() * 0.25).toFixed(2);
+          var rgbNeedle = hexRgb(nColor);
+
           return '<svg width="272" height="156" viewBox="0 0 200 115">' +
-            '<defs><filter id="cg-'+uid+'"><feDropShadow dx="0" dy="0" stdDeviation="2" flood-color="rgba('+rgbSafe+',0.5)"/></filter></defs>' +
+            '<defs>' +
+            '<filter id="cg-'+uid+'"><feDropShadow dx="0" dy="0" stdDeviation="2" flood-color="rgba('+rgbSafe+',0.5)"/></filter>' +
+            '<filter id="ag-'+uid+'" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="8"/></filter>' +
+            '<filter id="hg-'+uid+'"><feGaussianBlur stdDeviation="3"/></filter>' +
+            '</defs>' +
             // Housing
-            '<path d="M 8,110 A 92,92 0 0,1 192,110" fill="rgba(8,14,20,0.6)" stroke="rgba(26,37,53,0.6)" stroke-width="1.5"/>' +
-            '<line x1="8" y1="110" x2="192" y2="110" stroke="rgba(26,37,53,0.4)" stroke-width="1"/>' +
+            '<path d="M 8,110 A 92,92 0 0,1 192,110" fill="'+gp.housing+'" stroke="'+gp.housingStroke+'" stroke-width="1.5"/>' +
+            '<line x1="8" y1="110" x2="192" y2="110" stroke="'+gp.baseline+'" stroke-width="1"/>' +
             // Outer decorative ring
             '<path d="'+arc(86,AS,AE)+'" fill="none" stroke="rgba('+rgbSafe+',0.06)" stroke-width="0.5"/>' +
+            // Ambient glow — soft halo behind the active needle zone, pulsing
+            '<path d="'+arc(R,AS,AE)+'" fill="none" stroke="'+nColor+'" stroke-width="16" filter="url(#ag-'+uid+')">' +
+              '<animate attributeName="opacity" values="0.12;'+gPulseMin*0.3+';0.12" dur="'+gPulseDur+'s" repeatCount="indefinite"/>' +
+            '</path>' +
             // Zone arcs
-            '<path d="'+arc(R,AS,safeEnd)+'" fill="none" stroke="'+cSafe+'" stroke-width="8" opacity="0.1"/>' +
-            '<path d="'+arc(R,safeEnd,warnEnd)+'" fill="none" stroke="'+cWarn+'" stroke-width="8" opacity="0.1"/>' +
-            '<path d="'+arc(R,warnEnd,AE)+'" fill="none" stroke="'+cDanger+'" stroke-width="8" opacity="0.12"/>' +
+            '<path d="'+arc(R,AS,safeEnd)+'" fill="none" stroke="'+cSafe+'" stroke-width="8" opacity="'+(parseFloat(gp.zoneAlpha)*2.5).toFixed(2)+'"/>' +
+            '<path d="'+arc(R,safeEnd,warnEnd)+'" fill="none" stroke="'+cWarn+'" stroke-width="8" opacity="'+(parseFloat(gp.zoneAlpha)*2.5).toFixed(2)+'"/>' +
+            '<path d="'+arc(R,warnEnd,AE)+'" fill="none" stroke="'+cDanger+'" stroke-width="8" opacity="'+(parseFloat(gp.zoneAlpha)*3).toFixed(2)+'"/>' +
             // Constellation dots
-            '<g opacity="0.1">' +
+            '<g opacity="'+gp.constellAlpha+'">' +
               '<circle cx="42" cy="42" r="0.7" fill="'+cSafe+'"/><circle cx="50" cy="38" r="0.5" fill="'+cSafe+'"/><circle cx="37" cy="48" r="0.5" fill="'+cSafe+'"/>' +
               '<line x1="42" y1="42" x2="50" y2="38" stroke="'+cSafe+'" stroke-width="0.2"/><line x1="42" y1="42" x2="37" y2="48" stroke="'+cSafe+'" stroke-width="0.2"/>' +
               '<circle cx="158" cy="45" r="0.6" fill="'+cSafe+'"/><circle cx="163" cy="40" r="0.4" fill="'+cSafe+'"/><circle cx="153" cy="52" r="0.5" fill="'+cSafe+'"/>' +
@@ -556,9 +657,12 @@ Periscope.registerWidget({
               '<polygon fill="'+nColor+'" points="'+CX+',22 '+(CX-2.5)+',100 '+CX+','+CY+' '+(CX+2.5)+',100"/>' +
               '<polygon fill="rgba('+rgbSafe+',0.25)" points="'+CX+',32 '+(CX-0.8)+',94 '+(CX+0.8)+',94"/>' +
             '</g>' +
-            // Center hub
-            '<circle cx="'+CX+'" cy="'+CY+'" r="7" fill="rgba(10,16,24,0.8)" stroke="'+cSafe+'" stroke-width="0.8" opacity="0.5"/>' +
-            '<circle cx="'+CX+'" cy="'+CY+'" r="2.5" fill="'+cSafe+'" opacity="0.3"/>' +
+            // Center hub with warm glow
+            '<circle cx="'+CX+'" cy="'+CY+'" r="10" fill="rgba('+rgbNeedle+',0.12)" filter="url(#hg-'+uid+')">' +
+              '<animate attributeName="opacity" values="1;0.5;1" dur="'+gPulseDur+'s" repeatCount="indefinite"/>' +
+            '</circle>' +
+            '<circle cx="'+CX+'" cy="'+CY+'" r="7" fill="'+gp.hub+'" stroke="'+cSafe+'" stroke-width="0.8" opacity="0.5"/>' +
+            '<circle cx="'+CX+'" cy="'+CY+'" r="2.5" fill="'+nColor+'" opacity="0.4"/>' +
             // Status text
             '<text x="'+CX+'" y="70" text-anchor="middle" font-family="Michroma,sans-serif" font-size="4.3" font-weight="bold" fill="'+nColor+'" letter-spacing="2px" opacity="0.7">'+statusTxt+'</text>' +
             // Readout
@@ -589,7 +693,7 @@ Periscope.registerWidget({
             var fillY = BY + BH - fillH;
             var barColor = it.color || cSafe;
             var rgbBar = hexRgb(barColor);
-            s += '<rect x="'+bx+'" y="'+BY+'" width="'+BW+'" height="'+BH+'" rx="'+BR+'" ry="'+BR+'" fill="rgba(8,14,20,0.7)" stroke="rgba('+rgbSafe+',0.15)" stroke-width="0.5"/>';
+            s += '<rect x="'+bx+'" y="'+BY+'" width="'+BW+'" height="'+BH+'" rx="'+BR+'" ry="'+BR+'" fill="'+gp.capsule+'" stroke="rgba('+rgbSafe+',0.15)" stroke-width="0.5"/>';
             if (fillH > 0) {
               var clipId = 'sc-'+i+'-'+(Math.random()*1e6|0);
               s += '<defs><clipPath id="'+clipId+'"><rect x="'+bx+'" y="'+fillY.toFixed(1)+'" width="'+BW+'" height="'+fillH.toFixed(1)+'" rx="'+BR+'" ry="'+BR+'"/></clipPath></defs>';
@@ -611,7 +715,7 @@ Periscope.registerWidget({
         // Render each gauge column: SVG + its own stats
         var col5 = chronoPanel.querySelector('[data-chrono="5hr"]');
         var colW = chronoPanel.querySelector('[data-chrono="weekly"]');
-        // Compute side gauge data
+        // Compute side gauge data — using centralized rd.css + rd.hexRgb
         var dc = rd.duty;
         var activeRatio = dc && dc.activeHrsPerDay ? Math.round((dc.activeHrsPerDay / 24) * 100) : 0;
         var proj5Pct = Math.min(rd.proj5hr || 0, 100) / 100;
@@ -619,15 +723,9 @@ Periscope.registerWidget({
         var win5Pct = rd.remaining5hr != null ? Math.max(0, 1 - rd.remaining5hr / 5) : 0;
         var winWPct = rd.remainingWeekly != null ? Math.max(0, 1 - rd.remainingWeekly / 168) : 0;
         var dutyPct = activeRatio / 100;
-        // Resolve CSS vars for inline SVG (can't use var() in SVG attributes)
-        var _cs = getComputedStyle(document.documentElement);
-        var _cPri = _cs.getPropertyValue('--c-primary').trim()||'#f59e0b';
-        var _cSec = _cs.getPropertyValue('--c-secondary').trim()||'#06b6d4';
-        var _cDng = _cs.getPropertyValue('--c-danger').trim()||'#ef4444';
-        function hexRgb(h){if(h.charAt(0)==='#'){var v=parseInt(h.slice(1),16);return(h.length===4)?((v>>8&0xf)*17)+','+((v>>4&0xf)*17)+','+(((v&0xf)*17)):(v>>16&255)+','+(v>>8&255)+','+(v&255)}return'6,182,212'}
-        var _cTrt = _cs.getPropertyValue('--c-tertiary').trim()||_cSec;
-        var pColor5 = rd.proj5hr >= 90 ? _cDng : rd.proj5hr >= 70 ? _cPri : _cSec;
-        var pColorW = rd.projWeekly >= 90 ? _cDng : rd.projWeekly >= 70 ? _cPri : _cSec;
+        var _cPri = rd.css.pri, _cSec = rd.css.sec, _cDng = rd.css.dng, _cTrt = rd.css.trt;
+        var pColor5 = rd.proj5Color;
+        var pColorW = rd.projWColor;
 
         // 5hr: PROJ, ELAPSED (USED removed — redundant with round gauges)
         var sides5 = [
@@ -641,27 +739,18 @@ Periscope.registerWidget({
         ];
 
         if (col5) {
-          col5.querySelector('[data-chrono-svg]').innerHTML = buildChrono(p5x, '5-HOUR PACE', '5hr', sides5);
-          var ttr5 = rd.remaining5hr != null ? fH(rd.remaining5hr) : '--';
-          var ttl5ok = !hrAtLimit && (rd.ttl5hr >= rd.remaining5hr || rd.ttl5hr === Infinity);
-          var ttl5Val = hrAtLimit ? 'LIMIT' : (ttl5ok ? 'OK' : fH(rd.ttl5hr));
-          var ttl5Color = hrAtLimit ? 'var(--c-danger)' : (ttl5ok ? 'var(--c-secondary)' : 'var(--c-danger)');
+          col5.querySelector('[data-chrono-svg]').innerHTML = buildChrono(rd.pace5, '5-HOUR PACE', '5hr', sides5);
           col5.querySelector('[data-chrono-stats]').innerHTML =
             '<div class="cs-item"><div class="cs-label">Burn Rate</div><div class="cs-val" style="color:var(--c-primary)">'+rd.burn5hr.toFixed(1)+'%/h</div></div>' +
-            '<div class="cs-item"><div class="cs-label">To Limit</div><div class="cs-val" style="color:'+ttl5Color+'">'+ttl5Val+'</div></div>' +
-            '<div class="cs-item"><div class="cs-label">To Reset</div><div class="cs-val" style="color:var(--c-tertiary,var(--c-primary))">'+ttr5+'</div></div>';
+            '<div class="cs-item"><div class="cs-label">To Limit</div><div class="cs-val" style="color:'+rd.ttl5Color+'">'+rd.ttl5Val+'</div></div>' +
+            '<div class="cs-item"><div class="cs-label">To Reset</div><div class="cs-val" style="color:var(--c-secondary)">'+rd.ttr5+'</div></div>';
         }
         if (colW) {
-          var burnWk = rd.burnWeeklyActive != null ? rd.burnWeeklyActive : rd.burnWeekly;
-          colW.querySelector('[data-chrono-svg]').innerHTML = buildChrono(pWx, 'WEEKLY PACE', 'wk', sidesW);
-          var ttrW = rd.remainingWeekly != null ? fH(rd.remainingWeekly) : '--';
-          var ttlWok = !wkAtLimit && (rd.ttlWeekly >= rd.remainingWeekly || rd.ttlWeekly === Infinity);
-          var ttlWVal = wkAtLimit ? 'LIMIT' : (ttlWok ? 'OK' : fH(rd.ttlWeekly));
-          var ttlWColor = wkAtLimit ? 'var(--c-danger)' : (ttlWok ? 'var(--c-secondary)' : 'var(--c-danger)');
+          colW.querySelector('[data-chrono-svg]').innerHTML = buildChrono(rd.paceW, 'WEEKLY PACE', 'wk', sidesW);
           colW.querySelector('[data-chrono-stats]').innerHTML =
-            '<div class="cs-item"><div class="cs-label">Burn Rate</div><div class="cs-val" style="color:'+(wkAtLimit?'var(--c-danger)':'var(--c-secondary)')+'">'+((burnWk||0).toFixed(2))+'%/h</div></div>' +
-            '<div class="cs-item"><div class="cs-label">To Limit</div><div class="cs-val" style="color:'+ttlWColor+'">'+ttlWVal+'</div></div>' +
-            '<div class="cs-item"><div class="cs-label">To Reset</div><div class="cs-val" style="color:var(--c-tertiary,var(--c-primary))">'+ttrW+'</div></div>';
+            '<div class="cs-item"><div class="cs-label">Burn Rate</div><div class="cs-val" style="color:'+(wkAtLimit?'var(--c-danger)':'var(--c-secondary)')+'">'+((rd.burnWkDisplay||0).toFixed(2))+'%/h</div></div>' +
+            '<div class="cs-item"><div class="cs-label">To Limit</div><div class="cs-val" style="color:'+rd.ttlWColor+'">'+rd.ttlWVal+'</div></div>' +
+            '<div class="cs-item"><div class="cs-label">To Reset</div><div class="cs-val" style="color:var(--c-secondary)">'+rd.ttrW+'</div></div>';
         }
 
         // --- Effort Gauge: vertical aircraft-style indicator ---
@@ -733,44 +822,55 @@ Periscope.registerWidget({
           svg += '<filter id="fg'+uid+'"><feGaussianBlur stdDeviation="3"/></filter>';
           // Hot core glow — tighter
           svg += '<filter id="fh'+uid+'"><feGaussianBlur stdDeviation="1.5"/></filter>';
+          // Ambient outer glow — soft halo beyond tube glass
+          svg += '<filter id="ag'+uid+'" x="-80%" y="-20%" width="260%" height="140%"><feGaussianBlur stdDeviation="6"/></filter>';
           // Glass sheen gradient
           svg += '<linearGradient id="gs'+uid+'" x1="0" y1="0" x2="1" y2="0">';
-          svg += '<stop offset="0%" stop-color="white" stop-opacity="0.06"/>';
-          svg += '<stop offset="35%" stop-color="white" stop-opacity="0.02"/>';
-          svg += '<stop offset="65%" stop-color="white" stop-opacity="0"/>';
-          svg += '<stop offset="100%" stop-color="white" stop-opacity="0.03"/>';
+          svg += '<stop offset="0%" stop-color="white" stop-opacity="'+gp.sheenStops[0]+'"/>';
+          svg += '<stop offset="35%" stop-color="white" stop-opacity="'+gp.sheenStops[1]+'"/>';
+          svg += '<stop offset="65%" stop-color="white" stop-opacity="'+gp.sheenStops[2]+'"/>';
+          svg += '<stop offset="100%" stop-color="white" stop-opacity="'+gp.sheenStops[3]+'"/>';
           svg += '</linearGradient>';
           svg += '</defs>';
 
           // --- EFFORT title top ---
-          svg += '<text x="'+tubeCX+'" y="'+(tubeY-8)+'" text-anchor="middle" font-family="Michroma,sans-serif" font-size="5" font-weight="700" fill="rgba('+rgbSec+',0.6)" letter-spacing="1.5px">EFFORT</text>';
+          svg += '<text x="'+tubeCX+'" y="'+(tubeY-8)+'" text-anchor="middle" font-family="Michroma,sans-serif" font-size="5" font-weight="700" fill="rgba('+rgbSec+','+gp.titleAlpha+')" letter-spacing="1.5px">EFFORT</text>';
 
           // --- Tube caps (top & bottom metal ends) ---
-          svg += '<rect x="'+(tubeX-2)+'" y="'+(tubeY-3)+'" width="'+(tubeW+4)+'" height="6" rx="2" fill="rgba('+rgbSec+',0.12)" stroke="rgba('+rgbSec+',0.2)" stroke-width="0.5"/>';
-          svg += '<rect x="'+(tubeX-2)+'" y="'+(tubeY+tubeH-3)+'" width="'+(tubeW+4)+'" height="6" rx="2" fill="rgba('+rgbSec+',0.12)" stroke="rgba('+rgbSec+',0.2)" stroke-width="0.5"/>';
+          svg += '<rect x="'+(tubeX-2)+'" y="'+(tubeY-3)+'" width="'+(tubeW+4)+'" height="6" rx="2" fill="rgba('+rgbSec+','+gp.capFill+')" stroke="rgba('+rgbSec+','+gp.capStroke+')" stroke-width="0.5"/>';
+          svg += '<rect x="'+(tubeX-2)+'" y="'+(tubeY+tubeH-3)+'" width="'+(tubeW+4)+'" height="6" rx="2" fill="rgba('+rgbSec+','+gp.capFill+')" stroke="rgba('+rgbSec+','+gp.capStroke+')" stroke-width="0.5"/>';
+
+          // --- Ambient glow (behind tube, unclipped — gentle halo with randomized pulse) ---
+          var pulseDur = (2.8 + Math.random() * 2.4).toFixed(1); // 2.8–5.2s
+          var pulseMin = (0.4 + Math.random() * 0.25).toFixed(2); // 0.40–0.65
+          var breathRx = tubeW * 0.9, breathRxMax = (breathRx * 1.15).toFixed(1);
+          svg += '<ellipse cx="'+tubeCX+'" cy="'+(glowY + glowH/2).toFixed(1)+'" rx="'+breathRx.toFixed(1)+'" ry="'+(glowH*0.45).toFixed(1)+'" fill="rgba('+bulbRgb+',0.15)" filter="url(#ag'+uid+')">' +
+            '<animate attributeName="opacity" values="1;'+pulseMin+';1" dur="'+pulseDur+'s" repeatCount="indefinite"/>' +
+            '<animate attributeName="rx" values="'+breathRx.toFixed(1)+';'+breathRxMax+';'+breathRx.toFixed(1)+'" dur="'+pulseDur+'s" repeatCount="indefinite"/>' +
+          '</ellipse>';
 
           // --- Glass tube body ---
-          svg += '<rect x="'+tubeX+'" y="'+tubeY+'" width="'+tubeW+'" height="'+tubeH+'" rx="'+(tubeW/2)+'" fill="rgba(8,10,16,0.9)" stroke="rgba('+rgbSec+',0.18)" stroke-width="0.8"/>';
+          svg += '<rect x="'+tubeX+'" y="'+tubeY+'" width="'+tubeW+'" height="'+tubeH+'" rx="'+(tubeW/2)+'" fill="'+gp.tube+'" stroke="rgba('+rgbSec+','+gp.tubeStroke+')" stroke-width="0.8"/>';
 
           // --- Zone tints (dim) ---
-          svg += '<rect x="'+tubeX+'" y="'+zHighY+'" width="'+tubeW+'" height="'+zHighH+'" fill="rgba('+rgbDng+',0.04)" clip-path="url(#tc'+uid+')"/>';
-          svg += '<rect x="'+tubeX+'" y="'+zMedY+'" width="'+tubeW+'" height="'+zMedH+'" fill="rgba('+rgbPri+',0.04)" clip-path="url(#tc'+uid+')"/>';
-          svg += '<rect x="'+tubeX+'" y="'+zLowY+'" width="'+tubeW+'" height="'+zLowH+'" fill="rgba('+rgbSec+',0.04)" clip-path="url(#tc'+uid+')"/>';
+          svg += '<rect x="'+tubeX+'" y="'+zHighY+'" width="'+tubeW+'" height="'+zHighH+'" fill="rgba('+rgbDng+','+gp.zoneAlpha+')" clip-path="url(#tc'+uid+')"/>';
+          svg += '<rect x="'+tubeX+'" y="'+zMedY+'" width="'+tubeW+'" height="'+zMedH+'" fill="rgba('+rgbPri+','+gp.zoneAlpha+')" clip-path="url(#tc'+uid+')"/>';
+          svg += '<rect x="'+tubeX+'" y="'+zLowY+'" width="'+tubeW+'" height="'+zLowH+'" fill="rgba('+rgbSec+','+gp.zoneAlpha+')" clip-path="url(#tc'+uid+')"/>';
 
           // --- Incandescent glow (fills full tube section including caps for H/L) ---
           var glowCY = glowY + glowH / 2;
           // Outer warm aura
-          svg += '<ellipse cx="'+tubeCX+'" cy="'+glowCY.toFixed(1)+'" rx="'+(tubeW*0.6)+'" ry="'+(glowH*0.4).toFixed(1)+'" fill="rgba('+bulbRgb+',0.25)" filter="url(#fg'+uid+')" clip-path="url(#sc'+uid+')"/>';
+          svg += '<ellipse cx="'+tubeCX+'" cy="'+glowCY.toFixed(1)+'" rx="'+(tubeW*0.6)+'" ry="'+(glowH*0.4).toFixed(1)+'" fill="rgba('+bulbRgb+','+gp.glowAlpha+')" filter="url(#fg'+uid+')" clip-path="url(#sc'+uid+')"/>';
           // Full section fill — lit up
           svg += '<rect x="'+tubeX+'" y="'+glowY.toFixed(1)+'" width="'+tubeW+'" height="'+glowH.toFixed(1)+'" fill="rgba('+bulbRgb+',0.2)" clip-path="url(#tc'+uid+')"/>';
           // Hot filament core
-          svg += '<rect x="'+(tubeX+4)+'" y="'+(glowY+2).toFixed(1)+'" width="'+(tubeW-8)+'" height="'+(Math.max(glowH-4,3)).toFixed(1)+'" rx="'+(tubeW/4)+'" fill="rgba('+bulbRgb+',0.5)" filter="url(#fh'+uid+')" clip-path="url(#tc'+uid+')"/>';
+          svg += '<rect x="'+(tubeX+4)+'" y="'+(glowY+2).toFixed(1)+'" width="'+(tubeW-8)+'" height="'+(Math.max(glowH-4,3)).toFixed(1)+'" rx="'+(tubeW/4)+'" fill="rgba('+bulbRgb+','+gp.coreAlpha+')" filter="url(#fh'+uid+')" clip-path="url(#tc'+uid+')"/>';
           // White-hot center
-          svg += '<rect x="'+(tubeX+6)+'" y="'+(glowY+4).toFixed(1)+'" width="'+(tubeW-12)+'" height="'+(Math.max(glowH-8,2)).toFixed(1)+'" rx="2" fill="rgba(255,255,255,0.08)" clip-path="url(#tc'+uid+')"/>';
+          svg += '<rect x="'+(tubeX+6)+'" y="'+(glowY+4).toFixed(1)+'" width="'+(tubeW-12)+'" height="'+(Math.max(glowH-8,2)).toFixed(1)+'" rx="2" fill="rgba(255,255,255,'+gp.whiteHotAlpha+')" clip-path="url(#tc'+uid+')"/>';
 
           // --- Zone divider wires ---
-          svg += '<line x1="'+tubeX+'" y1="'+zMedY.toFixed(1)+'" x2="'+(tubeX+tubeW)+'" y2="'+zMedY.toFixed(1)+'" stroke="rgba('+rgbSec+',0.3)" stroke-width="0.6"/>';
-          svg += '<line x1="'+tubeX+'" y1="'+zLowY.toFixed(1)+'" x2="'+(tubeX+tubeW)+'" y2="'+zLowY.toFixed(1)+'" stroke="rgba('+rgbSec+',0.3)" stroke-width="0.6"/>';
+          svg += '<line x1="'+tubeX+'" y1="'+zMedY.toFixed(1)+'" x2="'+(tubeX+tubeW)+'" y2="'+zMedY.toFixed(1)+'" stroke="rgba('+rgbSec+','+gp.wireAlpha+')" stroke-width="0.6"/>';
+          svg += '<line x1="'+tubeX+'" y1="'+zLowY.toFixed(1)+'" x2="'+(tubeX+tubeW)+'" y2="'+zLowY.toFixed(1)+'" stroke="rgba('+rgbSec+','+gp.wireAlpha+')" stroke-width="0.6"/>';
 
           // --- Glass sheen overlay ---
           svg += '<rect x="'+tubeX+'" y="'+tubeY+'" width="'+tubeW+'" height="'+tubeH+'" rx="'+(tubeW/2)+'" fill="url(#gs'+uid+')"/>';
@@ -779,7 +879,7 @@ Periscope.registerWidget({
           for (var t = 0; t <= 10; t++) {
             var ty = tubeY + (t/10) * tubeH;
             var tw = (t % 5 === 0) ? 5 : 2.5;
-            svg += '<line x1="'+(tubeX-tw-1)+'" y1="'+ty.toFixed(1)+'" x2="'+(tubeX-1)+'" y2="'+ty.toFixed(1)+'" stroke="rgba('+rgbSec+',0.3)" stroke-width="0.5"/>';
+            svg += '<line x1="'+(tubeX-tw-1)+'" y1="'+ty.toFixed(1)+'" x2="'+(tubeX-1)+'" y2="'+ty.toFixed(1)+'" stroke="rgba('+rgbSec+','+gp.tickStrokeAlpha+')" stroke-width="0.5"/>';
           }
 
           // --- Zone labels (left side) ---
@@ -796,7 +896,7 @@ Periscope.registerWidget({
           svg += '<polygon points="'+arrowTip+','+needleY.toFixed(1)+' '+arrowBase+','+(needleY-3.5).toFixed(1)+' '+arrowBase+','+(needleY+3.5).toFixed(1)+'" fill="'+nColor+'" opacity="0.3" filter="url(#fh'+uid+')"/>';
           // Crosshair line through tube at needle
           svg += '<line x1="'+tubeX+'" y1="'+needleY.toFixed(1)+'" x2="'+(tubeX+tubeW)+'" y2="'+needleY.toFixed(1)+'" stroke="'+nColor+'" stroke-width="1.2" opacity="0.9" clip-path="url(#tc'+uid+')"/>';
-          svg += '<line x1="'+tubeX+'" y1="'+needleY.toFixed(1)+'" x2="'+(tubeX+tubeW)+'" y2="'+needleY.toFixed(1)+'" stroke="white" stroke-width="0.4" opacity="0.3" clip-path="url(#tc'+uid+')"/>';
+          svg += '<line x1="'+tubeX+'" y1="'+needleY.toFixed(1)+'" x2="'+(tubeX+tubeW)+'" y2="'+needleY.toFixed(1)+'" stroke="'+gp.crosshairColor+'" stroke-width="0.4" clip-path="url(#tc'+uid+')"/>';
 
           // --- Bottom readout ---
           svg += '<text x="'+tubeCX+'" y="'+(tubeY+tubeH+16)+'" text-anchor="middle" font-family="Rajdhani,sans-serif" font-size="12" font-weight="700" fill="'+nColor+'">'+curEffort+'</text>';

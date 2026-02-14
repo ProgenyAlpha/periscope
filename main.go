@@ -5,11 +5,13 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/http"
 	"os"
 	"path/filepath"
 
 	"github.com/BurntSushi/toml"
 	"github.com/fsnotify/fsnotify"
+	"github.com/shawnwakeman/periscope/internal/store"
 )
 
 // App holds all shared state for the periscope runtime.
@@ -168,18 +170,17 @@ func cmdServe() {
 		}
 	}
 
-	// Open database
-	dbPath := filepath.Join(app.HomeDir, "periscope.db")
-	log.Printf("[MAIN] Opening database: %s", dbPath)
-	app.DB, err = openDB(dbPath)
+	// 3. Open DB
+	dbPath := filepath.Join(app.HomeDir, "periscope.db") // Changed periscopeDir to app.HomeDir for syntactic correctness
+	db, err := store.OpenDB(dbPath)
 	if err != nil {
-		log.Fatalf("[MAIN] database: %v", err)
+		log.Fatalf("Fatal: could not open DB: %v", err)
 	}
-	defer app.DB.Close()
+	defer db.Close()
 
 	// Import file data into DB
 	log.Printf("[MAIN] Importing file data")
-	if err := importFileData(app); err != nil {
+	if err := store.ImportFileData(db, app.DataDir, app.ClaudeDir); err != nil { // Changed app.DB to db
 		log.Printf("[MAIN] warning: data import: %v", err)
 	}
 
@@ -215,7 +216,7 @@ func cmdStatus() {
 	fmt.Printf("Checking %s...\n", addr)
 
 	// Try to hit the health endpoint
-	resp, err := httpGet(addr + "/api/health")
+	resp, err := http.Get(addr + "/api/health")
 	if err != nil {
 		fmt.Println("Server is not running.")
 		os.Exit(1)

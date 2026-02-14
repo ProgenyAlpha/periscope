@@ -123,14 +123,40 @@ Periscope.registerWidget({
     var gridColor = 'rgba(' + (cs.getPropertyValue('--rgb-primary').trim() || '245,158,11') + ',0.04)';
     var monoFont = cs.getPropertyValue('--font-mono').trim() || 'Fira Code';
 
-    var palette = [
-      cs.getPropertyValue('--c-primary').trim()   || '#E06236',
-      cs.getPropertyValue('--c-tertiary').trim()   || '#2F4C79',
-      cs.getPropertyValue('--c-accent').trim()     || '#8B5CF6',
-      cs.getPropertyValue('--c-secondary').trim()  || '#D7AB61',
-      cs.getPropertyValue('--c-danger').trim()     || '#C82337',
-      cs.getPropertyValue('--c-warm').trim()        || '#fb923c'
+    // Extended palette: theme colors first (deduped), then fixed supplementary hues
+    var _tp = [
+      cs.getPropertyValue('--c-primary').trim(),
+      cs.getPropertyValue('--c-tertiary').trim(),
+      cs.getPropertyValue('--c-secondary').trim(),
+      cs.getPropertyValue('--c-danger').trim(),
+      cs.getPropertyValue('--c-accent').trim(),
+      cs.getPropertyValue('--c-warm').trim()
+    ].filter(Boolean);
+    // Deduplicate (theme often maps multiple vars to same hex)
+    var _seen = {};
+    var palette = [];
+    for (var pi = 0; pi < _tp.length; pi++) {
+      var _k = _tp[pi].toLowerCase();
+      if (!_seen[_k]) { _seen[_k] = 1; palette.push(_tp[pi]); }
+    }
+    // Supplementary colors — chosen for max hue separation, readable on dark & light
+    var _extra = [
+      '#8B5CF6', // violet
+      '#06b6d4', // cyan
+      '#10b981', // emerald
+      '#f43f5e', // rose
+      '#a78bfa', // lavender
+      '#14b8a6', // teal
+      '#f97316', // orange
+      '#6366f1', // indigo
+      '#84cc16', // lime
+      '#ec4899', // pink
+      '#0ea5e9', // sky
+      '#eab308'  // yellow
     ];
+    for (var ei = 0; ei < _extra.length; ei++) {
+      if (!_seen[_extra[ei].toLowerCase()]) { palette.push(_extra[ei]); }
+    }
 
     var rangeMs = RANGE_MS[st.range];
 
@@ -194,7 +220,25 @@ Periscope.registerWidget({
     // --- Build datasets ---
     var datasets = [];
 
-    // Helper: group by session, filter stale, and downsample for clean lines
+    // Helper: check if a session is subagent-only (haiku) from sidecar data
+    // sid in history is truncated to 8 chars, so prefix-match against full sidecar IDs
+    function isSubagentSession(shortSid) {
+      var sidecars = data.sidecars || [];
+      for (var i = 0; i < sidecars.length; i++) {
+        var sc = sidecars[i];
+        if (sc.id && sc.id.substring(0, shortSid.length) === shortSid && sc.data && sc.data.models) {
+          var modelKeys = Object.keys(sc.data.models);
+          if (modelKeys.length === 0) return false;
+          for (var k = 0; k < modelKeys.length; k++) {
+            if (modelKeys[k].indexOf('haiku') === -1) return false;
+          }
+          return true; // all models are haiku variants
+        }
+      }
+      return false;
+    }
+
+    // Helper: group by session, filter stale + subagents, and downsample for clean lines
     function activeSessionData(pts, maxPerSession) {
       var bySession = {};
       for (var i = 0; i < pts.length; i++) {
@@ -210,6 +254,8 @@ Periscope.registerWidget({
         if (arr.length < 2) continue;
         // Filter stale sessions (value never changed in this window)
         if (arr[0].y === arr[arr.length - 1].y) continue;
+        // Filter subagent sessions (haiku-only) from display
+        if (isSubagentSession(sids[j])) continue;
         // Downsample: keep key points (value changes + evenly spaced)
         active[sids[j]] = downsample(arr, maxPerSession || 80);
       }
@@ -241,7 +287,8 @@ Periscope.registerWidget({
       for (var j = 0; j < sids.length; j++) {
         var sid = sids[j];
         datasets.push({
-          label: sessionLabel(sid, data),
+          label: sid,
+          _sessionName: sessionLabel(sid, data),
           data: sessions[sid],
           borderColor: palette[si % palette.length],
           backgroundColor: 'transparent',
@@ -261,7 +308,8 @@ Periscope.registerWidget({
         var sid2 = sids2[l];
         var c = palette[si2 % palette.length];
         datasets.push({
-          label: sessionLabel(sid2, data),
+          label: sid2,
+          _sessionName: sessionLabel(sid2, data),
           data: sessions24[sid2],
           borderColor: c,
           backgroundColor: c + '10',
@@ -343,7 +391,8 @@ Periscope.registerWidget({
     var tooltipLabel = function(tip) {
       var v = st.metric === 'cost' ? '$' + tip.raw.y.toFixed(2) : fmtK(tip.raw.y);
       var extra = tip.raw.count ? ' (' + tip.raw.count + ' pts)' : '';
-      return tip.dataset.label + ': ' + v + extra;
+      var name = tip.dataset._sessionName || tip.dataset.label;
+      return name + ': ' + v + extra;
     };
 
     // --- Chart config ---

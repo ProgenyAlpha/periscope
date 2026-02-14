@@ -11,6 +11,8 @@
 <script src="/api/plugins/vendor/gridstack-all.js"></script>
 <style>
 *,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
+body{opacity:0;transition:opacity 0.3s ease}
+body.ready{opacity:1}
 :root{
   --bg-void:#060a12;--bg-panel:#0b1120;--bg-inset:#101828;
   --bg-hover:#151f30;--c-primary:#f59e0b;--c-secondary:#22c55e;
@@ -1247,6 +1249,7 @@ const Periscope = {
 
     // Now that all widgets are placed, enable layout persistence
     this._layoutReady = true;
+    document.body.classList.add('ready');
 
     // Initialize widget drawer
     this._updateWidgetDrawer();

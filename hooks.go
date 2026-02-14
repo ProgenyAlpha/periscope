@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,8 +11,11 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 // --- Hook Payload (from Claude's hook system via stdin) ---
@@ -44,13 +48,14 @@ type TokenUsage struct {
 // --- Sidecar State ---
 
 type SidecarState struct {
-	LastOffset  int64          `json:"lastOffset"`
-	Project     string         `json:"project,omitempty"`
-	EffortLevel string         `json:"effortLevel,omitempty"`
-	FirstPrompt string         `json:"firstPrompt,omitempty"`
-	Cumulative  *Cumulative    `json:"cumulative"`
-	LastTurn    *LastTurn      `json:"lastTurn"`
-	Models      map[string]int `json:"models,omitempty"`
+	LastOffset     int64          `json:"lastOffset"`
+	Project        string         `json:"project,omitempty"`
+	EffortLevel    string         `json:"effortLevel,omitempty"`
+	FirstPrompt    string         `json:"firstPrompt,omitempty"`
+	GeneratedTitle string         `json:"generatedTitle,omitempty"`
+	Cumulative     *Cumulative    `json:"cumulative"`
+	LastTurn       *LastTurn      `json:"lastTurn"`
+	Models         map[string]int `json:"models,omitempty"`
 }
 
 type Cumulative struct {
@@ -177,6 +182,218 @@ func extractFirstPrompt(transcriptPath string) string {
 		return text
 	}
 	return ""
+}
+
+// --- Prompt Cleanup Regexes (compiled once) ---
+
+var (
+	reSlashCmd  = regexp.MustCompile(`^/\w+\s*`)
+	reAgentMention = regexp.MustCompile(`^@[\w-]+\s*`)
+	reHTMLTags  = regexp.MustCompile(`<[^>]*>`)
+	reWhitespace = regexp.MustCompile(`[\s]+`)
+)
+
+// cleanFirstPrompt strips slash commands, @mentions, HTML, collapses whitespace,
+// capitalizes first char, and truncates at ~50 chars on word boundary.
+func cleanFirstPrompt(raw string) string {
+	s := raw
+
+	// Strip leading slash commands (e.g. "/plan ", "/workflow feature")
+	s = reSlashCmd.ReplaceAllString(s, "")
+	// Strip leading @agent mentions
+	s = reAgentMention.ReplaceAllString(s, "")
+	// Strip HTML tags
+	s = reHTMLTags.ReplaceAllString(s, "")
+	// Collapse whitespace
+	s = reWhitespace.ReplaceAllString(s, " ")
+	s = strings.TrimSpace(s)
+
+	if s == "" {
+		return raw // fallback to original if cleanup ate everything
+	}
+
+	// Capitalize first character
+	if r, size := utf8.DecodeRuneInString(s); size > 0 {
+		s = string(unicode.ToUpper(r)) + s[size:]
+	}
+
+	// Truncate at word boundary ~50 chars
+	if len(s) > 50 {
+		cut := 50
+		// Walk back to last space
+		for cut > 30 && s[cut] != ' ' {
+			cut--
+		}
+		if s[cut] == ' ' {
+			s = s[:cut] + "..."
+		} else {
+			s = s[:50] + "..."
+		}
+	}
+
+	return s
+}
+
+// extractUserPrompts collects up to n human messages from a transcript.
+func extractUserPrompts(transcriptPath string, n int) []string {
+	f, err := os.Open(transcriptPath)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+
+	var prompts []string
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 256*1024), 1024*1024)
+	for scanner.Scan() && len(prompts) < n {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		var entry struct {
+			Type    string `json:"type"`
+			Message struct {
+				Content json.RawMessage `json:"content"`
+			} `json:"message"`
+		}
+		if json.Unmarshal([]byte(line), &entry) != nil {
+			continue
+		}
+		if entry.Type != "human" {
+			continue
+		}
+		content := entry.Message.Content
+		if len(content) == 0 {
+			continue
+		}
+		var text string
+		if content[0] == '"' {
+			json.Unmarshal(content, &text)
+		} else if content[0] == '[' {
+			var blocks []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			}
+			if json.Unmarshal(content, &blocks) == nil {
+				for _, b := range blocks {
+					if b.Type == "text" && b.Text != "" {
+						text = b.Text
+						break
+					}
+				}
+			}
+		}
+		text = strings.TrimSpace(text)
+		if text == "" || strings.HasPrefix(text, "[Request interrupted") {
+			continue
+		}
+		// Truncate individual prompts to 200 chars for the API call
+		if len(text) > 200 {
+			text = text[:197] + "..."
+		}
+		prompts = append(prompts, text)
+	}
+	return prompts
+}
+
+// generateSessionTitle calls Haiku to generate a short dashboard title,
+// then writes it back to the sidecar JSON. Designed to run in a goroutine.
+func generateSessionTitle(statePath string, prompts []string) {
+	log.Printf("[TITLE] Generating session title for %s (%d prompts)", filepath.Base(statePath), len(prompts))
+
+	// Read OAuth token
+	home, _ := os.UserHomeDir()
+	credPath := filepath.Join(home, ".claude", ".credentials.json")
+	credData, err := os.ReadFile(credPath)
+	if err != nil {
+		log.Printf("[TITLE] Cannot read credentials: %v", err)
+		return
+	}
+	var creds struct {
+		ClaudeAiOauth struct {
+			AccessToken string `json:"accessToken"`
+		} `json:"claudeAiOauth"`
+	}
+	if json.Unmarshal(credData, &creds) != nil || creds.ClaudeAiOauth.AccessToken == "" {
+		log.Printf("[TITLE] No OAuth token available")
+		return
+	}
+
+	// Build numbered prompt list
+	var userContent strings.Builder
+	for i, p := range prompts {
+		fmt.Fprintf(&userContent, "%d. %s\n", i+1, p)
+	}
+
+	// Build Messages API request
+	reqBody := map[string]any{
+		"model":      "claude-haiku-4-5-20251001",
+		"max_tokens": 30,
+		"system":     "Generate a 3-7 word dashboard title for this coding session. Be specific about the technical work. Return ONLY the title, no quotes.",
+		"messages": []map[string]any{
+			{"role": "user", "content": userContent.String()},
+		},
+	}
+	bodyBytes, _ := json.Marshal(reqBody)
+
+	req, _ := http.NewRequest("POST", "https://api.anthropic.com/v1/messages", bytes.NewReader(bodyBytes))
+	req.Header.Set("Authorization", "Bearer "+creds.ClaudeAiOauth.AccessToken)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("anthropic-version", "2023-06-01")
+	req.Header.Set("anthropic-beta", "oauth-2025-04-20")
+	req.Header.Set("User-Agent", "periscope-title-gen")
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Printf("[TITLE] API request failed: %v", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != 200 {
+		log.Printf("[TITLE] API returned %d: %s", resp.StatusCode, string(respBody))
+		return
+	}
+
+	// Parse response
+	var apiResp struct {
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
+	}
+	if json.Unmarshal(respBody, &apiResp) != nil || len(apiResp.Content) == 0 {
+		log.Printf("[TITLE] Failed to parse API response")
+		return
+	}
+
+	title := strings.TrimSpace(apiResp.Content[0].Text)
+	if title == "" {
+		log.Printf("[TITLE] Empty title returned")
+		return
+	}
+
+	// Read-modify-write the sidecar
+	stateData, err := os.ReadFile(statePath)
+	if err != nil {
+		log.Printf("[TITLE] Cannot read sidecar: %v", err)
+		return
+	}
+	var state SidecarState
+	if json.Unmarshal(stateData, &state) != nil {
+		log.Printf("[TITLE] Cannot parse sidecar")
+		return
+	}
+	state.GeneratedTitle = title
+	data, _ := json.Marshal(state)
+	if err := os.WriteFile(statePath, data, 0644); err != nil {
+		log.Printf("[TITLE] Failed to write sidecar: %v", err)
+		return
+	}
+
+	log.Printf("[TITLE] Generated title: %q for %s", title, filepath.Base(statePath))
 }
 
 func hookStop() {
@@ -347,7 +564,9 @@ func hookStop() {
 
 	// Extract first user prompt if not already captured
 	if state.FirstPrompt == "" {
-		state.FirstPrompt = extractFirstPrompt(payload.TranscriptPath)
+		if raw := extractFirstPrompt(payload.TranscriptPath); raw != "" {
+			state.FirstPrompt = cleanFirstPrompt(raw)
+		}
 	}
 
 	// Read current effort level from settings.json
@@ -369,8 +588,16 @@ func hookStop() {
 		log.Printf("[HOOK] Stop hook: sidecar saved to %s (cost: $%.4f, calls: %d)", statePath, state.Cumulative.Cost, state.Cumulative.AgentCalls+state.Cumulative.ToolCalls+state.Cumulative.ChatCalls)
 	}
 
-	// Append to usage-history.jsonl
+	// Generate AI title if enough context and not already done
 	totalCalls := state.Cumulative.AgentCalls + state.Cumulative.ToolCalls + state.Cumulative.ChatCalls
+	if state.GeneratedTitle == "" && totalCalls >= 5 {
+		prompts := extractUserPrompts(payload.TranscriptPath, 3)
+		if len(prompts) >= 2 {
+			go generateSessionTitle(statePath, prompts)
+		}
+	}
+
+	// Append to usage-history.jsonl
 	shortSid := payload.SessionID
 	if len(shortSid) > 8 {
 		shortSid = shortSid[:8]
@@ -481,7 +708,7 @@ func hookDisplay() {
 	if totalIn > 0 {
 		cacheHit = float64(c.CacheRead) / float64(totalIn) * 100
 	}
-	cacheStr := fmt.Sprintf("%.1f%%", cacheHit)
+	cacheStr := fmt.Sprintf("%.3f%%", cacheHit)
 	if cacheHit < 95 {
 		cacheStr = fmt.Sprintf("%.0f%%", cacheHit)
 	}

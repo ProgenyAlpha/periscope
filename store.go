@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -297,11 +298,7 @@ func importSessionMeta(app *App) {
 			if _, hasSummary := existing["summary"]; !hasSummary {
 				if _, hasFirstPrompt := existing["firstPrompt"]; !hasFirstPrompt {
 					if he.Display != "" {
-						display := he.Display
-						if len(display) > 80 {
-							display = display[:77] + "..."
-						}
-						existing["firstPrompt"] = display
+						existing["firstPrompt"] = cleanFirstPrompt(he.Display)
 					}
 				}
 			}
@@ -321,6 +318,18 @@ func importSessionMeta(app *App) {
 		log.Printf("[IMPORT] session meta: history.jsonl parsed, %d entries", histEntries)
 	}
 
+	// --- Source 3: session JSONL files (AI-generated summaries) ---
+	jsonlSummaries := scanSessionJSONLSummaries(app.ClaudeDir)
+	for sid, summary := range jsonlSummaries {
+		existing, ok := meta[sid]
+		if !ok {
+			existing = map[string]any{"sessionId": sid}
+			meta[sid] = existing
+		}
+		existing["summary"] = summary
+	}
+	titlesApplied := len(jsonlSummaries)
+
 	if len(meta) > 0 {
 		// Convert to map[string]any for JSON
 		out := make(map[string]any, len(meta))
@@ -330,10 +339,81 @@ func importSessionMeta(app *App) {
 		data, _ := json.Marshal(out)
 		app.DB.Exec(`INSERT OR REPLACE INTO kv(key, value, updated_at) VALUES(?, ?, CURRENT_TIMESTAMP)`,
 			"cache:session-meta", string(data))
-		log.Printf("[IMPORT] session meta: %d legacy + %d from history = %d total", legacyCount, len(meta)-legacyCount, len(meta))
+		log.Printf("[IMPORT] session meta: %d legacy + %d from history + %d JSONL summaries = %d total",
+			legacyCount, len(meta)-legacyCount-titlesApplied, titlesApplied, len(meta))
 	} else {
 		log.Printf("[IMPORT] session meta: no entries found")
 	}
+}
+
+// scanSessionJSONLSummaries walks ~/.claude/projects/*//*.jsonl and extracts
+// AI-generated summary entries ({"type":"summary","summary":"..."}).
+// Returns map[sessionID]summary. Last summary per file wins (handles branches).
+func scanSessionJSONLSummaries(claudeDir string) map[string]string {
+	result := make(map[string]string)
+	projectsDir := filepath.Join(claudeDir, "projects")
+	projEntries, err := os.ReadDir(projectsDir)
+	if err != nil {
+		log.Printf("[IMPORT] session JSONL scan: projects dir read failed: %v", err)
+		return result
+	}
+	filesScanned := 0
+	for _, proj := range projEntries {
+		if !proj.IsDir() {
+			continue
+		}
+		projPath := filepath.Join(projectsDir, proj.Name())
+		files, err := os.ReadDir(projPath)
+		if err != nil {
+			continue
+		}
+		for _, f := range files {
+			if f.IsDir() || !strings.HasSuffix(f.Name(), ".jsonl") {
+				continue
+			}
+			sid := strings.TrimSuffix(f.Name(), ".jsonl")
+			if len(sid) != 36 { // UUID length check
+				continue
+			}
+			filesScanned++
+			fpath := filepath.Join(projPath, f.Name())
+			if summary := scanFileForSummary(fpath); summary != "" {
+				result[sid] = summary
+			}
+		}
+	}
+	log.Printf("[IMPORT] session JSONL scan: %d files scanned, %d summaries found", filesScanned, len(result))
+	return result
+}
+
+// scanFileForSummary reads a JSONL file line-by-line looking for
+// {"type":"summary","summary":"..."} entries. Returns the last summary found.
+func scanFileForSummary(path string) string {
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+
+	needle := []byte(`"type":"summary"`)
+	var lastSummary string
+
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 4*1024), 256*1024)
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if !bytes.Contains(line, needle) {
+			continue
+		}
+		var entry struct {
+			Type    string `json:"type"`
+			Summary string `json:"summary"`
+		}
+		if json.Unmarshal(line, &entry) == nil && entry.Type == "summary" && entry.Summary != "" {
+			lastSummary = entry.Summary
+		}
+	}
+	return lastSummary
 }
 
 // --- Build Dashboard Data ---
