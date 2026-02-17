@@ -215,9 +215,8 @@ Periscope.registerWidget({
       if (typeof Periscope.refreshUsage === 'function') Periscope.refreshUsage();
     });
 
-    // Gauge mode toggle — only for starfield themes
-    var isStarfield = (document.documentElement.getAttribute('data-theme') || '').indexOf('starfield') !== -1;
-    if (isStarfield) {
+    // Gauge mode toggle — available on all themes
+    {
       var titleEl = el.querySelector('.widget-title');
       var toggleBtn = document.createElement('button');
       toggleBtn.className = 'hud-mode-toggle';

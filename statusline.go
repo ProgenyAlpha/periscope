@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/BurntSushi/toml"
+	"github.com/ProgenyAlpha/periscope/internal/forecast"
 	"golang.org/x/term"
 )
 
@@ -314,9 +315,9 @@ func loadRatesForStatusline(dataDir string) slRates {
 		return result
 	}
 
-	result.Pct5hr = intOrDefault(cache["pct5hr"], -1)
-	result.PctWeekly = intOrDefault(cache["pctWeekly"], -1)
-	result.PctSonnet = intOrDefault(cache["pctSonnet"], -1)
+	result.Pct5hr = forecast.IntOrDefault(cache["pct5hr"], -1)
+	result.PctWeekly = forecast.IntOrDefault(cache["pctWeekly"], -1)
+	result.PctSonnet = forecast.IntOrDefault(cache["pctSonnet"], -1)
 	if v, ok := cache["reset5hr"].(string); ok {
 		result.Reset5hr = v
 	}

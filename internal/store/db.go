@@ -6,21 +6,59 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"io"
-	"log"
+	"log/slog"
 	"math"
-	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
 
+	"github.com/ProgenyAlpha/periscope/internal/analytics"
+
 	_ "modernc.org/sqlite"
 )
 
-// SchemaVersion defines the current DB schema version.
-const SchemaVersion = 1
+// currentSchemaVersion is the latest migration version.
+const currentSchemaVersion = 2
+
+// migrations is an ordered list of schema changes. Each entry runs once,
+// keyed by its index+1 as the version number.
+var migrations = []string{
+	// v1: initial schema
+	`CREATE TABLE IF NOT EXISTS kv (
+		key   TEXT PRIMARY KEY,
+		value TEXT NOT NULL,
+		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+	);
+	CREATE TABLE IF NOT EXISTS sessions (
+		id         TEXT PRIMARY KEY,
+		data       TEXT NOT NULL,
+		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+	);
+	CREATE TABLE IF NOT EXISTS history (
+		id   INTEGER PRIMARY KEY AUTOINCREMENT,
+		ts   TEXT NOT NULL,
+		data TEXT NOT NULL
+	);
+	CREATE TABLE IF NOT EXISTS limit_history (
+		id   INTEGER PRIMARY KEY AUTOINCREMENT,
+		ts   TEXT NOT NULL,
+		data TEXT NOT NULL
+	);
+	CREATE TABLE IF NOT EXISTS push_subscriptions (
+		id         INTEGER PRIMARY KEY AUTOINCREMENT,
+		endpoint   TEXT NOT NULL UNIQUE,
+		auth_key   TEXT NOT NULL,
+		p256dh_key TEXT NOT NULL,
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+	);
+	CREATE INDEX IF NOT EXISTS idx_history_ts ON history(ts);
+	CREATE INDEX IF NOT EXISTS idx_limit_history_ts ON limit_history(ts);`,
+	// v2: index on sessions.updated_at (hot path: phantom calc, dashboard)
+	`CREATE INDEX IF NOT EXISTS idx_sessions_updated_at ON sessions(updated_at);`,
+	// v3, v4, ... append here
+}
 
 // OpenDB opens and migrates the SQLite database.
 func OpenDB(path string) (*sql.DB, error) {
@@ -36,43 +74,37 @@ func OpenDB(path string) (*sql.DB, error) {
 }
 
 func migrate(db *sql.DB) error {
-	_, err := db.Exec(`
-		CREATE TABLE IF NOT EXISTS kv (
-			key   TEXT PRIMARY KEY,
-			value TEXT NOT NULL,
-			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-		);
-		CREATE TABLE IF NOT EXISTS sessions (
-			id         TEXT PRIMARY KEY,
-			data       TEXT NOT NULL,
-			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-		);
-		CREATE TABLE IF NOT EXISTS history (
-			id   INTEGER PRIMARY KEY AUTOINCREMENT,
-			ts   TEXT NOT NULL,
-			data TEXT NOT NULL
-		);
-		CREATE TABLE IF NOT EXISTS limit_history (
-			id   INTEGER PRIMARY KEY AUTOINCREMENT,
-			ts   TEXT NOT NULL,
-			data TEXT NOT NULL
-		);
-		CREATE TABLE IF NOT EXISTS push_subscriptions (
-			id         INTEGER PRIMARY KEY AUTOINCREMENT,
-			endpoint   TEXT NOT NULL UNIQUE,
-			auth_key   TEXT NOT NULL,
-			p256dh_key TEXT NOT NULL,
-			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-		);
-		CREATE INDEX IF NOT EXISTS idx_history_ts ON history(ts);
-		CREATE INDEX IF NOT EXISTS idx_limit_history_ts ON limit_history(ts);
-	`)
-	if err != nil {
-		log.Printf("[DB] schema migration failed: %v", err)
-	} else {
-		log.Printf("[DB] schema initialized")
+	// Ensure schema_version table exists (bootstraps itself)
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS schema_version (
+		version INTEGER NOT NULL DEFAULT 0
+	)`); err != nil {
+		return fmt.Errorf("create schema_version table: %w", err)
 	}
-	return err
+
+	// Read current version
+	var version int
+	err := db.QueryRow("SELECT version FROM schema_version LIMIT 1").Scan(&version)
+	if err != nil {
+		// No row yet — insert initial
+		if _, err := db.Exec("INSERT INTO schema_version(version) VALUES(0)"); err != nil {
+			return fmt.Errorf("init schema_version: %w", err)
+		}
+		version = 0
+	}
+
+	// Run pending migrations
+	for i := version; i < len(migrations); i++ {
+		slog.Info("running migration", "version", i+1)
+		if _, err := db.Exec(migrations[i]); err != nil {
+			return fmt.Errorf("migration v%d failed: %w", i+1, err)
+		}
+		if _, err := db.Exec("UPDATE schema_version SET version = ?", i+1); err != nil {
+			return fmt.Errorf("update schema_version to v%d: %w", i+1, err)
+		}
+	}
+
+	slog.Info("schema ready", "version", len(migrations))
+	return nil
 }
 
 // Sidecar exclusions
@@ -98,7 +130,7 @@ func KVSet(db *sql.DB, key, value string) {
 	_, err := db.Exec(`INSERT OR REPLACE INTO kv(key, value, updated_at) VALUES(?, ?, CURRENT_TIMESTAMP)`,
 		key, value)
 	if err != nil {
-		log.Printf("[DB] KVSet(%q) failed: %v", key, err)
+		slog.Error("KVSet failed", "key", key, "err", err)
 	}
 }
 
@@ -138,6 +170,120 @@ func PushGetAll(db *sql.DB) ([]PushSubscription, error) {
 	return subs, nil
 }
 
+// --- Team Data ---
+
+type TeamData struct {
+	Name        string       `json:"name"`
+	Description string       `json:"description"`
+	CreatedAt   int64        `json:"createdAt"`
+	LeadSession string       `json:"leadSessionId"`
+	Members     []TeamMember `json:"members"`
+	TotalCost   float64      `json:"totalCost"`
+	TotalTurns  int          `json:"totalTurns"`
+	ActiveCount int          `json:"activeCount"`
+}
+
+type TeamMember struct {
+	AgentID   string  `json:"agentId"`
+	Name      string  `json:"name"`
+	AgentType string  `json:"agentType"`
+	Model     string  `json:"model"`
+	JoinedAt  int64   `json:"joinedAt"`
+	SessionID string  `json:"sessionId,omitempty"`
+	Cost      float64 `json:"cost,omitempty"`
+	Turns     int     `json:"turns,omitempty"`
+	Status    string  `json:"status,omitempty"`
+}
+
+// importTeamConfigs reads ~/.claude/teams/*/config.json, correlates members
+// to sidecars, and stores the result as cache:teams.
+func importTeamConfigs(db *sql.DB, claudeDir string) {
+	teamsDir := filepath.Join(claudeDir, "teams")
+	entries, err := os.ReadDir(teamsDir)
+	if err != nil {
+		// No teams directory — normal for solo users
+		return
+	}
+
+	var teams []TeamData
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		cfgPath := filepath.Join(teamsDir, e.Name(), "config.json")
+		data, err := os.ReadFile(cfgPath)
+		if err != nil {
+			continue
+		}
+		data = StripBOM(data)
+		var td TeamData
+		if json.Unmarshal(data, &td) != nil {
+			slog.Warn("team config parse failed", "dir", e.Name())
+			continue
+		}
+
+		// Enrich members from sidecars
+		for i := range td.Members {
+			m := &td.Members[i]
+			// Lead gets direct session match
+			if m.AgentID == td.Members[0].AgentID && td.LeadSession != "" {
+				m.SessionID = td.LeadSession
+			}
+			// Try to pull cost/turns from the matched sidecar
+			if m.SessionID != "" {
+				enrichMemberFromSidecar(db, m)
+			}
+			if m.Status == "" {
+				if m.SessionID != "" && m.Cost > 0 {
+					m.Status = "active"
+				} else if m.SessionID != "" {
+					m.Status = "idle"
+				} else {
+					m.Status = "unknown"
+				}
+			}
+			td.TotalCost += m.Cost
+			td.TotalTurns += m.Turns
+			if m.Status == "active" {
+				td.ActiveCount++
+			}
+		}
+		teams = append(teams, td)
+	}
+
+	if teams == nil {
+		teams = []TeamData{}
+	}
+	out, _ := json.Marshal(teams)
+	KVSet(db, "cache:teams", string(out))
+	slog.Info("teams imported", "count", len(teams))
+}
+
+// enrichMemberFromSidecar reads a sidecar from the sessions table and
+// populates cost/turns on the member.
+func enrichMemberFromSidecar(db *sql.DB, m *TeamMember) {
+	var raw string
+	if db.QueryRow("SELECT data FROM sessions WHERE id = ?", m.SessionID).Scan(&raw) != nil {
+		return
+	}
+	var sc struct {
+		Cumulative *struct {
+			Cost       float64 `json:"cost"`
+			AgentCalls int     `json:"agent_calls"`
+			ToolCalls  int     `json:"tool_calls"`
+			ChatCalls  int     `json:"chat_calls"`
+		} `json:"cumulative"`
+	}
+	if json.Unmarshal([]byte(raw), &sc) != nil || sc.Cumulative == nil {
+		return
+	}
+	m.Cost = math.Round(sc.Cumulative.Cost*100) / 100
+	m.Turns = sc.Cumulative.AgentCalls + sc.Cumulative.ToolCalls + sc.Cumulative.ChatCalls
+	if m.Turns > 0 {
+		m.Status = "active"
+	}
+}
+
 // --- Import Logic ---
 
 func ImportFileData(db *sql.DB, dataDir, claudeDir string) error {
@@ -158,6 +304,7 @@ func ImportFileData(db *sql.DB, dataDir, claudeDir string) error {
 	importKVFile(db, filepath.Join(claudeDir, "statusline", "statusline-config.json"), "config:statusline")
 
 	importSessionMeta(db, claudeDir)
+	importTeamConfigs(db, claudeDir)
 	return nil
 }
 
@@ -165,7 +312,7 @@ func ImportFileData(db *sql.DB, dataDir, claudeDir string) error {
 func ImportSidecars(db *sql.DB, dataDir string) error {
 	entries, err := os.ReadDir(dataDir)
 	if err != nil {
-		log.Printf("[IMPORT] sidecars read dir failed: %v", err)
+		slog.Error("sidecars read dir failed", "err", err)
 		return err
 	}
 	imported := 0
@@ -181,19 +328,19 @@ func ImportSidecars(db *sql.DB, dataDir string) error {
 		}
 		data, err := os.ReadFile(fpath)
 		if err != nil {
-			log.Printf("[IMPORT] sidecar %s read failed: %v", e.Name(), err)
+			slog.Warn("sidecar read failed", "file", e.Name(), "err", err)
 			continue
 		}
 		data = StripBOM(data)
 		modTime := info.ModTime().UTC().Format("2006-01-02T15:04:05Z")
 		if _, err := db.Exec(`INSERT OR REPLACE INTO sessions(id, data, updated_at) VALUES(?, ?, ?)`,
 			sid, string(data), modTime); err != nil {
-			log.Printf("[IMPORT] sidecar %s insert failed: %v", sid, err)
+			slog.Warn("sidecar insert failed", "sid", sid, "err", err)
 		} else {
 			imported++
 		}
 	}
-	log.Printf("[IMPORT] sidecars: %d imported", imported)
+	slog.Info("sidecars imported", "count", imported)
 	return nil
 }
 
@@ -495,171 +642,7 @@ func SnapshotSidecarsToHistory(db *sql.DB, lastSessionSnapshot map[string]float6
 		}
 	}
 	if snapshotted > 0 {
-		log.Printf("[SNAPSHOT] sidecars: %d snapshotted", snapshotted)
-	}
-}
-
-// --- Phantom Usage ---
-
-type PhantomData struct {
-	ExtraUsageTotal   float64 `json:"extraUsageTotal"`
-	LocalSessionTotal float64 `json:"localSessionTotal"`
-	PhantomCost       float64 `json:"phantomCost"`
-	Source            string  `json:"source"`
-	Confidence        string  `json:"confidence"`
-}
-
-func CalcPhantomUsage(db *sql.DB) *PhantomData {
-	// Sum sidecar costs for current 7-day window only
-	sevenDaysCutoff := time.Now().Add(-7 * 24 * time.Hour).Format("2006-01-02T15:04:05Z")
-	var localTotal float64
-	rows, err := db.Query("SELECT data FROM sessions WHERE updated_at >= ?", sevenDaysCutoff)
-	if err != nil {
-		log.Printf("[PHANTOM] sessions query error: %v", err)
-		return &PhantomData{Source: "none", Confidence: "none"}
-	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var raw string
-		if rows.Scan(&raw) != nil {
-			continue
-		}
-		var sc struct {
-			Cumulative *struct {
-				Cost float64 `json:"cost"`
-			} `json:"cumulative"`
-		}
-		if json.Unmarshal([]byte(raw), &sc) != nil || sc.Cumulative == nil {
-			continue
-		}
-		localTotal += sc.Cumulative.Cost
-	}
-
-	if localTotal < 0.001 {
-		return &PhantomData{Source: "none", Confidence: "none"}
-	}
-
-	// Detect phantom usage by finding periods where pctWeekly increased
-	// but NO local CLI activity occurred (no sidecar updates).
-	// During those intervals, 100% of the rate limit growth is phantom.
-	//
-	// Then: phantom_cost = local_total * (phantom_pct / cli_pct)
-	// because both share the same quota denominator, costs scale proportionally.
-	//
-	// Scoped to the current 7-day window (matching pctWeekly's reset cycle).
-
-	sevenDaysAgo := time.Now().Add(-7 * 24 * time.Hour).Format(time.RFC3339)
-
-	// Load limit_history snapshots from last 7 days only
-	type snapshot struct {
-		ts        time.Time
-		pctWeekly float64
-	}
-	var snapshots []snapshot
-	lhRows, err := db.Query("SELECT ts, data FROM limit_history WHERE ts >= ? ORDER BY ts ASC", sevenDaysAgo)
-	if err != nil {
-		return &PhantomData{LocalSessionTotal: math.Round(localTotal*100) / 100, Source: "none", Confidence: "none"}
-	}
-	defer lhRows.Close()
-
-	for lhRows.Next() {
-		var tsStr, dataStr string
-		if lhRows.Scan(&tsStr, &dataStr) != nil {
-			continue
-		}
-		t, err := time.Parse(time.RFC3339Nano, tsStr)
-		if err != nil {
-			t, err = time.Parse(time.RFC3339, tsStr)
-			if err != nil {
-				continue
-			}
-		}
-		var d map[string]any
-		if json.Unmarshal([]byte(dataStr), &d) != nil {
-			continue
-		}
-		pctW, ok := d["pctWeekly"].(float64)
-		if !ok || pctW < 0 {
-			continue
-		}
-		snapshots = append(snapshots, snapshot{ts: t, pctWeekly: pctW})
-	}
-
-	if len(snapshots) < 2 {
-		return &PhantomData{LocalSessionTotal: math.Round(localTotal*100) / 100, Source: "none", Confidence: "none"}
-	}
-
-	// Build a set of "active minutes" from history snapshots (last 7 days).
-	// History entries are created per-session per-poll-cycle only when sidecars
-	// have changed — they represent actual CLI activity, not just server uptime.
-	activeMinutes := map[string]bool{}
-	hRows, err := db.Query("SELECT ts FROM history WHERE ts >= ?", sevenDaysAgo)
-	if err == nil {
-		defer hRows.Close()
-		for hRows.Next() {
-			var ts string
-			if hRows.Scan(&ts) != nil {
-				continue
-			}
-			if t, err := time.Parse("2006-01-02T15:04:05Z", ts); err == nil {
-				activeMinutes[t.Truncate(time.Minute).Format(time.RFC3339)] = true
-			} else if t, err := time.Parse(time.RFC3339, ts); err == nil {
-				activeMinutes[t.UTC().Truncate(time.Minute).Format(time.RFC3339)] = true
-			}
-		}
-	}
-
-	// Walk consecutive snapshots. If pctWeekly grew and no CLI activity
-	// occurred between them, attribute that growth to phantom.
-	var phantomPct, cliPct float64
-	for i := 1; i < len(snapshots); i++ {
-		prev := snapshots[i-1]
-		cur := snapshots[i]
-		delta := cur.pctWeekly - prev.pctWeekly
-		if delta <= 0 {
-			continue // reset or no change
-		}
-
-		// Check if any CLI activity occurred between these two snapshots
-		hasActivity := false
-		t := prev.ts.UTC().Truncate(time.Minute)
-		end := cur.ts.UTC().Truncate(time.Minute)
-		for !t.After(end) {
-			if activeMinutes[t.Format(time.RFC3339)] {
-				hasActivity = true
-				break
-			}
-			t = t.Add(time.Minute)
-		}
-
-		if hasActivity {
-			cliPct += delta
-		} else {
-			phantomPct += delta
-		}
-	}
-
-	totalPct := phantomPct + cliPct
-	if totalPct < 0.5 || phantomPct < 0.5 {
-		// Not enough phantom signal
-		return &PhantomData{
-			LocalSessionTotal: math.Round(localTotal*100) / 100,
-			PhantomCost:       0,
-			Source:            "rate_delta",
-			Confidence:        "estimated",
-		}
-	}
-
-	// phantom_cost = local_total * (phantom_pct / cli_pct)
-	phantomCost := localTotal * (phantomPct / cliPct)
-
-	return &PhantomData{
-		ExtraUsageTotal:   math.Round(phantomPct*10) / 10,   // % of weekly limit from phantom
-		LocalSessionTotal: math.Round(localTotal*100) / 100,
-		PhantomCost:       math.Round(phantomCost*100) / 100,
-		Source:            "rate_delta",
-		Confidence:        "estimated",
+		slog.Info("sidecars snapshotted", "count", snapshotted)
 	}
 }
 
@@ -676,8 +659,9 @@ type DashboardData struct {
 	Profile          json.RawMessage   `json:"profile"`
 	SessionMeta      json.RawMessage   `json:"sessionMeta"`
 	LimitHistory     []json.RawMessage `json:"limitHistory"`
-	Layout           json.RawMessage   `json:"layout"`
-	PhantomUsage     *PhantomData      `json:"phantomUsage,omitempty"`
+	Layout           json.RawMessage        `json:"layout"`
+	PhantomUsage     *analytics.PhantomData `json:"phantomUsage,omitempty"`
+	Teams            json.RawMessage        `json:"teams,omitempty"`
 }
 
 type SidecarEntry struct {
@@ -694,6 +678,7 @@ func BuildDashboardData(db *sql.DB) (*DashboardData, error) {
 
 	// Sidecars
 	if rows, err := db.Query("SELECT id, data, updated_at FROM sessions ORDER BY updated_at DESC"); err == nil {
+		defer rows.Close()
 		for rows.Next() {
 			var id, data, updatedAt string
 			if rows.Scan(&id, &data, &updatedAt) == nil {
@@ -704,7 +689,6 @@ func BuildDashboardData(db *sql.DB) (*DashboardData, error) {
 				})
 			}
 		}
-		rows.Close()
 	}
 	if d.Sidecars == nil {
 		d.Sidecars = []SidecarEntry{}
@@ -712,13 +696,13 @@ func BuildDashboardData(db *sql.DB) (*DashboardData, error) {
 
 	// History
 	if rows, err := db.Query("SELECT data FROM history ORDER BY ts ASC"); err == nil {
+		defer rows.Close()
 		for rows.Next() {
 			var data string
 			if rows.Scan(&data) == nil {
 				d.History = append(d.History, json.RawMessage(data))
 			}
 		}
-		rows.Close()
 	}
 	if d.History == nil {
 		d.History = []json.RawMessage{}
@@ -726,13 +710,13 @@ func BuildDashboardData(db *sql.DB) (*DashboardData, error) {
 
 	// Limit History
 	if rows, err := db.Query("SELECT ts, data FROM limit_history ORDER BY ts ASC"); err == nil {
+		defer rows.Close()
 		for rows.Next() {
 			var ts, data string
 			if rows.Scan(&ts, &data) == nil {
 				d.LimitHistory = append(d.LimitHistory, json.RawMessage(data))
 			}
 		}
-		rows.Close()
 	}
 	if d.LimitHistory == nil {
 		d.LimitHistory = []json.RawMessage{}
@@ -745,7 +729,8 @@ func BuildDashboardData(db *sql.DB) (*DashboardData, error) {
 	d.Profile = KVGet(db, "cache:profile")
 	d.SessionMeta = KVGet(db, "cache:session-meta")
 	d.Layout = KVGet(db, "config:layout")
-	d.PhantomUsage = CalcPhantomUsage(db)
+	d.PhantomUsage = analytics.CalcPhantomUsage(db)
+	d.Teams = KVGet(db, "cache:teams")
 
 	return d, nil
 }
@@ -770,7 +755,7 @@ func AppendLimitSnapshot(db *sql.DB, dataDir string, liveUsage json.RawMessage) 
 		if t, err := time.Parse(time.RFC3339, lastTS); err == nil {
 			elapsed := time.Since(t)
 			if elapsed < 1*time.Minute {
-				log.Printf("[SNAPSHOT] limit: skipped (time dedup, %ds since last)", int(elapsed.Seconds()))
+				slog.Debug("limit snapshot skipped", "reason", "time_dedup", "age_s", int(elapsed.Seconds()))
 				return
 			}
 			if lastData != "" && elapsed < 5*time.Minute {
@@ -780,7 +765,7 @@ func AppendLimitSnapshot(db *sql.DB, dataDir string, liveUsage json.RawMessage) 
 						fmt.Sprintf("%v", current["pctWeekly"]) == fmt.Sprintf("%v", last["pctWeekly"]) &&
 						fmt.Sprintf("%v", current["pctSonnet"]) == fmt.Sprintf("%v", last["pctSonnet"])
 					if same {
-						log.Printf("[SNAPSHOT] limit: skipped (value dedup)")
+						slog.Debug("limit snapshot skipped", "reason", "value_dedup")
 						return
 					}
 				}
@@ -792,10 +777,10 @@ func AppendLimitSnapshot(db *sql.DB, dataDir string, liveUsage json.RawMessage) 
 	current["ts"] = now
 	dataWithTS, _ := json.Marshal(current)
 	if _, err := db.Exec("INSERT INTO limit_history(ts, data) VALUES(?, ?)", now, string(dataWithTS)); err != nil {
-		log.Printf("[SNAPSHOT] limit: insert failed: %v", err)
+		slog.Error("limit snapshot insert failed", "err", err)
 		return
 	}
-	log.Printf("[SNAPSHOT] limit: written (5hr=%v%%, weekly=%v%%)", current["pct5hr"], current["pctWeekly"])
+	slog.Info("limit snapshot written", "pct5hr", current["pct5hr"], "pctWeekly", current["pctWeekly"])
 
 	f, err := os.OpenFile(filepath.Join(dataDir, "limit-history.jsonl"),
 		os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
@@ -847,7 +832,9 @@ func CompactLimitHistory(db *sql.DB, dataDir string) {
 				if _, ok := m["ts"]; !ok {
 					m["ts"] = e.ts.Format(time.RFC3339)
 					if patched, err := json.Marshal(m); err == nil {
-						db.Exec("UPDATE limit_history SET data = ? WHERE id = ?", string(patched), e.id)
+						if _, err := db.Exec("UPDATE limit_history SET data = ? WHERE id = ?", string(patched), e.id); err != nil {
+							slog.Warn("compact: ts patch failed", "id", e.id, "err", err)
+						}
 					}
 				}
 			}
@@ -880,28 +867,30 @@ func CompactLimitHistory(db *sql.DB, dataDir string) {
 	}
 
 	if len(deleteIDs) == 0 {
-		log.Printf("[COMPACT] limit_history: no entries pruned (%d total)", len(all))
+		slog.Debug("compact: no entries pruned", "total", len(all))
 		return
 	}
 
 	tx, err := db.Begin()
 	if err != nil {
-		log.Printf("[COMPACT] limit_history: transaction failed: %v", err)
+		slog.Error("compact: transaction failed", "err", err)
 		return
 	}
 	for _, id := range deleteIDs {
-		tx.Exec("DELETE FROM limit_history WHERE id = ?", id)
+		if _, err := tx.Exec("DELETE FROM limit_history WHERE id = ?", id); err != nil {
+			slog.Warn("compact: delete failed", "id", id, "err", err)
+		}
 	}
 	if err := tx.Commit(); err != nil {
-		log.Printf("[COMPACT] limit_history: commit failed: %v", err)
+		slog.Error("compact: commit failed", "err", err)
 		return
 	}
-	log.Printf("[COMPACT] limit_history: pruned %d of %d entries", len(deleteIDs), len(all))
+	slog.Info("compact: pruned entries", "pruned", len(deleteIDs), "total", len(all))
 
 	// Rewrite JSONL from surviving entries
 	surviving, err := db.Query("SELECT ts, data FROM limit_history ORDER BY ts ASC")
 	if err != nil {
-		log.Printf("[COMPACT] limit_history: surviving query failed: %v", err)
+		slog.Error("compact: surviving query failed", "err", err)
 		return
 	}
 	defer surviving.Close()
@@ -909,7 +898,7 @@ func CompactLimitHistory(db *sql.DB, dataDir string) {
 	jsonlPath := filepath.Join(dataDir, "limit-history.jsonl")
 	f, err := os.Create(jsonlPath)
 	if err != nil {
-		log.Printf("[COMPACT] limit_history: JSONL rewrite failed: %v", err)
+		slog.Error("compact: JSONL rewrite failed", "err", err)
 		return
 	}
 	defer f.Close()
@@ -932,85 +921,3 @@ func CompactLimitHistory(db *sql.DB, dataDir string) {
 	}
 }
 
-// FetchPricing fetches Claude model pricing from LiteLLM's GitHub source, with 24h cache.
-func FetchPricing(dataDir string) (json.RawMessage, error) {
-	cachePath := filepath.Join(dataDir, "litellm-pricing-cache.json")
-	if data, err := os.ReadFile(cachePath); err == nil {
-		var cache struct {
-			FetchedAt int64           `json:"fetched_at"`
-			Data      json.RawMessage `json:"data"`
-		}
-		if json.Unmarshal(data, &cache) == nil {
-			if time.Since(time.Unix(cache.FetchedAt, 0)) < 24*time.Hour {
-				return cache.Data, nil
-			}
-		}
-	}
-
-	resp, err := http.Get("https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json")
-	if err != nil {
-		return readCacheFallback(cachePath)
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return readCacheFallback(cachePath)
-	}
-
-	var allModels map[string]map[string]any
-	if err := json.Unmarshal(body, &allModels); err != nil {
-		return readCacheFallback(cachePath)
-	}
-
-	result := make(map[string]any)
-	for name, info := range allModels {
-		if !strings.HasPrefix(name, "claude-") {
-			continue
-		}
-		if strings.Contains(name, "bedrock") || strings.Contains(name, "vertex") {
-			continue
-		}
-		model := map[string]any{}
-		if v, ok := info["input_cost_per_token"].(float64); ok {
-			model["input"] = v * 1e6
-		}
-		if v, ok := info["output_cost_per_token"].(float64); ok {
-			model["output"] = v * 1e6
-		}
-		if v, ok := info["cache_read_input_token_cost"].(float64); ok {
-			model["cache_read"] = v * 1e6
-		}
-		if v, ok := info["cache_creation_input_token_cost"].(float64); ok {
-			model["cache_write"] = v * 1e6
-		}
-		if v, ok := info["max_input_tokens"].(float64); ok {
-			model["max_input"] = int(v)
-		}
-		if v, ok := info["max_output_tokens"].(float64); ok {
-			model["max_output"] = int(v)
-		}
-		result[name] = model
-	}
-
-	data, _ := json.Marshal(result)
-	cache := map[string]any{"fetched_at": time.Now().Unix(), "data": result}
-	cacheData, _ := json.Marshal(cache)
-	os.WriteFile(cachePath, cacheData, 0644)
-
-	return data, nil
-}
-
-func readCacheFallback(path string) (json.RawMessage, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return json.RawMessage("{}"), nil
-	}
-	var cache struct {
-		Data json.RawMessage `json:"data"`
-	}
-	if json.Unmarshal(data, &cache) == nil && cache.Data != nil {
-		return cache.Data, nil
-	}
-	return json.RawMessage("{}"), nil
-}

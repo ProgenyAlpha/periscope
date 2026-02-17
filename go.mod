@@ -1,4 +1,4 @@
-module github.com/shawnwakeman/periscope
+module github.com/ProgenyAlpha/periscope
 
 go 1.25.7
 

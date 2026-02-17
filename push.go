@@ -4,12 +4,12 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"time"
 
 	webpush "github.com/SherClockHolmes/webpush-go"
-	"github.com/shawnwakeman/periscope/internal/store"
+	"github.com/ProgenyAlpha/periscope/internal/store"
 )
 
 // ensureVAPIDKeys generates a VAPID key pair if missing, stores in KV, and returns them.
@@ -32,7 +32,7 @@ func ensureVAPIDKeys(db *sql.DB) (pub, priv string, err error) {
 	privJSON, _ := json.Marshal(priv)
 	store.KVSet(db, "config:vapid-public", string(pubJSON))
 	store.KVSet(db, "config:vapid-private", string(privJSON))
-	log.Printf("[PUSH] Generated new VAPID key pair")
+	slog.Info("generated new VAPID key pair")
 	return pub, priv, nil
 }
 
@@ -48,7 +48,7 @@ func sendPushNotification(db *sql.DB, title, body string) error {
 		return err
 	}
 	if len(subs) == 0 {
-		log.Printf("[PUSH] No subscribers, skipping notification")
+		slog.Debug("no push subscribers, skipping")
 		return nil
 	}
 
@@ -70,20 +70,20 @@ func sendPushNotification(db *sql.DB, title, body string) error {
 			TTL:             60,
 		})
 		if err != nil {
-			log.Printf("[PUSH] Send failed for %s: %v", sub.Endpoint[:40], err)
+			slog.Warn("push send failed", "endpoint", sub.Endpoint[:40], "err", err)
 			failed++
 			continue
 		}
 		resp.Body.Close()
 		if resp.StatusCode == http.StatusGone {
 			store.PushUnsubscribe(db, sub.Endpoint)
-			log.Printf("[PUSH] Pruned stale endpoint: %s", sub.Endpoint[:40])
+			slog.Info("pruned stale push endpoint", "endpoint", sub.Endpoint[:40])
 			failed++
 		} else {
 			sent++
 		}
 	}
-	log.Printf("[PUSH] Notification sent: %d ok, %d failed", sent, failed)
+	slog.Info("push notification sent", "ok", sent, "failed", failed)
 	return nil
 }
 

@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -14,8 +14,9 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/shawnwakeman/periscope/internal/anthropic"
-	"github.com/shawnwakeman/periscope/internal/store"
+	"github.com/ProgenyAlpha/periscope/internal/anthropic"
+	"github.com/ProgenyAlpha/periscope/internal/pricing"
+	"github.com/ProgenyAlpha/periscope/internal/store"
 )
 
 // --- WebSocket Hub ---
@@ -29,9 +30,14 @@ type Hub struct {
 }
 
 type Client struct {
-	hub  *Hub
-	conn *websocket.Conn
-	send chan []byte
+	hub      *Hub
+	conn     *websocket.Conn
+	send     chan []byte
+	closeOne sync.Once
+}
+
+func (c *Client) closeSend() {
+	c.closeOne.Do(func() { close(c.send) })
 }
 
 func newHub() *Hub {
@@ -51,16 +57,16 @@ func (h *Hub) run() {
 			h.clients[client] = true
 			count := len(h.clients)
 			h.mu.Unlock()
-			log.Printf("[WS] Client connected (total: %d)", count)
+			slog.Info("ws client connected", "total", count)
 		case client := <-h.unregister:
 			h.mu.Lock()
 			if _, ok := h.clients[client]; ok {
 				delete(h.clients, client)
-				close(client.send)
+				client.closeSend()
 			}
 			count := len(h.clients)
 			h.mu.Unlock()
-			log.Printf("[WS] Client disconnected (total: %d)", count)
+			slog.Info("ws client disconnected", "total", count)
 		case message := <-h.broadcast:
 			h.mu.Lock()
 			clientCount := len(h.clients)
@@ -68,12 +74,12 @@ func (h *Hub) run() {
 				select {
 				case client.send <- message:
 				default:
-					close(client.send)
+					client.closeSend()
 					delete(h.clients, client)
 				}
 			}
 			h.mu.Unlock()
-			log.Printf("[HUB] Broadcast to %d clients (%d bytes)", clientCount, len(message))
+			slog.Debug("hub broadcast sent", "clients", clientCount, "bytes", len(message))
 		}
 	}
 }
@@ -82,13 +88,13 @@ func (h *Hub) broadcastJSON(msgType string, payload any) {
 	msg := map[string]any{"type": msgType, "payload": payload}
 	data, err := json.Marshal(msg)
 	if err != nil {
-		log.Printf("[HUB] Failed to marshal broadcast (type=%s): %v", msgType, err)
+		slog.Error("hub marshal failed", "type", msgType, "err", err)
 		return
 	}
 	h.mu.RLock()
 	clientCount := len(h.clients)
 	h.mu.RUnlock()
-	log.Printf("[HUB] Broadcasting %s to %d client(s)", msgType, clientCount)
+	slog.Debug("hub broadcasting", "type", msgType, "clients", clientCount)
 	h.broadcast <- data
 }
 
@@ -105,7 +111,7 @@ var upgrader = websocket.Upgrader{
 		origin := r.Header.Get("Origin")
 		allowed := origin == "" || strings.HasPrefix(origin, "http://localhost") || strings.HasPrefix(origin, "http://127.0.0.1")
 		if !allowed {
-			log.Printf("[CORS] WebSocket upgrade rejected from origin: %s", origin)
+			slog.Warn("ws upgrade rejected", "origin", origin)
 		}
 		return allowed
 	},
@@ -114,7 +120,7 @@ var upgrader = websocket.Upgrader{
 func serveWS(app *App, w http.ResponseWriter, r *http.Request) {
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		log.Printf("[WS] Upgrade failed: %v", err)
+		slog.Error("ws upgrade failed", "err", err)
 		return
 	}
 
@@ -137,13 +143,13 @@ func serveWS(app *App, w http.ResponseWriter, r *http.Request) {
 					return
 				}
 				if err := conn.WriteMessage(websocket.TextMessage, message); err != nil {
-					log.Printf("[WS] Write error: %v", err)
+					slog.Debug("ws write error", "err", err)
 					return
 				}
 			case <-ticker.C:
 				conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 				if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
-					log.Printf("[WS] Ping failed: %v", err)
+					slog.Debug("ws ping failed", "err", err)
 					return
 				}
 			}
@@ -166,9 +172,9 @@ func serveWS(app *App, w http.ResponseWriter, r *http.Request) {
 			_, _, err := conn.ReadMessage()
 			if err != nil {
 				if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
-					log.Printf("[WS] Client closed connection normally")
+					slog.Debug("ws client closed normally")
 				} else {
-					log.Printf("[WS] Read error: %v", err)
+					slog.Debug("ws read error", "err", err)
 				}
 				break
 			}
@@ -183,7 +189,7 @@ func buildMux(app *App) *http.ServeMux {
 
 	// Dashboard HTML
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		log.Printf("[HTTP] %s %s", r.Method, r.URL.Path)
+		slog.Debug("http request", "method", r.Method, "path", r.URL.Path)
 		if r.URL.Path != "/" {
 			http.NotFound(w, r)
 			return
@@ -193,47 +199,47 @@ func buildMux(app *App) *http.ServeMux {
 
 	// API routes
 	mux.HandleFunc("/api/health", func(w http.ResponseWriter, r *http.Request) {
-		log.Printf("[HTTP] %s %s", r.Method, r.URL.Path)
+		slog.Debug("http request", "method", r.Method, "path", r.URL.Path)
 		writeJSON(w, map[string]any{"ok": true, "clients": app.Hub.clientCount()})
 	})
 
 	mux.HandleFunc("/api/data", func(w http.ResponseWriter, r *http.Request) {
-		log.Printf("[HTTP] %s %s", r.Method, r.URL.Path)
+		slog.Debug("http request", "method", r.Method, "path", r.URL.Path)
 		handleData(app, w, r)
 	})
 
 	mux.HandleFunc("/api/config", func(w http.ResponseWriter, r *http.Request) {
-		log.Printf("[HTTP] %s %s", r.Method, r.URL.Path)
+		slog.Debug("http request", "method", r.Method, "path", r.URL.Path)
 		handleConfig(app, w, r)
 	})
 
 	mux.HandleFunc("/api/usage", func(w http.ResponseWriter, r *http.Request) {
-		log.Printf("[HTTP] %s %s", r.Method, r.URL.Path)
+		slog.Debug("http request", "method", r.Method, "path", r.URL.Path)
 		handleUsage(app, w, r)
 	})
 
 	mux.HandleFunc("/api/pricing", func(w http.ResponseWriter, r *http.Request) {
-		log.Printf("[HTTP] %s %s", r.Method, r.URL.Path)
+		slog.Debug("http request", "method", r.Method, "path", r.URL.Path)
 		handlePricing(app, w, r)
 	})
 
 	mux.HandleFunc("/api/layout", func(w http.ResponseWriter, r *http.Request) {
-		log.Printf("[HTTP] %s %s", r.Method, r.URL.Path)
+		slog.Debug("http request", "method", r.Method, "path", r.URL.Path)
 		handleLayout(app, w, r)
 	})
 
 	mux.HandleFunc("/api/statusline", func(w http.ResponseWriter, r *http.Request) {
-		log.Printf("[HTTP] %s %s", r.Method, r.URL.Path)
+		slog.Debug("http request", "method", r.Method, "path", r.URL.Path)
 		handleStatuslineToggle(app, w, r)
 	})
 
 	mux.HandleFunc("/api/shutdown", func(w http.ResponseWriter, r *http.Request) {
-		log.Printf("[HTTP] %s %s", r.Method, r.URL.Path)
+		slog.Debug("http request", "method", r.Method, "path", r.URL.Path)
 		if r.Method != "POST" {
 			http.Error(w, "method not allowed", 405)
 			return
 		}
-		log.Printf("[HTTP] Shutdown requested via API")
+		slog.Info("shutdown requested via API")
 		writeJSON(w, map[string]bool{"ok": true})
 		// Trigger graceful shutdown via context cancellation
 		if app.cancel != nil {
@@ -270,7 +276,7 @@ func buildMux(app *App) *http.ServeMux {
 			writeError(w, 500, err.Error())
 			return
 		}
-		log.Printf("[PUSH] New subscription: %s", req.Endpoint[:min(40, len(req.Endpoint))])
+		slog.Info("push subscription added", "endpoint", req.Endpoint[:min(40, len(req.Endpoint))])
 		writeJSON(w, map[string]bool{"ok": true})
 	})
 	mux.HandleFunc("/api/push/test", func(w http.ResponseWriter, r *http.Request) {
@@ -306,13 +312,13 @@ func buildMux(app *App) *http.ServeMux {
 
 	// Plugin routes
 	mux.HandleFunc("/api/plugins/", func(w http.ResponseWriter, r *http.Request) {
-		log.Printf("[HTTP] %s %s", r.Method, r.URL.Path)
+		slog.Debug("http request", "method", r.Method, "path", r.URL.Path)
 		handlePlugins(app, w, r)
 	})
 
 	// WebSocket
 	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
-		log.Printf("[HTTP] %s %s (WebSocket upgrade)", r.Method, r.URL.Path)
+		slog.Debug("http request", "method", r.Method, "path", r.URL.Path, "upgrade", "websocket")
 		serveWS(app, w, r)
 	})
 
@@ -326,7 +332,7 @@ func startServer(ctx context.Context, app *App) {
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
-				log.Printf("[FATAL] polling goroutine panicked: %v", r)
+				slog.Error("polling goroutine panicked", "err", r)
 			}
 		}()
 
@@ -336,15 +342,15 @@ func startServer(ctx context.Context, app *App) {
 		)
 		backoff := baseInterval
 
-		log.Printf("[POLL] Starting background polling (base interval: %s)", baseInterval)
+		slog.Info("polling started", "interval", baseInterval)
 
 		// Initial fetch on startup
 		if result, err := fetchAndCacheUsage(app); err == nil {
 			app.Hub.broadcastJSON("usage", json.RawMessage(result))
 			store.AppendLimitSnapshot(app.DB, app.DataDir, result)
-			log.Printf("[POLL] Initial usage fetch successful")
+			slog.Info("initial usage fetch ok")
 		} else {
-			log.Printf("[WARN] initial fetchUsage failed: %v", err)
+			slog.Warn("initial usage fetch failed", "err", err)
 		}
 
 		var consecutiveErrors int
@@ -352,7 +358,7 @@ func startServer(ctx context.Context, app *App) {
 		for {
 			select {
 			case <-ctx.Done():
-				log.Printf("[POLL] Shutting down polling goroutine")
+				slog.Info("polling shutdown")
 				return
 			case <-time.After(backoff):
 			}
@@ -369,12 +375,12 @@ func startServer(ctx context.Context, app *App) {
 					checkAndNotify(app, usage)
 				}
 				if consecutiveErrors > 0 {
-					log.Printf("[POLL] fetchUsage recovered after %d consecutive errors", consecutiveErrors)
+					slog.Info("usage fetch recovered", "previousErrors", consecutiveErrors)
 				}
 				consecutiveErrors = 0
 				backoff = baseInterval
 				if cycleCount%10 == 0 {
-					log.Printf("[POLL] Heartbeat: cycle %d, fetch OK", cycleCount)
+					slog.Debug("poll heartbeat", "cycle", cycleCount)
 				}
 			} else {
 				consecutiveErrors++
@@ -384,8 +390,7 @@ func startServer(ctx context.Context, app *App) {
 					backoff = min(backoff*2, maxInterval)
 				}
 				if consecutiveErrors == 1 || consecutiveErrors%60 == 0 {
-					log.Printf("[WARN] fetchUsage failed (%dx consecutive, next retry in %s): %v",
-						consecutiveErrors, backoff, err)
+					slog.Warn("usage fetch failed", "consecutive", consecutiveErrors, "nextRetry", backoff, "err", err)
 				}
 			}
 
@@ -400,9 +405,12 @@ func startServer(ctx context.Context, app *App) {
 		}
 	}()
 
+	// Health watchdog: monitors DB health, sends push on degradation
+	go healthWatchdog(ctx, app)
+
 	addr := fmt.Sprintf("%s:%d", app.Config.Server.Host, app.Config.Server.Port)
-	log.Printf("[HTTP] Server starting on http://%s", addr)
-	log.Printf("[HTTP] WebSocket endpoint: ws://%s/ws", addr)
+	slog.Info("server starting", "addr", addr)
+	slog.Info("websocket endpoint", "addr", "ws://"+addr+"/ws")
 
 	server := &http.Server{
 		Addr:         addr,
@@ -415,18 +423,19 @@ func startServer(ctx context.Context, app *App) {
 	// Graceful shutdown: wait for context cancellation, then drain connections
 	go func() {
 		<-ctx.Done()
-		log.Printf("[HTTP] Graceful shutdown initiated, draining connections...")
+		slog.Info("graceful shutdown initiated")
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer shutdownCancel()
 		if err := server.Shutdown(shutdownCtx); err != nil {
-			log.Printf("[HTTP] Shutdown error: %v", err)
+			slog.Error("shutdown error", "err", err)
 		}
 	}()
 
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		log.Fatalf("[HTTP] Server fatal error: %v", err)
+		slog.Error("server fatal error", "err", err)
+		os.Exit(1)
 	}
-	log.Printf("[HTTP] Server stopped")
+	slog.Info("server stopped")
 }
 
 func corsMiddleware(next http.Handler) http.Handler {
@@ -437,7 +446,7 @@ func corsMiddleware(next http.Handler) http.Handler {
 				w.Header().Set("Access-Control-Allow-Origin", origin)
 			}
 		} else if origin != "" {
-			log.Printf("[CORS] Rejected origin: %s for %s %s", origin, r.Method, r.URL.Path)
+			slog.Warn("cors rejected", "origin", origin, "method", r.Method, "path", r.URL.Path)
 		}
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
@@ -460,7 +469,7 @@ func serveDashboard(app *App, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("[HTTP] Dashboard not found at %s", runtimePath)
+	slog.Warn("dashboard not found", "path", runtimePath)
 	http.Error(w, "Dashboard not found — run 'periscope init' to extract plugins", 404)
 }
 
@@ -472,12 +481,12 @@ func handleData(app *App, w http.ResponseWriter, r *http.Request) {
 
 	// Re-import changed files before building response
 	if err := store.ImportFileData(app.DB, app.DataDir, app.ClaudeDir); err != nil {
-		log.Printf("[HTTP] /api/data import error: %v", err)
+		slog.Warn("data import error", "err", err)
 	}
 
 	data, err := store.BuildDashboardData(app.DB)
 	if err != nil {
-		log.Printf("[HTTP] /api/data build error: %v", err)
+		slog.Error("data build error", "err", err)
 		writeError(w, 500, err.Error())
 		return
 	}
@@ -487,7 +496,7 @@ func handleData(app *App, w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	if err := json.NewEncoder(w).Encode(data); err != nil {
-		log.Printf("[HTTP] /api/data encode error: %v", err)
+		slog.Error("data encode error", "err", err)
 	}
 }
 
@@ -499,7 +508,7 @@ func handleConfig(app *App, w http.ResponseWriter, r *http.Request) {
 
 	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20)) // 1MB max
 	if err != nil {
-		log.Printf("[HTTP] /api/config read error: %v", err)
+		slog.Error("config read error", "err", err)
 		writeError(w, 400, "cannot read body")
 		return
 	}
@@ -507,7 +516,7 @@ func handleConfig(app *App, w http.ResponseWriter, r *http.Request) {
 	// Validate JSON
 	var test json.RawMessage
 	if json.Unmarshal(body, &test) != nil {
-		log.Printf("[HTTP] /api/config invalid JSON")
+		slog.Warn("config invalid JSON")
 		writeError(w, 400, "invalid JSON")
 		return
 	}
@@ -521,14 +530,14 @@ func handleConfig(app *App, w http.ResponseWriter, r *http.Request) {
 
 	configPath := filepath.Join(app.ClaudeDir, "statusline", "statusline-config.json")
 	if err := os.WriteFile(configPath, body, 0644); err != nil {
-		log.Printf("[HTTP] /api/config write error: %v", err)
+		slog.Error("config write error", "err", err)
 		writeError(w, 500, err.Error())
 		return
 	}
 
 	// Update DB
 	store.KVSet(app.DB, "config:statusline", string(body))
-	log.Printf("[HTTP] /api/config saved successfully")
+	slog.Info("config saved")
 
 	writeJSON(w, map[string]bool{"ok": true})
 }
@@ -539,7 +548,7 @@ func handleStatuslineToggle(app *App, w http.ResponseWriter, r *http.Request) {
 	if r.Method == "GET" {
 		data, err := os.ReadFile(settingsPath)
 		if err != nil {
-			log.Printf("[HTTP] /api/statusline read error: %v", err)
+			slog.Error("statusline read error", "err", err)
 			writeJSON(w, map[string]any{"enabled": false, "error": err.Error()})
 			return
 		}
@@ -561,7 +570,7 @@ func handleStatuslineToggle(app *App, w http.ResponseWriter, r *http.Request) {
 	// Read current settings
 	data, err := os.ReadFile(settingsPath)
 	if err != nil {
-		log.Printf("[HTTP] /api/statusline read error: %v", err)
+		slog.Error("statusline settings read error", "err", err)
 		writeError(w, 500, "cannot read settings.json: "+err.Error())
 		return
 	}
@@ -569,7 +578,7 @@ func handleStatuslineToggle(app *App, w http.ResponseWriter, r *http.Request) {
 	// Use ordered map to preserve key order
 	var settings map[string]json.RawMessage
 	if err := json.Unmarshal(data, &settings); err != nil {
-		log.Printf("[HTTP] /api/statusline parse error: %v", err)
+		slog.Error("statusline settings parse error", "err", err)
 		writeError(w, 500, "cannot parse settings.json: "+err.Error())
 		return
 	}
@@ -593,15 +602,15 @@ func handleStatuslineToggle(app *App, w http.ResponseWriter, r *http.Request) {
 		cmd := map[string]string{"type": "command", "command": binary + " statusline"}
 		cmdJSON, _ := json.Marshal(cmd)
 		settings["statusLine"] = cmdJSON
-		log.Printf("[HTTP] /api/statusline enabled")
+		slog.Info("statusline enabled")
 	} else {
 		delete(settings, "statusLine")
-		log.Printf("[HTTP] /api/statusline disabled")
+		slog.Info("statusline disabled")
 	}
 
 	out, _ := json.MarshalIndent(settings, "", "  ")
 	if err := os.WriteFile(settingsPath, out, 0644); err != nil {
-		log.Printf("[HTTP] /api/statusline write error: %v", err)
+		slog.Error("statusline write error", "err", err)
 		writeError(w, 500, "cannot write settings.json: "+err.Error())
 		return
 	}
@@ -617,7 +626,7 @@ func handleUsage(app *App, w http.ResponseWriter, r *http.Request) {
 
 	result, err := fetchAndCacheUsage(app)
 	if err != nil {
-		log.Printf("[HTTP] /api/usage fetch error: %v", err)
+		slog.Error("usage fetch error", "err", err)
 		writeError(w, 500, err.Error())
 		return
 	}
@@ -630,9 +639,9 @@ func handleUsage(app *App, w http.ResponseWriter, r *http.Request) {
 }
 
 func handlePricing(app *App, w http.ResponseWriter, r *http.Request) {
-	result, err := store.FetchPricing(app.DataDir)
+	result, err := pricing.FetchLiteLLMPricing(app.DataDir)
 	if err != nil {
-		log.Printf("[HTTP] /api/pricing fetch error: %v", err)
+		slog.Error("pricing fetch error", "err", err)
 		writeError(w, 500, err.Error())
 		return
 	}
@@ -653,14 +662,16 @@ func handleLayout(app *App, w http.ResponseWriter, r *http.Request) {
 	case "POST":
 		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 		if err != nil {
-			log.Printf("[HTTP] /api/layout read error: %v", err)
+			slog.Error("layout read error", "err", err)
 			writeError(w, 400, "cannot read body")
 			return
 		}
 		val := strings.TrimSpace(string(body))
 		if val == "null" || val == "" {
-			app.DB.Exec("DELETE FROM kv WHERE key = ?", "config:layout")
-			log.Printf("[HTTP] /api/layout cleared")
+			if _, err := app.DB.Exec("DELETE FROM kv WHERE key = ?", "config:layout"); err != nil {
+				slog.Error("layout delete failed", "err", err)
+			}
+			slog.Info("layout cleared")
 		} else {
 			// Validate JSON before storing
 			var test json.RawMessage
@@ -669,7 +680,7 @@ func handleLayout(app *App, w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			store.KVSet(app.DB, "config:layout", val)
-			log.Printf("[HTTP] /api/layout saved")
+			slog.Info("layout saved")
 		}
 		writeJSON(w, map[string]bool{"ok": true})
 	default:
@@ -689,7 +700,7 @@ func handlePlugins(app *App, w http.ResponseWriter, r *http.Request) {
 		"forecasters": true, "canvas": true, "vendor": true,
 	}
 	if !validTypes[pluginType] {
-		log.Printf("[HTTP] /api/plugins unknown type: %s", pluginType)
+		slog.Warn("unknown plugin type", "type", pluginType)
 		writeError(w, 404, "unknown plugin type")
 		return
 	}
@@ -700,7 +711,7 @@ func handlePlugins(app *App, w http.ResponseWriter, r *http.Request) {
 		// List plugins
 		entries, err := os.ReadDir(dir)
 		if err != nil {
-			log.Printf("[HTTP] /api/plugins/%s readdir error: %v", pluginType, err)
+			slog.Warn("plugin readdir error", "type", pluginType, "err", err)
 			writeJSON(w, []string{})
 			return
 		}
@@ -716,13 +727,16 @@ func handlePlugins(app *App, w http.ResponseWriter, r *http.Request) {
 
 	// Serve specific plugin — sanitize path traversal
 	name := filepath.Base(parts[1])
-	if strings.Contains(name, "..") || strings.ContainsAny(name, `/\`) || name == "." {
+	resolved := filepath.Join(dir, name)
+	absDir, _ := filepath.Abs(dir)
+	absPath, _ := filepath.Abs(resolved)
+	if !strings.HasPrefix(strings.ToLower(absPath), strings.ToLower(absDir)+string(filepath.Separator)) {
 		writeError(w, 400, "invalid filename")
 		return
 	}
-	data, err := os.ReadFile(filepath.Join(dir, name))
+	data, err := os.ReadFile(resolved)
 	if err != nil {
-		log.Printf("[HTTP] /api/plugins/%s/%s not found: %v", pluginType, name, err)
+		slog.Debug("plugin not found", "type", pluginType, "name", name, "err", err)
 		writeError(w, 404, "plugin not found")
 		return
 	}
@@ -793,7 +807,9 @@ func fetchAndCacheUsage(app *App) (json.RawMessage, error) {
 
 	// Cache to DB and file
 	store.KVSet(app.DB, "cache:usage-api", string(result))
-	os.WriteFile(filepath.Join(app.DataDir, "usage-api-cache.json"), result, 0644)
+	if err := os.WriteFile(filepath.Join(app.DataDir, "usage-api-cache.json"), result, 0644); err != nil {
+		slog.Warn("usage cache write failed", "err", err)
+	}
 
 	return result, nil
 }
@@ -864,7 +880,9 @@ func fetchAndCacheProfile(app *App) {
 
 	result, _ := json.Marshal(profile)
 	store.KVSet(app.DB, "cache:profile", string(result))
-	os.WriteFile(filepath.Join(app.DataDir, "profile-cache.json"), result, 0644)
+	if err := os.WriteFile(filepath.Join(app.DataDir, "profile-cache.json"), result, 0644); err != nil {
+		slog.Warn("profile cache write failed", "err", err)
+	}
 }
 
 // --- Middleware ---
@@ -964,6 +982,48 @@ func rateLimitMiddleware(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// --- Health Watchdog ---
+
+var serverStartTime = time.Now()
+
+// healthWatchdog monitors internal health and sends push notifications on degradation.
+func healthWatchdog(ctx context.Context, app *App) {
+	// Notify subscribers that the server (re)started
+	time.Sleep(5 * time.Second) // let push subscriptions load
+	sendPushNotification(app.DB, "Periscope", "Server started")
+
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+
+	consecutiveDBFailures := 0
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+
+		// Check DB accessibility
+		var n int
+		err := app.DB.QueryRow("SELECT 1").Scan(&n)
+		if err != nil {
+			consecutiveDBFailures++
+			slog.Error("health: DB check failed", "consecutive", consecutiveDBFailures, "err", err)
+			if consecutiveDBFailures == 1 || consecutiveDBFailures%12 == 0 { // first failure + every hour
+				sendPushNotification(app.DB, "Periscope", fmt.Sprintf("DB health check failed (%dx)", consecutiveDBFailures))
+			}
+			continue
+		}
+
+		if consecutiveDBFailures > 0 {
+			slog.Info("health: DB recovered", "previousFailures", consecutiveDBFailures)
+			sendPushNotification(app.DB, "Periscope", fmt.Sprintf("DB recovered after %d failures", consecutiveDBFailures))
+			consecutiveDBFailures = 0
+		}
+	}
 }
 
 // --- Helpers ---

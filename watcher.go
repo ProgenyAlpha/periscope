@@ -1,30 +1,30 @@
 package main
 
 import (
-	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
-	"github.com/shawnwakeman/periscope/internal/store"
+	"github.com/ProgenyAlpha/periscope/internal/store"
 )
 
 func startWatcher(app *App) (*fsnotify.Watcher, error) {
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
-		log.Printf("[WATCH] Failed to create watcher: %v", err)
+		slog.Error("failed to create watcher", "err", err)
 		return nil, err
 	}
 
-	log.Printf("[WATCH] Watcher started")
+	slog.Info("watcher started")
 
 	// Watch claude data directory (sidecars, history files)
 	if err := watcher.Add(app.DataDir); err != nil {
-		log.Printf("[WATCH] Cannot watch data dir %s: %v", app.DataDir, err)
+		slog.Warn("cannot watch data dir", "path", app.DataDir, "err", err)
 	} else {
-		log.Printf("[WATCH] Watching data dir: %s", app.DataDir)
+		slog.Info("watching data dir", "path", app.DataDir)
 	}
 
 	// Watch each plugin subdirectory (create if missing)
@@ -33,9 +33,28 @@ func startWatcher(app *App) (*fsnotify.Watcher, error) {
 		dir := filepath.Join(app.PluginDir, pt)
 		os.MkdirAll(dir, 0755)
 		if err := watcher.Add(dir); err != nil {
-			log.Printf("[WATCH] Cannot watch plugin dir %s: %v", pt, err)
+			slog.Warn("cannot watch plugin dir", "type", pt, "err", err)
 		} else {
-			log.Printf("[WATCH] Watching plugin dir: %s", pt)
+			slog.Debug("watching plugin dir", "type", pt)
+		}
+	}
+
+	// Watch teams directory for agent tracker
+	teamsDir := filepath.Join(app.ClaudeDir, "teams")
+	if err := watcher.Add(teamsDir); err != nil {
+		slog.Warn("cannot watch teams dir", "path", teamsDir, "err", err)
+	} else {
+		slog.Info("watching teams dir", "path", teamsDir)
+		// Also watch each existing team subdir for config.json changes
+		if entries, err := os.ReadDir(teamsDir); err == nil {
+			for _, e := range entries {
+				if e.IsDir() {
+					subDir := filepath.Join(teamsDir, e.Name())
+					if err := watcher.Add(subDir); err != nil {
+						slog.Warn("cannot watch team subdir", "path", subDir, "err", err)
+					}
+				}
+			}
 		}
 	}
 
@@ -54,25 +73,25 @@ func watchLoop(app *App, watcher *fsnotify.Watcher) {
 
 	flush := func() {
 		if pendingDataReload {
-			log.Println("[WATCH] Debounced reload triggered for data files")
+			slog.Debug("debounced data reload triggered")
 			if err := store.ImportFileData(app.DB, app.DataDir, app.ClaudeDir); err != nil {
-				log.Printf("[WATCH] Import error: %v", err)
+				slog.Warn("import error", "err", err)
 			} else {
-				log.Println("[WATCH] Data reimport successful")
+				slog.Debug("data reimport successful")
 			}
 			// Push fresh data to all WS clients
 			data, err := store.BuildDashboardData(app.DB)
 			if err == nil {
 				app.Hub.broadcastJSON("data", data)
-				log.Println("[WATCH] Broadcasted updated data to WebSocket clients")
+				slog.Debug("broadcasted updated data to ws clients")
 			} else {
-				log.Printf("[WATCH] Failed to build dashboard data: %v", err)
+				slog.Error("failed to build dashboard data", "err", err)
 			}
 			pendingDataReload = false
 		}
 
 		for plugin := range pendingPluginReloads {
-			log.Printf("[WATCH] Debounced reload triggered for plugin: %s", plugin)
+			slog.Debug("debounced plugin reload", "plugin", plugin)
 			app.Hub.broadcastJSON("reload", map[string]string{"plugin": plugin})
 		}
 		pendingPluginReloads = make(map[string]bool)
@@ -82,7 +101,7 @@ func watchLoop(app *App, watcher *fsnotify.Watcher) {
 		select {
 		case event, ok := <-watcher.Events:
 			if !ok {
-				log.Println("[WATCH] Event channel closed, stopping watcher")
+				slog.Info("event channel closed, stopping watcher")
 				return
 			}
 
@@ -105,13 +124,23 @@ func watchLoop(app *App, watcher *fsnotify.Watcher) {
 			if isDataDir(dir, app.DataDir) {
 				// Data file changed
 				if strings.HasSuffix(name, ".json") || strings.HasSuffix(name, ".jsonl") {
-					log.Printf("[WATCH] File change detected: %s [%s] -> queued data reload", name, eventType)
+					slog.Debug("data file change", "file", name, "event", eventType)
 					pendingDataReload = true
 				}
+			} else if isTeamsDir(dir, app.ClaudeDir) {
+				// Team config changed — also watch newly created subdirs
+				slog.Debug("teams dir change", "file", name, "event", eventType)
+				if event.Has(fsnotify.Create) {
+					newPath := filepath.Join(dir, name)
+					if info, err := os.Stat(newPath); err == nil && info.IsDir() {
+						watcher.Add(newPath)
+					}
+				}
+				pendingDataReload = true
 			} else if isPluginDir(dir, app.PluginDir) {
 				// Plugin file changed
 				rel, _ := filepath.Rel(app.PluginDir, event.Name)
-				log.Printf("[WATCH] File change detected: %s [%s] -> queued plugin reload", rel, eventType)
+				slog.Debug("plugin file change", "file", rel, "event", eventType)
 				pendingPluginReloads[rel] = true
 			}
 
@@ -131,10 +160,10 @@ func watchLoop(app *App, watcher *fsnotify.Watcher) {
 
 		case err, ok := <-watcher.Errors:
 			if !ok {
-				log.Println("[WATCH] Error channel closed, stopping watcher")
+				slog.Info("error channel closed, stopping watcher")
 				return
 			}
-			log.Printf("[WATCH] Watcher error: %v", err)
+			slog.Error("watcher error", "err", err)
 		}
 	}
 }
@@ -148,5 +177,11 @@ func isDataDir(dir, dataDir string) bool {
 func isPluginDir(dir, pluginDir string) bool {
 	abs1, _ := filepath.Abs(dir)
 	abs2, _ := filepath.Abs(pluginDir)
+	return strings.HasPrefix(strings.ToLower(abs1), strings.ToLower(abs2))
+}
+
+func isTeamsDir(dir, claudeDir string) bool {
+	abs1, _ := filepath.Abs(dir)
+	abs2, _ := filepath.Abs(filepath.Join(claudeDir, "teams"))
 	return strings.HasPrefix(strings.ToLower(abs1), strings.ToLower(abs2))
 }

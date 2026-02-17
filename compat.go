@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/shawnwakeman/periscope/internal/store"
+	"github.com/ProgenyAlpha/periscope/internal/store"
 )
 
 func stripBOM(data []byte) []byte { return store.StripBOM(data) }

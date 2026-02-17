@@ -5,7 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/shawnwakeman/periscope/internal/store"
+	"github.com/ProgenyAlpha/periscope/internal/forecast"
+	"github.com/ProgenyAlpha/periscope/internal/store"
 )
 
 func TestCleanFirstPrompt(t *testing.T) {
@@ -205,9 +206,9 @@ func TestIntOrDefault(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := intOrDefault(tt.in, tt.def)
+			got := forecast.IntOrDefault(tt.in, tt.def)
 			if got != tt.want {
-				t.Errorf("intOrDefault(%v, %d) = %d, want %d", tt.in, tt.def, got, tt.want)
+				t.Errorf("IntOrDefault(%v, %d) = %d, want %d", tt.in, tt.def, got, tt.want)
 			}
 		})
 	}
@@ -227,9 +228,9 @@ func TestFloatOrDefault(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := floatOrDefault(tt.in, tt.def)
+			got := forecast.FloatOrDefault(tt.in, tt.def)
 			if got != tt.want {
-				t.Errorf("floatOrDefault(%v, %.2f) = %.2f, want %.2f", tt.in, tt.def, got, tt.want)
+				t.Errorf("forecast.FloatOrDefault(%v, %.2f) = %.2f, want %.2f", tt.in, tt.def, got, tt.want)
 			}
 		})
 	}

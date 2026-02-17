@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/shawnwakeman/periscope/internal/store"
+	"github.com/ProgenyAlpha/periscope/internal/store"
 )
 
 // --- Helpers ---

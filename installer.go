@@ -3,7 +3,7 @@ package main
 import (
 	"fmt"
 	"io/fs"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/exec"
@@ -11,7 +11,7 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/shawnwakeman/periscope/internal/anthropic"
+	"github.com/ProgenyAlpha/periscope/internal/anthropic"
 )
 
 // ── UI helpers ──────────────────────────────────────────────────────────────
@@ -74,7 +74,7 @@ func install(app *App) error {
 
 	// ── Step 1: Directories ──
 	iStep(1, totalSteps, "Creating directory structure")
-	log.Printf("[INSTALL] Creating directory structure")
+	slog.Info("creating directory structure")
 	dirs := []string{
 		app.HomeDir,
 		app.PluginDir,
@@ -90,22 +90,22 @@ func install(app *App) error {
 	dirsExisted := 0
 	for _, d := range dirs {
 		if stat, err := os.Stat(d); err == nil && stat.IsDir() {
-			log.Printf("[INSTALL] Directory exists: %s", d)
+			slog.Debug("directory exists", "path", d)
 			dirsExisted++
 		} else {
 			if err := os.MkdirAll(d, 0755); err != nil {
 				return fmt.Errorf("mkdir %s: %w", d, err)
 			}
-			log.Printf("[INSTALL] Directory created: %s", d)
+			slog.Debug("directory created", "path", d)
 			dirsCreated++
 		}
 	}
-	log.Printf("[INSTALL] Directories ready: %d created, %d existed", dirsCreated, dirsExisted)
+	slog.Info("directories ready", "created", dirsCreated, "existed", dirsExisted)
 	iOK(fmt.Sprintf("%d directories ready", len(dirs)))
 
 	// ── Step 2: Extract plugins ──
 	iStep(2, totalSteps, "Extracting bundled plugins")
-	log.Printf("[INSTALL] Extracting bundled plugins")
+	slog.Info("extracting bundled plugins")
 	extracted := 0
 	skipped := 0
 	fs.WalkDir(defaultPlugins, "defaults", func(path string, d fs.DirEntry, err error) error {
@@ -116,7 +116,7 @@ func install(app *App) error {
 		dest := filepath.Join(app.PluginDir, rel)
 
 		if _, err := os.Stat(dest); err == nil {
-			log.Printf("[INSTALL] File exists (skipping): %s", rel)
+			slog.Debug("file exists, skipping", "file", rel)
 			skipped++
 			return nil // Don't clobber user edits
 		}
@@ -128,11 +128,11 @@ func install(app *App) error {
 		if err := os.WriteFile(dest, data, 0644); err != nil {
 			return err
 		}
-		log.Printf("[INSTALL] File extracted: %s", rel)
+		slog.Debug("file extracted", "file", rel)
 		extracted++
 		return nil
 	})
-	log.Printf("[INSTALL] Plugin extraction complete: %d extracted, %d skipped", extracted, skipped)
+	slog.Info("plugin extraction complete", "extracted", extracted, "skipped", skipped)
 	if extracted > 0 {
 		iOK(fmt.Sprintf("Extracted %d files", extracted))
 	}
@@ -142,7 +142,7 @@ func install(app *App) error {
 
 	// ── Step 3: Config ──
 	iStep(3, totalSteps, "Writing configuration")
-	log.Printf("[INSTALL] Writing configuration")
+	slog.Info("writing configuration")
 	configPath := filepath.Join(app.HomeDir, "config.toml")
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
 		defaultConfig := fmt.Sprintf(`# Periscope configuration
@@ -155,50 +155,50 @@ port = %d
 # data_dir = ""
 `, app.Config.Server.Port)
 		os.WriteFile(configPath, []byte(defaultConfig), 0644)
-		log.Printf("[INSTALL] Config file created: %s", configPath)
+		slog.Info("config file created", "path", configPath)
 		iOK(fmt.Sprintf("Created config.toml (port %d)", app.Config.Server.Port))
 	} else {
-		log.Printf("[INSTALL] Config file exists (skipping): %s", configPath)
+		slog.Debug("config file exists, skipping", "path", configPath)
 		iInfo("config.toml already exists, keeping yours")
 	}
 
 	// ── Step 4: Claude hooks ──
 	iStep(4, totalSteps, "Registering Claude hooks")
-	log.Printf("[INSTALL] Registering Claude hooks")
+	slog.Info("registering Claude hooks")
 	if err := registerHooks(app); err != nil {
-		log.Printf("[INSTALL] Hook registration error: %v", err)
+		slog.Warn("hook registration error", "err", err)
 		iWarn(fmt.Sprintf("Hook registration: %v", err))
 	} else {
-		log.Printf("[INSTALL] Hooks registered successfully")
+		slog.Info("hooks registered")
 	}
 
 	// ── Step 5: OAuth ──
 	iStep(5, totalSteps, "Verifying Anthropic connection")
-	log.Printf("[INSTALL] Verifying OAuth token")
+	slog.Info("verifying OAuth token")
 	if _, err := anthropic.NewClientFromDisk(app.ClaudeDir); err != nil {
-		log.Printf("[INSTALL] OAuth token not found: %v", err)
+		slog.Warn("OAuth token not found", "err", err)
 		iWarn("No OAuth token found")
 		iInfo("Rate limit tracking requires 'claude login' first")
 		iInfo("Everything else works without it")
 	} else {
-		log.Printf("[INSTALL] OAuth token verified")
+		slog.Info("OAuth token verified")
 		iOK("OAuth token verified — rate limit tracking active")
 	}
 
 	// ── Step 6: Autostart (Windows only) ──
 	if runtime.GOOS == "windows" {
 		iStep(6, totalSteps, "Background service")
-		log.Printf("[INSTALL] Setting up Windows autostart")
+		slog.Info("setting up Windows autostart")
 		if err := offerAutostart(app); err != nil {
-			log.Printf("[INSTALL] Autostart setup error: %v", err)
+			slog.Warn("autostart setup error", "err", err)
 			iWarn(fmt.Sprintf("Autostart: %v", err))
 		} else {
-			log.Printf("[INSTALL] Autostart setup complete")
+			slog.Info("autostart setup complete")
 		}
 	}
 
 	// ── Summary ──
-	log.Printf("[INSTALL] Installation complete: %d dirs, %d files extracted", len(dirs), extracted)
+	slog.Info("installation complete", "dirs", len(dirs), "extracted", extracted)
 	iDivider()
 	addr := fmt.Sprintf("http://%s:%d", app.Config.Server.Host, app.Config.Server.Port)
 	fmt.Println()
@@ -217,12 +217,12 @@ port = %d
 
 func offerAutostart(app *App) error {
 	// Check if already registered
-	log.Printf("[INSTALL] Checking for existing autostart task")
+	slog.Debug("checking for existing autostart task")
 	out, err := exec.Command("schtasks", "/Query", "/TN", "Periscope-AutoStart").CombinedOutput()
 	alreadyExists := err == nil && strings.Contains(string(out), "Periscope-AutoStart")
 
 	if alreadyExists {
-		log.Printf("[INSTALL] Autostart task already exists")
+		slog.Debug("autostart task already exists")
 		iOK("Autostart already registered")
 		return nil
 	}
@@ -246,12 +246,12 @@ func offerAutostart(app *App) error {
 	fmt.Println()
 
 	if !iPrompt(fmt.Sprintf("Start at Windows login? %s[Y/n]%s ", cDim, cReset)) {
-		log.Printf("[INSTALL] User declined autostart")
+		slog.Info("user declined autostart")
 		iInfo("Skipped — Periscope will start when Claude does")
 		return nil
 	}
 
-	log.Printf("[INSTALL] Creating autostart scheduled task")
+	slog.Info("creating autostart scheduled task")
 	binary := periscopeBinary()
 	cmd := exec.Command("schtasks", "/Create",
 		"/TN", "Periscope-AutoStart",
@@ -261,17 +261,17 @@ func offerAutostart(app *App) error {
 		"/F",
 	)
 	if out, err := cmd.CombinedOutput(); err != nil {
-		log.Printf("[INSTALL] Autostart task creation failed: %s", strings.TrimSpace(string(out)))
+		slog.Error("autostart task creation failed", "output", strings.TrimSpace(string(out)), "err", err)
 		return fmt.Errorf("schtasks: %s: %w", strings.TrimSpace(string(out)), err)
 	}
-	log.Printf("[INSTALL] Autostart task registered: Periscope-AutoStart")
+	slog.Info("autostart task registered")
 	iOK("Registered autostart task (Periscope-AutoStart)")
 	return nil
 }
 
 func registerHooks(app *App) error {
 	binary := periscopeBinary()
-	log.Printf("[INSTALL] Using binary: %s", binary)
+	slog.Debug("using binary", "path", binary)
 
 	// Write the launcher script (health-check → auto-start)
 	var launcherContent string
@@ -304,7 +304,7 @@ nohup "%s" serve >/dev/null 2>&1 &
 	if err := os.WriteFile(launcherPath, []byte(launcherContent), 0755); err != nil {
 		return fmt.Errorf("write launcher: %w", err)
 	}
-	log.Printf("[INSTALL] Launcher script created: %s", launcherPath)
+	slog.Info("launcher script created", "path", launcherPath)
 	iOK(fmt.Sprintf("Created %s (auto-start on Claude session)", launcherName))
 
 	// Show hook commands for manual setup

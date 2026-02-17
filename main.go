@@ -5,7 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -15,9 +15,12 @@ import (
 
 	"github.com/BurntSushi/toml"
 	"github.com/fsnotify/fsnotify"
-	"github.com/shawnwakeman/periscope/internal/anthropic"
-	"github.com/shawnwakeman/periscope/internal/store"
+	"github.com/ProgenyAlpha/periscope/internal/anthropic"
+	"github.com/ProgenyAlpha/periscope/internal/store"
 )
+
+// Version is set at build time via -ldflags.
+var Version = "dev"
 
 // App holds all shared state for the periscope runtime.
 type App struct {
@@ -53,17 +56,17 @@ func setupLogging(logPath string) {
 		}
 	}
 
-	// Open log file
 	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
-		log.Printf("warning: cannot open log file %s: %v", logPath, err)
+		slog.Warn("cannot open log file", "path", logPath, "err", err)
 		return
 	}
 
-	// Write to both stderr and log file
 	multiWriter := io.MultiWriter(os.Stderr, logFile)
-	log.SetOutput(multiWriter)
-	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds)
+	handler := slog.NewTextHandler(multiWriter, &slog.HandlerOptions{
+		Level: slog.LevelDebug,
+	})
+	slog.SetDefault(slog.New(handler))
 }
 
 func main() {
@@ -72,7 +75,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	log.Printf("[MAIN] periscope v0.1.0 invoked: %s", os.Args[1])
+	slog.Info("periscope invoked", "version", Version, "command", os.Args[1])
 
 	switch os.Args[1] {
 	case "init":
@@ -88,7 +91,7 @@ func main() {
 	case "statusline":
 		cmdStatusline()
 	case "version":
-		fmt.Println("periscope v0.1.0")
+		fmt.Println("periscope " + Version)
 	default:
 		printUsage()
 		os.Exit(1)
@@ -125,12 +128,12 @@ func newApp() (*App, error) {
 	// Load config if it exists
 	configPath := filepath.Join(app.HomeDir, "config.toml")
 	if data, err := os.ReadFile(configPath); err == nil {
-		log.Printf("[MAIN] Loading config from %s", configPath)
+		slog.Info("loading config", "path", configPath)
 		if _, err := toml.Decode(string(data), &app.Config); err != nil {
-			log.Printf("[MAIN] warning: config.toml parse error: %v", err)
+			slog.Warn("config parse error", "err", err)
 		}
 	} else {
-		log.Printf("[MAIN] No config.toml found, using defaults")
+		slog.Debug("no config.toml found, using defaults")
 	}
 
 	// Apply defaults
@@ -138,31 +141,37 @@ func newApp() (*App, error) {
 		app.Config.Server.Port = 8384
 	}
 	if app.Config.Server.Host == "" {
-		app.Config.Server.Host = "localhost"
+		app.Config.Server.Host = "127.0.0.1"
+	}
+	if app.Config.Server.Host == "0.0.0.0" || app.Config.Server.Host == "::" {
+		slog.Warn("server binding to all interfaces — dashboard is network-accessible with no auth", "host", app.Config.Server.Host)
 	}
 	if app.Config.DataDir != "" {
 		app.DataDir = app.Config.DataDir
-		log.Printf("[MAIN] DataDir override: %s", app.DataDir)
+		slog.Info("datadir override", "path", app.DataDir)
 	}
 
-	log.Printf("[MAIN] Config loaded: %s:%d", app.Config.Server.Host, app.Config.Server.Port)
+	slog.Info("config loaded", "host", app.Config.Server.Host, "port", app.Config.Server.Port)
 	return app, nil
 }
 
 func cmdInit() {
 	app, err := newApp()
 	if err != nil {
-		log.Fatal(err)
+		slog.Error("init failed", "err", err)
+		os.Exit(1)
 	}
 	if err := install(app); err != nil {
-		log.Fatal(err)
+		slog.Error("install failed", "err", err)
+		os.Exit(1)
 	}
 }
 
 func cmdServe() {
 	app, err := newApp()
 	if err != nil {
-		log.Fatal(err)
+		slog.Error("serve failed", "err", err)
+		os.Exit(1)
 	}
 
 	// Check if already running
@@ -176,14 +185,15 @@ func cmdServe() {
 	// Set up log file with rotation
 	logPath := filepath.Join(app.HomeDir, "periscope.log")
 	setupLogging(logPath)
-	log.Printf("[MAIN] Logging to %s", logPath)
+	slog.Info("logging initialized", "path", logPath)
 
 	// Ensure initialized
 	if _, err := os.Stat(app.PluginDir); os.IsNotExist(err) {
-		log.Printf("[MAIN] First run detected, running init")
+		slog.Info("first run detected, running init")
 		fmt.Println("First run detected — running init...")
 		if err := install(app); err != nil {
-			log.Fatal(err)
+			slog.Error("install failed", "err", err)
+			os.Exit(1)
 		}
 	}
 
@@ -191,7 +201,8 @@ func cmdServe() {
 	dbPath := filepath.Join(app.HomeDir, "periscope.db")
 	db, err := store.OpenDB(dbPath)
 	if err != nil {
-		log.Fatalf("Fatal: could not open DB: %v", err)
+		slog.Error("could not open DB", "err", err)
+		os.Exit(1)
 	}
 	defer db.Close()
 	app.DB = db
@@ -199,19 +210,19 @@ func cmdServe() {
 	// Initialize Anthropic client (optional — rate limit tracking needs OAuth)
 	if client, err := anthropic.NewClientFromDisk(app.ClaudeDir); err == nil {
 		app.AnthropicClient = client
-		log.Printf("[MAIN] Anthropic client initialized")
+		slog.Info("anthropic client initialized")
 	} else {
-		log.Printf("[MAIN] Anthropic client unavailable: %v", err)
+		slog.Warn("anthropic client unavailable", "err", err)
 	}
 
 	// Import file data into DB
-	log.Printf("[MAIN] Importing file data")
+	slog.Info("importing file data")
 	if err := store.ImportFileData(db, app.DataDir, app.ClaudeDir); err != nil {
-		log.Printf("[MAIN] warning: data import: %v", err)
+		slog.Warn("data import error", "err", err)
 	}
 
 	// Compact limit history (tiered dedup: recent=dense, old=sparse)
-	log.Printf("[MAIN] Compacting limit history")
+	slog.Info("compacting limit history")
 	store.CompactLimitHistory(db, app.DataDir)
 
 	// Context for graceful shutdown
@@ -223,42 +234,43 @@ func cmdServe() {
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		sig := <-sigCh
-		log.Printf("[MAIN] Received signal %s, initiating shutdown", sig)
+		slog.Info("received signal, initiating shutdown", "signal", sig)
 		cancel()
 	}()
 
 	// Resolve auth token: env var takes priority over config
 	if envToken := os.Getenv("PERISCOPE_TOKEN"); envToken != "" {
 		app.Config.Server.Token = envToken
-		log.Printf("[MAIN] Auth token loaded from PERISCOPE_TOKEN env var")
+		slog.Info("auth token loaded from env var")
 	} else if app.Config.Server.Token != "" {
-		log.Printf("[MAIN] Auth token loaded from config.toml")
+		slog.Info("auth token loaded from config")
 	}
 
 	// Start WebSocket hub
-	log.Printf("[MAIN] Starting WebSocket hub")
+	slog.Info("starting websocket hub")
 	app.Hub = newHub()
 	go app.Hub.run()
 
 	// Start file watcher
-	log.Printf("[MAIN] Starting file watcher")
+	slog.Info("starting file watcher")
 	app.Watcher, err = startWatcher(app)
 	if err != nil {
-		log.Printf("[MAIN] warning: file watcher: %v", err)
+		slog.Warn("file watcher error", "err", err)
 	} else {
 		defer app.Watcher.Close()
 	}
 
 	// Start HTTP server (blocks until shutdown)
-	log.Printf("[MAIN] Starting HTTP server on %s:%d", app.Config.Server.Host, app.Config.Server.Port)
+	slog.Info("starting HTTP server", "host", app.Config.Server.Host, "port", app.Config.Server.Port)
 	startServer(ctx, app)
-	log.Printf("[MAIN] Periscope stopped")
+	slog.Info("periscope stopped")
 }
 
 func cmdStatus() {
 	app, err := newApp()
 	if err != nil {
-		log.Fatal(err)
+		slog.Error("status check failed", "err", err)
+		os.Exit(1)
 	}
 	addr := fmt.Sprintf("http://%s:%d", app.Config.Server.Host, app.Config.Server.Port)
 	fmt.Printf("Checking %s...\n", addr)
@@ -292,9 +304,11 @@ func cmdHook() {
 func cmdUninstall() {
 	app, err := newApp()
 	if err != nil {
-		log.Fatal(err)
+		slog.Error("uninstall failed", "err", err)
+		os.Exit(1)
 	}
 	if err := uninstall(app); err != nil {
-		log.Fatal(err)
+		slog.Error("uninstall failed", "err", err)
+		os.Exit(1)
 	}
 }

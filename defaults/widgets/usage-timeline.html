@@ -252,8 +252,13 @@ Periscope.registerWidget({
         var arr = bySession[sids[j]];
         // Skip sessions with < 2 data points (no meaningful activity)
         if (arr.length < 2) continue;
-        // Filter stale sessions (value never changed in this window)
-        if (arr[0].y === arr[arr.length - 1].y) continue;
+        // Filter truly stale sessions (no value change at any point in window)
+        var minY = arr[0].y, maxY = arr[0].y;
+        for (var k = 1; k < arr.length; k++) {
+          if (arr[k].y < minY) minY = arr[k].y;
+          if (arr[k].y > maxY) maxY = arr[k].y;
+        }
+        if (maxY === minY) continue;
         // Filter subagent sessions (haiku-only) from display
         if (isSubagentSession(sids[j])) continue;
         // Downsample: keep key points (value changes + evenly spaced)
