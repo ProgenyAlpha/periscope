@@ -194,8 +194,13 @@ func BuildForecast(stateDir string, usage map[string]any) string {
 			verdict = "monitor"
 		}
 
-		parts = append(parts, fmt.Sprintf("%s:%d%%->~%d%%(%s left, %s) %s",
-			w.label, w.current, proj, tl, rateStr, verdict))
+		if verdict == "OK" || verdict == "idle" {
+			parts = append(parts, fmt.Sprintf("%s:%d%%→%d%%(%s@%s)",
+				w.label, w.current, proj, tl, rateStr))
+		} else {
+			parts = append(parts, fmt.Sprintf("%s:%d%%→%d%%(%s@%s)%s",
+				w.label, w.current, proj, tl, rateStr, verdict))
+		}
 	}
 
 	if len(parts) == 0 {

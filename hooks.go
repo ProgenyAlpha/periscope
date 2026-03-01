@@ -565,7 +565,7 @@ func hookDisplay() {
 		cacheStr = fmt.Sprintf("%.0f%%", cacheHit)
 	}
 
-	// Top tools
+	// Top tools (compact: shortname:count)
 	toolStr := ""
 	if len(c.Tools) > 0 {
 		type toolEntry struct {
@@ -584,16 +584,15 @@ func hookDisplay() {
 				}
 			}
 		}
-		var parts []string
+		var tParts []string
 		limit := 5
 		if len(tools) < limit {
 			limit = len(tools)
 		}
 		for _, t := range tools[:limit] {
-			w := fmtTokens(t.weighted)
-			parts = append(parts, fmt.Sprintf("%s:%dx(%s)", t.name, t.calls, w))
+			tParts = append(tParts, fmt.Sprintf("%s:%dx", t.name, t.calls))
 		}
-		toolStr = strings.Join(parts, " | ")
+		toolStr = strings.Join(tParts, " ")
 	}
 
 	// Refresh usage cache
@@ -625,23 +624,23 @@ func hookDisplay() {
 		forecastStr = forecast.BuildForecast(stateDir, usage)
 	}
 
-	// Build compact telemetry line
-	parts := []string{fmt.Sprintf("TELEMETRY: %d calls (agent:%d tool:%d chat:%d) | cache:%s",
+	// Build single-line compact telemetry
+	seg := []string{fmt.Sprintf("T:%d(a%d t%d c%d) cache:%s",
 		totalCalls, c.AgentCalls, c.ToolCalls, c.ChatCalls, cacheStr)}
-	if toolStr != "" {
-		parts = append(parts, "Tools: "+toolStr)
-	}
 	if pct5hr >= 0 {
-		parts = append(parts, fmt.Sprintf("Rate limits: 5hr %d%% | Weekly %d%%", pct5hr, pctWk))
+		seg = append(seg, fmt.Sprintf("5h:%d%% wk:%d%%", pct5hr, pctWk))
 	}
 	if forecastStr != "" {
-		parts = append(parts, "Forecast: "+forecastStr)
+		seg = append(seg, forecastStr)
 	}
 	if euStr != "" {
-		parts = append(parts, euStr)
+		seg = append(seg, euStr)
+	}
+	if toolStr != "" {
+		seg = append(seg, toolStr)
 	}
 
-	ctx := strings.Join(parts, "\n")
+	ctx := "TELEMETRY: " + strings.Join(seg, " | ")
 
 	// Add advisory when usage is high — prompt Claude to offer alternatives
 	if pct5hr > 70 || pctWk > 50 {
