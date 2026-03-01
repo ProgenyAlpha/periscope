@@ -599,24 +599,18 @@ func hookDisplay() {
 	// Refresh usage cache
 	usage := hookRefreshUsage(stateDir, claudeDir)
 
-	rateStr := ""
-	extraStr := ""
 	pct5hr := -1
 	pctWk := -1
+	euStr := ""
 	if usage != nil {
 		pct5hr = forecast.IntOrDefault(usage["pct5hr"], -1)
 		pctWk = forecast.IntOrDefault(usage["pctWeekly"], -1)
-		if pct5hr >= 0 {
-			rateStr = fmt.Sprintf("Rate limits: 5hr %d%% | Weekly %d%%", pct5hr, pctWk)
-		}
 		if eu, ok := usage["extra_usage"].(map[string]any); ok {
 			enabled, _ := eu["is_enabled"].(bool)
 			if enabled {
 				used, _ := eu["used_credits"].(float64)
 				lim, _ := eu["monthly_limit"].(float64)
-				extraStr = fmt.Sprintf("Extra usage: ON ($%.2f/$%.2f)", used, lim)
-			} else {
-				extraStr = "Extra usage: OFF"
+				euStr = fmt.Sprintf("EU:$%.2f/$%.2f", used, lim)
 			}
 		}
 	}
@@ -631,29 +625,33 @@ func hookDisplay() {
 		forecastStr = forecast.BuildForecast(stateDir, usage)
 	}
 
-	var segments []string
-	segments = append(segments, fmt.Sprintf("%d calls (agent:%d tool:%d chat:%d) | cache:%s",
-		totalCalls, c.AgentCalls, c.ToolCalls, c.ChatCalls, cacheStr))
+	// Build compact telemetry line
+	parts := []string{fmt.Sprintf("TELEMETRY: %d calls (agent:%d tool:%d chat:%d) | cache:%s",
+		totalCalls, c.AgentCalls, c.ToolCalls, c.ChatCalls, cacheStr)}
 	if toolStr != "" {
-		segments = append(segments, "Tools: "+toolStr)
+		parts = append(parts, "Tools: "+toolStr)
 	}
-	if rateStr != "" {
-		segments = append(segments, rateStr)
+	if pct5hr >= 0 {
+		parts = append(parts, fmt.Sprintf("Rate limits: 5hr %d%% | Weekly %d%%", pct5hr, pctWk))
 	}
 	if forecastStr != "" {
-		segments = append(segments, "Forecast: "+forecastStr)
+		parts = append(parts, "Forecast: "+forecastStr)
 	}
-	if extraStr != "" {
-		segments = append(segments, extraStr)
+	if euStr != "" {
+		parts = append(parts, euStr)
 	}
-	lines := []string{
-		"TELEMETRY: " + strings.Join(segments, "\n"),
+
+	ctx := strings.Join(parts, "\n")
+
+	// Add advisory when usage is high — prompt Claude to offer alternatives
+	if pct5hr > 70 || pctWk > 50 {
+		ctx += "\nIMPORTANT: Usage is elevated. Before starting token-heavy operations (large agents, broad searches, multi-file reads), briefly inform the user of the cost and ask if they'd prefer a lighter alternative."
 	}
 
 	output := map[string]any{
 		"hookSpecificOutput": map[string]any{
 			"hookEventName":     "UserPromptSubmit",
-			"additionalContext": strings.Join(lines, "\n"),
+			"additionalContext": ctx,
 		},
 	}
 	data, _ := json.Marshal(output)
