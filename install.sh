@@ -15,13 +15,8 @@ case "$ARCH" in
     *) echo "Unsupported architecture: $ARCH"; exit 1 ;;
 esac
 
-# Only darwin has arm64 builds; linux is amd64 only
 ASSET="periscope-${OS}-${ARCH}"
-if [ "$OS" = "darwin" ]; then
-    : # both amd64 and arm64 available
-elif [ "$OS" = "linux" ]; then
-    ASSET="periscope-linux-amd64"
-else
+if [ "$OS" != "darwin" ] && [ "$OS" != "linux" ]; then
     echo "Unsupported OS: $OS"; exit 1
 fi
 
