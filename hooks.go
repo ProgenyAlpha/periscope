@@ -607,8 +607,7 @@ func hookDisplay() {
 		pct5hr = forecast.IntOrDefault(usage["pct5hr"], -1)
 		pctWk = forecast.IntOrDefault(usage["pctWeekly"], -1)
 		if pct5hr >= 0 {
-			rateStr = fmt.Sprintf("5hr [%s] %d%% | Weekly [%s] %d%%",
-				progressBar(pct5hr, 20), pct5hr, progressBar(pctWk, 20), pctWk)
+			rateStr = fmt.Sprintf("Rate limits: 5hr %d%% | Weekly %d%%", pct5hr, pctWk)
 		}
 		if eu, ok := usage["extra_usage"].(map[string]any); ok {
 			enabled, _ := eu["is_enabled"].(bool)
@@ -632,20 +631,23 @@ func hookDisplay() {
 		forecastStr = forecast.BuildForecast(stateDir, usage)
 	}
 
-	line1 := fmt.Sprintf("TELEMETRY: %d calls (agent:%d tool:%d chat:%d) | cache:%s",
-		totalCalls, c.AgentCalls, c.ToolCalls, c.ChatCalls, cacheStr)
-	lines := []string{line1}
+	var segments []string
+	segments = append(segments, fmt.Sprintf("%d calls (agent:%d tool:%d chat:%d) | cache:%s",
+		totalCalls, c.AgentCalls, c.ToolCalls, c.ChatCalls, cacheStr))
 	if toolStr != "" {
-		lines = append(lines, "Tools: "+toolStr)
+		segments = append(segments, "Tools: "+toolStr)
 	}
 	if rateStr != "" {
-		lines = append(lines, "Rate limits: "+rateStr)
+		segments = append(segments, rateStr)
 	}
 	if forecastStr != "" {
-		lines = append(lines, "Forecast: "+forecastStr)
+		segments = append(segments, "Forecast: "+forecastStr)
 	}
 	if extraStr != "" {
-		lines = append(lines, extraStr)
+		segments = append(segments, extraStr)
+	}
+	lines := []string{
+		"TELEMETRY: " + strings.Join(segments, "\n"),
 	}
 
 	output := map[string]any{

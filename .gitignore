@@ -3,9 +3,6 @@ periscope.exe
 periscope.exe~
 periscope
 
-# Go
-go.sum
-
 # Database
 *.db
 *.db-wal

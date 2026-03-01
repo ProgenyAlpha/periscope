@@ -986,8 +986,6 @@ func rateLimitMiddleware(next http.Handler) http.Handler {
 
 // --- Health Watchdog ---
 
-var serverStartTime = time.Now()
-
 // healthWatchdog monitors internal health and sends push notifications on degradation.
 func healthWatchdog(ctx context.Context, app *App) {
 	// Notify subscribers that the server (re)started
