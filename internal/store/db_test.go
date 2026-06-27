@@ -262,7 +262,7 @@ func TestSnapshotSidecarsToHistory_NewCost(t *testing.T) {
 
 func TestBuildDashboardData_EmptyDB(t *testing.T) {
 	db := openTestDB(t)
-	d, err := BuildDashboardData(db)
+	d, err := BuildDashboardData(db, "")
 	if err != nil {
 		t.Fatalf("BuildDashboardData: %v", err)
 	}
@@ -309,7 +309,7 @@ func TestBuildDashboardData_WithData(t *testing.T) {
 	db.Exec("INSERT INTO limit_history(ts, data) VALUES(?, ?)",
 		"2026-01-01T00:00:00Z", `{"pct5hr":50}`)
 
-	d, err := BuildDashboardData(db)
+	d, err := BuildDashboardData(db, "")
 	if err != nil {
 		t.Fatalf("BuildDashboardData: %v", err)
 	}

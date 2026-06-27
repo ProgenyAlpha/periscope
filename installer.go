@@ -310,7 +310,7 @@ nohup "%s" serve >/dev/null 2>&1 &
 	// Show hook commands for manual setup
 	iInfo("Claude hook commands (if not already configured):")
 	fmt.Printf("    %sSessionStart%s:       %s%s\n", cDim, cReset, launcherPath, cReset)
-	fmt.Printf("    %sStopTurn%s:           %s hook stop\n", cDim, cReset, binary)
+	fmt.Printf("    %sStop%s:               %s hook stop\n", cDim, cReset, binary)
 	fmt.Printf("    %sUserPromptSubmit%s:   %s hook display\n", cDim, cReset, binary)
 	fmt.Printf("    %sStatusline%s:         %s statusline\n", cDim, cReset, binary)
 

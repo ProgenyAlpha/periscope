@@ -25,7 +25,8 @@ func FetchLiteLLMPricing(dataDir string) (json.RawMessage, error) {
 		}
 	}
 
-	resp, err := http.Get("https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json")
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Get("https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json")
 	if err != nil {
 		return readCacheFallback(cachePath)
 	}

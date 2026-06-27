@@ -9,7 +9,7 @@
 
 **Real-time telemetry for Claude Code.** Rate limits, cost tracking, burn rate forecasting, push notifications, and context injection — all from a single Go binary.
 
-Claude Code has zero awareness of your rate limits. Periscope gives the AI a fuel gauge before every takeoff.
+Claude Code surfaces only coarse rate-limit data; Periscope gives you token-level burn rate, forecasts, and cost breakdown — plus injects all of it into every prompt so the AI knows its own resource state.
 
 ---
 
@@ -58,7 +58,7 @@ This creates `~/.periscope/` with themes, widgets, config, and database. It prin
 ```json
 {
   "hooks": {
-    "StopTurn": [{"matcher": "", "hooks": [{"type": "command", "command": "periscope hook stop", "timeout": 10}]}],
+    "Stop": [{"matcher": "", "hooks": [{"type": "command", "command": "periscope hook stop", "timeout": 10}]}],
     "UserPromptSubmit": [{"matcher": "", "hooks": [{"type": "command", "command": "periscope hook display", "timeout": 5}]}]
   },
   "statusLine": {"type": "command", "command": "periscope statusline"}
@@ -80,7 +80,7 @@ Dashboard at `http://localhost:8384`. Uses your existing Claude Code OAuth token
 | `periscope init` | Create config, extract plugins, register hooks |
 | `periscope serve` | Start dashboard server (default `127.0.0.1:8384`) |
 | `periscope status` | Health check against running server |
-| `periscope hook stop` | Process transcript after each turn (StopTurn) |
+| `periscope hook stop` | Process transcript after each turn (Stop) |
 | `periscope hook display` | Inject telemetry into prompt (UserPromptSubmit) |
 | `periscope statusline` | Render terminal statusline from stdin |
 | `periscope uninstall` | Remove hooks, optionally delete `~/.periscope` |
@@ -93,7 +93,7 @@ Dashboard at `http://localhost:8384`. Uses your existing Claude Code OAuth token
 │                     Claude Code                          │
 │                                                          │
 │  UserPromptSubmit ──► periscope hook display              │
-│  StopTurn ─────────► periscope hook stop                  │
+│  Stop ──────────────► periscope hook stop                  │
 │  Statusline ───────► periscope statusline                 │
 └────────────┬─────────────────┬───────────────────────────┘
              │                 │
@@ -117,15 +117,17 @@ Dashboard at `http://localhost:8384`. Uses your existing Claude Code OAuth token
 Every prompt, Periscope injects a compact telemetry line into Claude's context as a `<system-reminder>`:
 
 ```
-TELEMETRY: T:47(a12 t30 c5) cache:97.3% | 5h:40% wk:20% | 5h:40%→62%(3.2h@8.0%/h) | wk:20%→35%(4.3d@0.1%/ah) | EU:$2.50/$100 | Bash:8x Read:5x Grep:3x
+TELEMETRY: T:47(a12 t30 c5) cache:97.3% | eff:normal | 5h:40% wk:20% | proj-5h:62%(3.2h@8.0%/h) | proj-wk:35%(4.3d@0.1%/ah) | EU:$2.50/$100 | Bash:8x Read:5x Grep:3x
 ```
 
 | Field | Meaning |
 |-------|---------|
 | `T:47(a12 t30 c5)` | 47 total calls: 12 agent, 30 tool, 5 chat |
 | `cache:97.3%` | Cache hit rate |
+| `eff:normal` | Effort level (omitted when unset; `eff:high!normal` when slider overrides settings default) |
 | `5h:40% wk:20%` | Current rate limit utilization |
-| `5h:40%→62%(3.2h@8.0%/h)` | Forecast: will hit 62% in 3.2h at 8%/h burn rate |
+| `proj-5h:62%(3.2h@8.0%/h)` | 5-hour forecast: projected 62% at reset, 3.2h out, burning 8%/h |
+| `proj-wk:35%(4.3d@0.1%/ah)` | Weekly forecast: projected 35% at reset, burning 0.1%/active-hour |
 | `EU:$2.50/$100` | Extra usage credits spent / monthly limit |
 | `Bash:8x Read:5x` | Top tools by weighted token usage |
 
@@ -136,7 +138,7 @@ When usage is elevated (5hr >70% or weekly >50%), an advisory is appended prompt
 1. You send a message
 2. `UserPromptSubmit` fires → `periscope hook display` reads sidecar + cached rate limits → injects telemetry
 3. Claude processes your message with telemetry in context
-4. `StopTurn` fires → `periscope hook stop` reads new transcript entries → computes cost → updates sidecar
+4. `Stop` fires → `periscope hook stop` reads new transcript entries → computes cost → updates sidecar
 5. Dashboard picks up changes via file watcher → broadcasts to WebSocket clients
 
 ## Statusline
@@ -250,7 +252,7 @@ The `PERISCOPE_TOKEN` environment variable overrides `config.toml` token.
 ```
 periscope/
 ├── main.go              # Subcommand router, app struct, config
-├── hooks.go             # StopTurn + UserPromptSubmit hook handlers
+├── hooks.go             # Stop + UserPromptSubmit hook handlers
 ├── statusline.go        # Terminal statusline renderer (14 segments)
 ├── server.go            # HTTP API, WebSocket hub, background polling
 ├── installer.go         # periscope init/uninstall

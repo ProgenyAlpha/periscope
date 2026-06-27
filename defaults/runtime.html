@@ -320,6 +320,10 @@ a{color:var(--c-primary);text-decoration:none}
 // --- Shared Constants ---
 const TOKEN_WEIGHTS = { input: 1, cache_read: 0, cache_write: 1, output: 5 };
 const MODEL_PRICING = {
+  'fable-5':    { input: 10,   cache_read: 1.00, cache_write: 12.50, output: 50 },
+  'mythos-5':   { input: 10,   cache_read: 1.00, cache_write: 12.50, output: 50 },
+  'sonnet-4-6': { input: 3,    cache_read: 0.30, cache_write: 3.75,  output: 15 },
+  'opus-4-8':   { input: 5,    cache_read: 0.50, cache_write: 6.25,  output: 25 },
   'opus-4-7':   { input: 5,    cache_read: 0.50, cache_write: 6.25,  output: 25 },
   'opus-4-6':   { input: 5,    cache_read: 0.50, cache_write: 6.25,  output: 25 },
   'opus-4-5':   { input: 5,    cache_read: 0.50, cache_write: 6.25,  output: 25 },
@@ -1294,11 +1298,8 @@ const Periscope = {
     // Refresh usage immediately (cached data may be stale from previous session)
     this.refreshUsage();
 
-    // Connect WebSocket
+    // Connect WebSocket (onclose starts polling as fallback if WS fails)
     this._connectWS();
-
-    // Start polling as fallback
-    this._startPolling();
 
     document.getElementById('status-left').textContent = 'Periscope v0.1.0';
   }
@@ -1720,6 +1721,7 @@ async function togglePush() {
   }
   try {
     const resp = await fetch('/api/push/public-key');
+    if (!resp.ok) throw new Error('push key fetch failed: ' + resp.status);
     const {publicKey} = await resp.json();
     const sub = await reg.pushManager.subscribe({
       userVisibleOnly: true,

@@ -68,6 +68,7 @@ func sendPushNotification(db *sql.DB, title, body string) error {
 			VAPIDPublicKey:  pub,
 			VAPIDPrivateKey: priv,
 			TTL:             60,
+			HTTPClient:      &http.Client{Timeout: 10 * time.Second},
 		})
 		if err != nil {
 			slog.Warn("push send failed", "endpoint", sub.Endpoint[:40], "err", err)

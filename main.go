@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/BurntSushi/toml"
 	"github.com/fsnotify/fsnotify"
@@ -105,7 +106,7 @@ Usage:
   periscope init          Set up plugins, database, and hooks
   periscope serve         Start the dashboard server
   periscope status        Check if server is running
-  periscope hook stop     Process transcript (StopTurn hook)
+  periscope hook stop     Process transcript (Stop hook)
   periscope hook display  Output telemetry context (UserPromptSubmit hook)
   periscope statusline    Render terminal statusline (reads JSON from stdin)
   periscope uninstall     Remove hooks and clean up
@@ -175,7 +176,8 @@ func cmdServe() {
 	}
 
 	// Check if already running
-	resp, err := http.Get(fmt.Sprintf("http://%s:%d/api/health", app.Config.Server.Host, app.Config.Server.Port))
+	hc := &http.Client{Timeout: 5 * time.Second}
+	resp, err := hc.Get(fmt.Sprintf("http://%s:%d/api/health", app.Config.Server.Host, app.Config.Server.Port))
 	if err == nil {
 		resp.Body.Close()
 		fmt.Printf("Periscope already running on port %d\n", app.Config.Server.Port)
@@ -276,7 +278,8 @@ func cmdStatus() {
 	fmt.Printf("Checking %s...\n", addr)
 
 	// Try to hit the health endpoint
-	resp, err := http.Get(addr + "/api/health")
+	hc := &http.Client{Timeout: 5 * time.Second}
+	resp, err := hc.Get(addr + "/api/health")
 	if err != nil {
 		fmt.Println("Server is not running.")
 		os.Exit(1)

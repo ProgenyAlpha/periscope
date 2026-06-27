@@ -141,7 +141,7 @@ func CalcPhantomUsage(db *sql.DB) *PhantomData {
 	}
 
 	totalPct := phantomPct + cliPct
-	if totalPct < 0.5 || phantomPct < 0.5 {
+	if totalPct < 0.5 || phantomPct < 0.5 || cliPct <= 0 {
 		return &PhantomData{
 			LocalSessionTotal: math.Round(localTotal*100) / 100,
 			PhantomCost:       0,

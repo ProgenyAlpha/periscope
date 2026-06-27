@@ -135,7 +135,7 @@ func BuildForecast(stateDir string, usage map[string]any) string {
 
 		if !w.use5hr {
 			// Weekly: duty-adjusted active-hours projection
-			elapsedHrs := 168 - hrsLeft
+			elapsedHrs := math.Min(168.0, math.Max(0.0, 168.0-hrsLeft))
 			activeElapsed := math.Max(0.5, (elapsedHrs/24)*dutyHrs)
 			activeRemaining := (hrsLeft / 24) * dutyHrs
 			burnRate := float64(w.current) / activeElapsed

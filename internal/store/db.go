@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/ProgenyAlpha/periscope/internal/analytics"
+	"github.com/ProgenyAlpha/periscope/internal/forecast"
 
 	_ "modernc.org/sqlite"
 )
@@ -62,9 +63,12 @@ var migrations = []string{
 
 // OpenDB opens and migrates the SQLite database.
 func OpenDB(path string) (*sql.DB, error) {
-	db, err := sql.Open("sqlite", path+"?_pragma=journal_mode(wal)&_pragma=foreign_keys(1)")
+	db, err := sql.Open("sqlite", path+"?_pragma=journal_mode(wal)&_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)")
 	if err != nil {
 		return nil, err
+	}
+	if err := os.Chmod(path, 0600); err != nil {
+		slog.Warn("db chmod failed", "err", err)
 	}
 	if err := migrate(db); err != nil {
 		db.Close()
@@ -92,14 +96,23 @@ func migrate(db *sql.DB) error {
 		version = 0
 	}
 
-	// Run pending migrations
+	// Run pending migrations — each DDL + version bump in one transaction
 	for i := version; i < len(migrations); i++ {
 		slog.Info("running migration", "version", i+1)
-		if _, err := db.Exec(migrations[i]); err != nil {
+		tx, err := db.Begin()
+		if err != nil {
+			return fmt.Errorf("migration v%d begin: %w", i+1, err)
+		}
+		if _, err := tx.Exec(migrations[i]); err != nil {
+			tx.Rollback()
 			return fmt.Errorf("migration v%d failed: %w", i+1, err)
 		}
-		if _, err := db.Exec("UPDATE schema_version SET version = ?", i+1); err != nil {
+		if _, err := tx.Exec("UPDATE schema_version SET version = ?", i+1); err != nil {
+			tx.Rollback()
 			return fmt.Errorf("update schema_version to v%d: %w", i+1, err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("migration v%d commit: %w", i+1, err)
 		}
 	}
 
@@ -163,9 +176,14 @@ func PushGetAll(db *sql.DB) ([]PushSubscription, error) {
 	var subs []PushSubscription
 	for rows.Next() {
 		var s PushSubscription
-		if rows.Scan(&s.ID, &s.Endpoint, &s.Auth, &s.P256dh) == nil {
-			subs = append(subs, s)
+		if err := rows.Scan(&s.ID, &s.Endpoint, &s.Auth, &s.P256dh); err != nil {
+			slog.Error("PushGetAll: scan failed", "err", err)
+			continue
 		}
+		subs = append(subs, s)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	return subs, nil
 }
@@ -641,6 +659,9 @@ func SnapshotSidecarsToHistory(db *sql.DB, lastSessionSnapshot map[string]float6
 			snapshotted++
 		}
 	}
+	if err := rows.Err(); err != nil {
+		slog.Error("snapshot: rows error", "err", err)
+	}
 	if snapshotted > 0 {
 		slog.Info("sidecars snapshotted", "count", snapshotted)
 	}
@@ -663,6 +684,7 @@ type DashboardData struct {
 	PhantomUsage     *analytics.PhantomData `json:"phantomUsage,omitempty"`
 	Teams            json.RawMessage        `json:"teams,omitempty"`
 	LiveEffort       string                 `json:"live_effort,omitempty"`
+	BurnRatePerHour  float64                `json:"burnRatePerHour,omitempty"`
 }
 
 type SidecarEntry struct {
@@ -671,7 +693,7 @@ type SidecarEntry struct {
 	UpdatedAt string          `json:"updated_at,omitempty"`
 }
 
-func BuildDashboardData(db *sql.DB) (*DashboardData, error) {
+func BuildDashboardData(db *sql.DB, dataDir string) (*DashboardData, error) {
 	d := &DashboardData{
 		GeneratedAt: time.Now().Format(time.RFC3339),
 		Sessions:    []any{},
@@ -690,6 +712,9 @@ func BuildDashboardData(db *sql.DB) (*DashboardData, error) {
 				})
 			}
 		}
+		if err := rows.Err(); err != nil {
+			slog.Error("sidecars query error", "err", err)
+		}
 	}
 	if d.Sidecars == nil {
 		d.Sidecars = []SidecarEntry{}
@@ -703,6 +728,9 @@ func BuildDashboardData(db *sql.DB) (*DashboardData, error) {
 			if rows.Scan(&data) == nil {
 				d.History = append(d.History, json.RawMessage(data))
 			}
+		}
+		if err := rows.Err(); err != nil {
+			slog.Error("history query error", "err", err)
 		}
 	}
 	if d.History == nil {
@@ -718,6 +746,9 @@ func BuildDashboardData(db *sql.DB) (*DashboardData, error) {
 				d.LimitHistory = append(d.LimitHistory, json.RawMessage(data))
 			}
 		}
+		if err := rows.Err(); err != nil {
+			slog.Error("limit_history query error", "err", err)
+		}
 	}
 	if d.LimitHistory == nil {
 		d.LimitHistory = []json.RawMessage{}
@@ -732,6 +763,9 @@ func BuildDashboardData(db *sql.DB) (*DashboardData, error) {
 	d.Layout = KVGet(db, "config:layout")
 	d.PhantomUsage = analytics.CalcPhantomUsage(db)
 	d.Teams = KVGet(db, "cache:teams")
+	if br, ok := forecast.LocalBurnRate(dataDir, time.Hour); ok && br > 0 {
+		d.BurnRatePerHour = br
+	}
 
 	return d, nil
 }
@@ -774,7 +808,7 @@ func AppendLimitSnapshot(db *sql.DB, dataDir string, liveUsage json.RawMessage) 
 		}
 	}
 
-	now := time.Now().Format(time.RFC3339)
+	now := time.Now().UTC().Format(time.RFC3339)
 	current["ts"] = now
 	dataWithTS, _ := json.Marshal(current)
 	if _, err := db.Exec("INSERT INTO limit_history(ts, data) VALUES(?, ?)", now, string(dataWithTS)); err != nil {
@@ -819,6 +853,9 @@ func CompactLimitHistory(db *sql.DB, dataDir string) {
 			continue
 		}
 		all = append(all, e)
+	}
+	if err := rows.Err(); err != nil {
+		slog.Error("compact: rows error", "err", err)
 	}
 
 	if len(all) < 100 {
@@ -919,6 +956,9 @@ func CompactLimitHistory(db *sql.DB, dataDir string) {
 			}
 			f.WriteString(data + "\n")
 		}
+	}
+	if err := surviving.Err(); err != nil {
+		slog.Error("compact: surviving rows error", "err", err)
 	}
 }
 

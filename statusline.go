@@ -35,7 +35,7 @@ type StatuslineInput struct {
 	} `json:"context_window"`
 	VimMode *struct {
 		Mode string `json:"mode"`
-	} `json:"vim_mode"`
+	} `json:"vim"`
 	Effort *struct {
 		Level string `json:"level"`
 	} `json:"effort"`
@@ -116,6 +116,8 @@ type slSidecar struct {
 	Tools      []string
 	HasSidecar bool
 	Cost       float64
+	BurnRate   float64
+	BurnOK     bool
 }
 
 // --- Default catppuccin-mocha terminal colors ---
@@ -504,6 +506,13 @@ func segCost(sc slSidecar, theme *TerminalTheme) segment {
 	return segment{text: fmt.Sprintf(" $%.2f", val), color: theme.Yellow}
 }
 
+func segBurn(sc slSidecar, theme *TerminalTheme) segment {
+	if !sc.BurnOK || sc.BurnRate <= 0 {
+		return segment{empty: true}
+	}
+	return segment{text: fmt.Sprintf(" $%.2f/hr", sc.BurnRate), color: theme.Yellow}
+}
+
 func segReset(rates slRates, theme *TerminalTheme) segment {
 	now := time.Now().UTC()
 	var nearest float64
@@ -653,6 +662,8 @@ func getSegment(name string, input *StatuslineInput, sc slSidecar, rates slRates
 		return segContext(input, opts, theme)
 	case "vim":
 		return segVim(input, theme)
+	case "burn":
+		return segBurn(sc, theme)
 	default:
 		return segment{empty: true}
 	}
@@ -681,6 +692,8 @@ func segEffort(input *StatuslineInput, theme *TerminalTheme) segment {
 		col = theme.Yellow
 	case "xhigh":
 		col = theme.Peach
+	case "max":
+		col = theme.Red
 	}
 
 	// Compare against the persisted default; show drift if they differ.
@@ -823,10 +836,28 @@ func cmdStatusline() {
 			os.WriteFile(filepath.Join(dir, input.SessionID+".json"), payload, 0644)
 		}
 	}
-	// Always dump the raw stdin to a debug file so we can inspect what
-	// Claude Code is passing at any time (effort slider state, etc).
-	if home, err := os.UserHomeDir(); err == nil {
-		os.WriteFile(filepath.Join(home, ".periscope", "last-statusline-stdin.json"), stdinData, 0644)
+	// Write native rate-limit data from Claude Code into the polling cache,
+	// merging so we don't clobber sonnet/opus/extra_usage keys.
+	if input.RateLimits != nil {
+		if home, err := os.UserHomeDir(); err == nil {
+			cachePath := filepath.Join(home, ".claude", "hooks", "cost-state", "usage-api-cache.json")
+			cached := map[string]any{}
+			if raw, err := os.ReadFile(cachePath); err == nil {
+				stripped := stripBOM(raw)
+				json.Unmarshal(stripped, &cached)
+			}
+			if rl := input.RateLimits.FiveHour; rl != nil {
+				cached["pct5hr"] = rl.UsedPercentage
+				cached["reset5hr"] = time.Unix(rl.ResetsAt, 0).UTC().Format(time.RFC3339)
+			}
+			if rl := input.RateLimits.SevenDay; rl != nil {
+				cached["pctWeekly"] = rl.UsedPercentage
+				cached["resetWeekly"] = time.Unix(rl.ResetsAt, 0).UTC().Format(time.RFC3339)
+			}
+			if payload, err := json.Marshal(cached); err == nil {
+				os.WriteFile(cachePath, payload, 0644)
+			}
+		}
 	}
 
 	home, _ := os.UserHomeDir()
@@ -873,16 +904,17 @@ func cmdStatusline() {
 
 	// Load data
 	sidecar := loadSidecarForStatusline(dataDir)
+	sidecar.BurnRate, sidecar.BurnOK = forecast.LocalBurnRate(dataDir, time.Hour)
 	rates := loadRatesForStatusline(dataDir)
 
 	// Default row assignments: 1=top (work), 2=bottom (rates)
 	defaultRow := map[string]int{
-		"dir": 1, "git": 1, "model": 1, "effort": 1, "turns": 1, "cost": 1, "tools": 1,
+		"dir": 1, "git": 1, "model": 1, "effort": 1, "turns": 1, "cost": 1, "burn": 1, "tools": 1,
 		"rate-5hr": 2, "rate-weekly": 2, "rate-sonnet": 2, "reset": 2, "proj": 2, "cache": 2, "context": 2,
 	}
 
 	// Segment order — use config order if set, else default
-	defaultOrder := []string{"dir", "git", "model", "effort", "turns", "cost", "tools",
+	defaultOrder := []string{"dir", "git", "model", "effort", "turns", "cost", "burn", "tools",
 		"rate-5hr", "rate-weekly", "rate-sonnet", "reset", "proj", "cache", "context"}
 	segOrder := defaultOrder
 	if len(cfg.Order) > 0 {

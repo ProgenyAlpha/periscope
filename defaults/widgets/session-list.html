@@ -286,6 +286,7 @@ function _slRender(el) {
 function _slDetailRow(r, fmtK, fmtCost, fmtPlain) {
   const c = r.c || {};
   const lt = r.lt;
+  const esc = typeof escHtml === 'function' ? escHtml : function(s){return s||''};
 
   // Token breakdown
   const tokSection = `
@@ -333,7 +334,7 @@ function _slDetailRow(r, fmtK, fmtCost, fmtPlain) {
     toolsHtml = '<span class="detail-label">none</span>';
   } else {
     toolsHtml = '<div class="tool-tags">' + toolEntries.map(([name, stat]) =>
-      `<span class="tool-tag">${name}<span class="tc">${stat.calls || 0}</span></span>`
+      `<span class="tool-tag">${esc(name)}<span class="tc">${stat.calls || 0}</span></span>`
     ).join('') + '</div>';
   }
   const toolSection = `
@@ -352,7 +353,7 @@ function _slDetailRow(r, fmtK, fmtCost, fmtPlain) {
     const ltCost = lt.cost || 0;
     const ltTools = lt.tools || [];
     const ltToolTags = ltTools.length > 0
-      ? '<span class="lt-tool-list">' + ltTools.map(t => `<span class="lt-tool-item">${t}</span>`).join('') + '</span>'
+      ? '<span class="lt-tool-list">' + ltTools.map(t => `<span class="lt-tool-item">${esc(t)}</span>`).join('') + '</span>'
       : '<span style="color:var(--text-dim)">none</span>';
 
     lastTurnHtml = `

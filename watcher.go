@@ -80,7 +80,7 @@ func watchLoop(app *App, watcher *fsnotify.Watcher) {
 				slog.Debug("data reimport successful")
 			}
 			// Push fresh data to all WS clients
-			data, err := store.BuildDashboardData(app.DB)
+			data, err := store.BuildDashboardData(app.DB, app.DataDir)
 			if err == nil {
 				annotateLiveEffort(data)
 				app.Hub.broadcastJSON("data", data)

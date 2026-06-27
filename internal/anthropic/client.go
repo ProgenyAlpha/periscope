@@ -89,7 +89,10 @@ func NewClientFromDisk(claudeDir string) (*Client, error) {
 
 // FetchUsage retrieves current usage stats.
 func (c *Client) FetchUsage() (*APIResponse, error) {
-	req, _ := http.NewRequest("GET", "https://api.anthropic.com/api/oauth/usage", nil)
+	req, err := http.NewRequest("GET", "https://api.anthropic.com/api/oauth/usage", nil)
+	if err != nil {
+		return nil, err
+	}
 	c.setHeaders(req)
 
 	client := &http.Client{Timeout: 10 * time.Second}
@@ -123,7 +126,10 @@ func (c *Client) FetchUsage() (*APIResponse, error) {
 // know which fetch path produced the data.
 func (c *Client) FetchUsageFromHeaders() (*APIResponse, error) {
 	body := bytes.NewReader([]byte(`{"model":"claude-haiku-4-5","max_tokens":1,"messages":[{"role":"user","content":"."}]}`))
-	req, _ := http.NewRequest("POST", "https://api.anthropic.com/v1/messages", body)
+	req, err := http.NewRequest("POST", "https://api.anthropic.com/v1/messages", body)
+	if err != nil {
+		return nil, err
+	}
 	c.setHeaders(req)
 	req.Header.Set("Content-Type", "application/json")
 
@@ -190,7 +196,10 @@ func parseUnifiedHeaders(h http.Header) *APIResponse {
 
 // FetchProfile retrieves user profile info.
 func (c *Client) FetchProfile() (map[string]any, error) {
-	req, _ := http.NewRequest("GET", "https://api.anthropic.com/api/oauth/profile", nil)
+	req, err := http.NewRequest("GET", "https://api.anthropic.com/api/oauth/profile", nil)
+	if err != nil {
+		return nil, err
+	}
 	c.setHeaders(req)
 
 	client := &http.Client{Timeout: 10 * time.Second}

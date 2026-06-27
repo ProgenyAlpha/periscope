@@ -1,4 +1,4 @@
-const CACHE_NAME = 'periscope-v1';
+const CACHE_NAME = 'periscope-v2-2026-06-27';
 const OFFLINE_URLS = ['/'];
 
 self.addEventListener('install', event => {

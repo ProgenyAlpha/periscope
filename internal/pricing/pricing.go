@@ -19,6 +19,10 @@ var ModelPricing = map[string]ModelRates{
 	"claude-3-5-sonnet":          {3, 0.30, 3.75, 15},
 	"claude-3-5-haiku":           {0.80, 0.08, 1.00, 4},
     // Legacy/specific versions from hooks.go
+	"claude-fable-5":             {10, 1.00, 12.50, 50},
+	"claude-mythos-5":            {10, 1.00, 12.50, 50},
+	"claude-sonnet-4-6":          {3, 0.30, 3.75, 15},
+	"claude-opus-4-8":            {5, 0.50, 6.25, 25},
 	"claude-opus-4-7":            {5, 0.50, 6.25, 25},
 	"claude-opus-4-6":            {5, 0.50, 6.25, 25},
 	"claude-opus-4-5":            {5, 0.50, 6.25, 25},
@@ -40,11 +44,17 @@ func GetRates(model string) ModelRates {
 	if rates, ok := ModelPricing[model]; ok {
 		return rates
 	}
+	bestLen := -1
+	var bestRates ModelRates
 	for prefix, rates := range ModelPricing {
-		if strings.HasPrefix(model, prefix) {
-			return rates
+		if strings.HasPrefix(model, prefix) && len(prefix) > bestLen {
+			bestLen = len(prefix)
+			bestRates = rates
 		}
 	}
+	if bestLen >= 0 {
+		return bestRates
+	}
     // Fallback default (Opus pricing often safest heavy estimate or Sonnet as middle ground)
-	return ModelPricing["claude-opus-4-6"] 
+	return ModelPricing["claude-opus-4-6"]
 }

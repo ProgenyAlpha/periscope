@@ -32,7 +32,10 @@ func GenerateTitle(client *Client, project string, prompts []string) (string, er
 	}
 	bodyBytes, _ := json.Marshal(reqBody)
 
-	req, _ := http.NewRequest("POST", "https://api.anthropic.com/v1/messages", bytes.NewReader(bodyBytes))
+	req, err := http.NewRequest("POST", "https://api.anthropic.com/v1/messages", bytes.NewReader(bodyBytes))
+	if err != nil {
+		return "", fmt.Errorf("title request build failed: %w", err)
+	}
 	req.Header.Set("Authorization", "Bearer "+client.Token)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("anthropic-version", "2023-06-01")

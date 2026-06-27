@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -9,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -109,7 +111,11 @@ var upgrader = websocket.Upgrader{
 	WriteBufferSize: 4096,
 	CheckOrigin: func(r *http.Request) bool {
 		origin := r.Header.Get("Origin")
-		allowed := origin == "" || strings.HasPrefix(origin, "http://localhost") || strings.HasPrefix(origin, "http://127.0.0.1")
+		allowed := origin == "" ||
+			origin == "http://localhost" ||
+			origin == "http://127.0.0.1" ||
+			strings.HasPrefix(origin, "http://localhost:") ||
+			strings.HasPrefix(origin, "http://127.0.0.1:")
 		if !allowed {
 			slog.Warn("ws upgrade rejected", "origin", origin)
 		}
@@ -458,7 +464,11 @@ func startServer(ctx context.Context, app *App) {
 func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
-		if origin == "" || strings.HasPrefix(origin, "http://localhost") || strings.HasPrefix(origin, "http://127.0.0.1") {
+		if origin == "" ||
+			origin == "http://localhost" ||
+			origin == "http://127.0.0.1" ||
+			strings.HasPrefix(origin, "http://localhost:") ||
+			strings.HasPrefix(origin, "http://127.0.0.1:") {
 			if origin != "" {
 				w.Header().Set("Access-Control-Allow-Origin", origin)
 			}
@@ -501,7 +511,7 @@ func handleData(app *App, w http.ResponseWriter, r *http.Request) {
 		slog.Warn("data import error", "err", err)
 	}
 
-	data, err := store.BuildDashboardData(app.DB)
+	data, err := store.BuildDashboardData(app.DB, app.DataDir)
 	if err != nil {
 		slog.Error("data build error", "err", err)
 		writeError(w, 500, err.Error())
@@ -618,7 +628,14 @@ func handleStatuslineToggle(app *App, w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.Enabled {
-		binary := filepath.Join(app.HomeDir, "periscope.exe")
+		binary, exeErr := os.Executable()
+		if exeErr != nil {
+			binaryName := "periscope"
+			if runtime.GOOS == "windows" {
+				binaryName = "periscope.exe"
+			}
+			binary = filepath.Join(app.HomeDir, binaryName)
+		}
 		cmd := map[string]string{"type": "command", "command": binary + " statusline"}
 		cmdJSON, _ := json.Marshal(cmd)
 		settings["statusLine"] = cmdJSON
@@ -638,7 +655,10 @@ func handleStatuslineToggle(app *App, w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"ok": true, "enabled": req.Enabled})
 }
 
-var lastManualSync time.Time
+var (
+	lastManualSync time.Time
+	manualSyncMu   sync.Mutex
+)
 
 func handleUsage(app *App, w http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
@@ -647,7 +667,10 @@ func handleUsage(app *App, w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Cooldown: manual sync limited to once per 5 minutes to protect API budget
-	if since := time.Since(lastManualSync); since < 5*time.Minute {
+	manualSyncMu.Lock()
+	since := time.Since(lastManualSync)
+	if since < 5*time.Minute {
+		manualSyncMu.Unlock()
 		remaining := 5*time.Minute - since
 		slog.Info("sync cooldown active", "remaining", remaining.Round(time.Second))
 		// Serve cached data instead
@@ -660,6 +683,7 @@ func handleUsage(app *App, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	lastManualSync = time.Now()
+	manualSyncMu.Unlock()
 
 	result, err := fetchAndCacheUsage(app)
 	if err != nil {
@@ -894,7 +918,10 @@ func adaptivePollInterval(dataDir string, fast, slow time.Duration) time.Duratio
 
 // lastOAuthUsageFetch tracks when /api/oauth/usage was last called so the
 // hourly refresh schedule can stay well under the ~5-call-per-90min budget.
-var lastOAuthUsageFetch time.Time
+var (
+	lastOAuthUsageFetch time.Time
+	oauthFetchMu        sync.Mutex
+)
 
 // annotateLiveEffort sets data.LiveEffort to the most recently captured
 // effort level from ~/.periscope/effort/<sid>.json (written by cmdStatusline
@@ -947,7 +974,10 @@ func annotateLiveEffort(data *store.DashboardData) {
 // stays fresh) or no cap is cached yet (fresh install / first poll).
 func needsOAuthRefresh(app *App) bool {
 	const refreshInterval = time.Hour
-	if !lastOAuthUsageFetch.IsZero() && time.Since(lastOAuthUsageFetch) < refreshInterval {
+	oauthFetchMu.Lock()
+	t := lastOAuthUsageFetch
+	oauthFetchMu.Unlock()
+	if !t.IsZero() && time.Since(t) < refreshInterval {
 		return false
 	}
 	return true
@@ -1062,13 +1092,17 @@ func fetchAndCacheUsage(app *App) (json.RawMessage, error) {
 			slog.Debug("header ping failed, falling back to oauth/usage", "err", err)
 			resp, err = client.FetchUsage()
 			if err == nil {
+				oauthFetchMu.Lock()
 				lastOAuthUsageFetch = time.Now()
+				oauthFetchMu.Unlock()
 			}
 		}
 	} else {
 		resp, err = client.FetchUsage()
 		if err == nil {
+			oauthFetchMu.Lock()
 			lastOAuthUsageFetch = time.Now()
+			oauthFetchMu.Unlock()
 		} else {
 			slog.Debug("oauth/usage refresh failed, falling back to header ping", "err", err)
 			resp, err = client.FetchUsageFromHeaders()
@@ -1179,7 +1213,7 @@ func fetchAndCacheProfile(app *App) {
 
 	result, _ := json.Marshal(profile)
 	store.KVSet(app.DB, "cache:profile", string(result))
-	if err := os.WriteFile(filepath.Join(app.DataDir, "profile-cache.json"), result, 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(app.DataDir, "profile-cache.json"), result, 0600); err != nil {
 		slog.Warn("profile cache write failed", "err", err)
 	}
 }
@@ -1199,7 +1233,9 @@ func authMiddleware(token string, next http.Handler) http.Handler {
 			return
 		}
 		// Check bearer token header
-		if r.Header.Get("Authorization") == "Bearer "+token {
+		authHeader := r.Header.Get("Authorization")
+		expected := "Bearer " + token
+		if len(authHeader) == len(expected) && subtle.ConstantTimeCompare([]byte(authHeader), []byte(expected)) == 1 {
 			next.ServeHTTP(w, r)
 			return
 		}

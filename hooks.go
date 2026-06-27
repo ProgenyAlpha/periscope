@@ -690,6 +690,9 @@ func hookDisplay() {
 	if euStr != "" {
 		seg = append(seg, euStr)
 	}
+	if burnRate, burnOK := forecast.LocalBurnRate(stateDir, time.Hour); burnOK && burnRate > 0 {
+		seg = append(seg, fmt.Sprintf("burn:$%.2f/h", burnRate))
+	}
 	if toolStr != "" {
 		seg = append(seg, toolStr)
 	}
@@ -746,7 +749,11 @@ func hookRecordSnapshot(stateDir string, usage map[string]any) {
 	histPath := filepath.Join(stateDir, "limit-history.jsonl")
 
 	if f, err := os.Open(histPath); err == nil {
-		fi, _ := f.Stat()
+		fi, err := f.Stat()
+		if err != nil {
+			f.Close()
+			return
+		}
 		offset := fi.Size() - 512
 		if offset < 0 {
 			offset = 0

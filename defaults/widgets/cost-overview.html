@@ -40,6 +40,7 @@ Periscope.registerWidget({
         '</div>' +
         '<div class="m-stats">' +
           '<div class="m-stat" id="km-burn-stat"><span class="m-stat-icon">\u26A1</span><div class="m-stat-body"><div class="m-stat-val" id="km-burn-val">--</div><div class="m-stat-label">Burn Rate</div></div></div>' +
+          '<div class="m-stat" id="km-br1h-stat" style="display:none"><span class="m-stat-icon">$</span><div class="m-stat-body"><div class="m-stat-val" id="km-br1h-val"></div><div class="m-stat-label">Burn rate (1h)</div></div></div>' +
           '<div class="m-stat" id="km-cache-stat"><span class="m-stat-icon">\u21BB</span><div class="m-stat-body"><div class="m-stat-val" id="km-cache-val">--</div><div class="m-stat-label">Cache Hit</div></div></div>' +
           '<div class="m-stat" id="km-avg-stat"><span class="m-stat-icon">\u00F7</span><div class="m-stat-body"><div class="m-stat-val" id="km-avg-val">--</div><div class="m-stat-label">Avg Turn</div></div></div>' +
         '</div>' +
@@ -192,6 +193,17 @@ Periscope.registerWidget({
     } else {
       burnVal.textContent = '--';
       burnVal.style.color = '';
+    }
+
+    // --- Server-side 1h burn rate ---
+    var br1hStat = el.querySelector('#km-br1h-stat');
+    var br1hVal = el.querySelector('#km-br1h-val');
+    var serverBurn = data.burnRatePerHour;
+    if (serverBurn && serverBurn > 0) {
+      br1hVal.textContent = '$' + serverBurn.toFixed(2) + '/hr' + cs;
+      br1hStat.style.display = '';
+    } else {
+      br1hStat.style.display = 'none';
     }
 
     // --- Cache hit ---
