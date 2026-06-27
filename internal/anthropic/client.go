@@ -1,6 +1,7 @@
 package anthropic
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"time"
 )
 
@@ -58,6 +60,10 @@ type APIResponse struct {
 		UsedCredits  float64  `json:"used_credits"`
 		Utilization  *float64 `json:"utilization"`
 	} `json:"extra_usage"`
+	// OverageUtilization is populated only by parseUnifiedHeaders. Used to
+	// derive UsedCredits from a cached monthly_limit cap when the dedicated
+	// /api/oauth/usage endpoint isn't being called.
+	OverageUtilization *float64 `json:"-"`
 }
 
 // NewClientFromDisk reads credentials from the standard Claude location.
@@ -103,6 +109,83 @@ func (c *Client) FetchUsage() (*APIResponse, error) {
 		return nil, err
 	}
 	return &parsed, nil
+}
+
+// FetchUsageFromHeaders sends a minimal /v1/messages ping and reads the
+// unified rate-limit headers Anthropic returns on every message response.
+//
+// This is the preferred path: /api/oauth/usage has a tight ~5-req-per-90min
+// budget and 429s force a long cooldown, while /v1/messages doesn't gate on
+// metering frequency — only on the same 5h/7d windows we're trying to read.
+// One ping costs ≈ $0.00001 (1 input + 1 output token on the cheapest model).
+//
+// Returns an APIResponse populated from headers so callers don't need to
+// know which fetch path produced the data.
+func (c *Client) FetchUsageFromHeaders() (*APIResponse, error) {
+	body := bytes.NewReader([]byte(`{"model":"claude-haiku-4-5","max_tokens":1,"messages":[{"role":"user","content":"."}]}`))
+	req, _ := http.NewRequest("POST", "https://api.anthropic.com/v1/messages", body)
+	c.setHeaders(req)
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	io.Copy(io.Discard, resp.Body) // drain so the connection can be reused
+
+	// Even on 429 the rate-limit headers are returned and are still authoritative.
+	parsed := parseUnifiedHeaders(resp.Header)
+	if parsed == nil {
+		if resp.StatusCode != 200 {
+			return nil, &APIError{StatusCode: resp.StatusCode, Body: "no unified rate-limit headers in response"}
+		}
+		return nil, fmt.Errorf("no unified rate-limit headers in response")
+	}
+	return parsed, nil
+}
+
+// parseUnifiedHeaders maps anthropic-ratelimit-unified-* headers into the
+// APIResponse shape used by TransformUsage. Header names per Claude Code
+// issue #12829. Note 7d_sonnet uses an underscore, not a dash.
+func parseUnifiedHeaders(h http.Header) *APIResponse {
+	get := func(k string) string { return h.Get("anthropic-ratelimit-unified-" + k) }
+	parsePair := func(utilKey, resetKey string) *UsageWindow {
+		u := get(utilKey)
+		r := get(resetKey)
+		if u == "" && r == "" {
+			return nil
+		}
+		w := &UsageWindow{}
+		if u != "" {
+			if f, err := strconv.ParseFloat(u, 64); err == nil {
+				w.Utilization = f * 100 // headers report 0..1, APIResponse expects 0..100
+			}
+		}
+		if r != "" {
+			if sec, err := strconv.ParseInt(r, 10, 64); err == nil {
+				w.ResetsAt = time.Unix(sec, 0).UTC().Format(time.RFC3339)
+			}
+		}
+		return w
+	}
+
+	resp := &APIResponse{
+		FiveHour:       parsePair("5h-utilization", "5h-reset"),
+		SevenDay:       parsePair("7d-utilization", "7d-reset"),
+		SevenDaySonnet: parsePair("7d_sonnet-utilization", "7d_sonnet-reset"),
+		SevenDayOpus:   parsePair("7d_opus-utilization", "7d_opus-reset"),
+	}
+	if u := get("Overage-Utilization"); u != "" {
+		if f, err := strconv.ParseFloat(u, 64); err == nil {
+			resp.OverageUtilization = &f
+		}
+	}
+	if resp.FiveHour == nil && resp.SevenDay == nil && resp.SevenDaySonnet == nil && resp.SevenDayOpus == nil && resp.OverageUtilization == nil {
+		return nil
+	}
+	return resp
 }
 
 // FetchProfile retrieves user profile info.

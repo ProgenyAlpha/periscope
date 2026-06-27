@@ -21,6 +21,7 @@ import (
 // --- Statusline Input (piped from Claude Code via stdin) ---
 
 type StatuslineInput struct {
+	SessionID string `json:"session_id"`
 	Workspace *struct {
 		CurrentDir string `json:"current_dir"`
 		ProjectDir string `json:"project_dir"`
@@ -35,6 +36,22 @@ type StatuslineInput struct {
 	VimMode *struct {
 		Mode string `json:"mode"`
 	} `json:"vim_mode"`
+	Effort *struct {
+		Level string `json:"level"`
+	} `json:"effort"`
+	Cost *struct {
+		TotalCostUSD float64 `json:"total_cost_usd"`
+	} `json:"cost"`
+	RateLimits *struct {
+		FiveHour *struct {
+			UsedPercentage int   `json:"used_percentage"`
+			ResetsAt       int64 `json:"resets_at"`
+		} `json:"five_hour"`
+		SevenDay *struct {
+			UsedPercentage int   `json:"used_percentage"`
+			ResetsAt       int64 `json:"resets_at"`
+		} `json:"seven_day"`
+	} `json:"rate_limits"`
 }
 
 // --- Terminal Theme (ANSI 256-color) ---
@@ -612,6 +629,8 @@ func getSegment(name string, input *StatuslineInput, sc slSidecar, rates slRates
 		return segGit(input, theme)
 	case "model":
 		return segModel(input, theme)
+	case "effort":
+		return segEffort(input, theme)
 	case "turns":
 		return segTurns(sc, theme)
 	case "rate-5hr":
@@ -637,6 +656,61 @@ func getSegment(name string, input *StatuslineInput, sc slSidecar, rates slRates
 	default:
 		return segment{empty: true}
 	}
+}
+
+// segEffort renders the live effort level passed by Claude Code in the
+// statusline stdin payload. Color-coded so xhigh stands out — that's the
+// expensive setting and you usually want to know when you're on it.
+//
+// Also flags drift between the in-flight slider value and the persisted
+// default in ~/.claude/settings.json (issue #30726: slider doesn't write
+// settings.json). When they disagree, render `eff:xhigh!medium` so the
+// statusline shows what's actually being applied AND the ignored default.
+func segEffort(input *StatuslineInput, theme *TerminalTheme) segment {
+	if input == nil || input.Effort == nil || input.Effort.Level == "" {
+		return segment{empty: true}
+	}
+	level := strings.ToLower(input.Effort.Level)
+	col := theme.Cyan
+	switch level {
+	case "low":
+		col = theme.Green
+	case "medium":
+		col = theme.Cyan
+	case "high":
+		col = theme.Yellow
+	case "xhigh":
+		col = theme.Peach
+	}
+
+	// Compare against the persisted default; show drift if they differ.
+	settingsLevel := readSettingsEffort()
+	text := " eff:" + level
+	if settingsLevel != "" && !strings.EqualFold(settingsLevel, level) {
+		text = " eff:" + level + "!" + strings.ToLower(settingsLevel)
+		col = theme.Peach
+	}
+	return segment{text: text, color: col}
+}
+
+// readSettingsEffort returns the persisted effortLevel from
+// ~/.claude/settings.json, or "" if missing.
+func readSettingsEffort() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	raw, err := os.ReadFile(filepath.Join(home, ".claude", "settings.json"))
+	if err != nil {
+		return ""
+	}
+	var s struct {
+		EffortLevel string `json:"effortLevel"`
+	}
+	if json.Unmarshal(raw, &s) != nil {
+		return ""
+	}
+	return s.EffortLevel
 }
 
 // --- Renderers ---
@@ -732,6 +806,29 @@ func cmdStatusline() {
 		json.Unmarshal(stdinData, &input)
 	}
 
+	// Persist live effort + rate-limit data captured from the Claude Code
+	// statusline payload. Lets the Stop hook read the *current* effort level
+	// (settings.json gets cleared by the slider per issue #30726) and lets
+	// the polling loop opportunistically use Anthropic's authoritative
+	// rate-limit numbers without burning a /v1/messages ping.
+	if input.SessionID != "" && input.Effort != nil && input.Effort.Level != "" {
+		if home, err := os.UserHomeDir(); err == nil {
+			dir := filepath.Join(home, ".periscope", "effort")
+			os.MkdirAll(dir, 0755)
+			payload, _ := json.Marshal(map[string]any{
+				"sessionId": input.SessionID,
+				"level":     input.Effort.Level,
+				"updatedAt": time.Now().UTC().Format(time.RFC3339),
+			})
+			os.WriteFile(filepath.Join(dir, input.SessionID+".json"), payload, 0644)
+		}
+	}
+	// Always dump the raw stdin to a debug file so we can inspect what
+	// Claude Code is passing at any time (effort slider state, etc).
+	if home, err := os.UserHomeDir(); err == nil {
+		os.WriteFile(filepath.Join(home, ".periscope", "last-statusline-stdin.json"), stdinData, 0644)
+	}
+
 	home, _ := os.UserHomeDir()
 	periscopeDir := filepath.Join(home, ".periscope")
 	pluginDir := filepath.Join(periscopeDir, "plugins")
@@ -780,12 +877,12 @@ func cmdStatusline() {
 
 	// Default row assignments: 1=top (work), 2=bottom (rates)
 	defaultRow := map[string]int{
-		"dir": 1, "git": 1, "model": 1, "turns": 1, "cost": 1, "tools": 1,
+		"dir": 1, "git": 1, "model": 1, "effort": 1, "turns": 1, "cost": 1, "tools": 1,
 		"rate-5hr": 2, "rate-weekly": 2, "rate-sonnet": 2, "reset": 2, "proj": 2, "cache": 2, "context": 2,
 	}
 
 	// Segment order — use config order if set, else default
-	defaultOrder := []string{"dir", "git", "model", "turns", "cost", "tools",
+	defaultOrder := []string{"dir", "git", "model", "effort", "turns", "cost", "tools",
 		"rate-5hr", "rate-weekly", "rate-sonnet", "reset", "proj", "cache", "context"}
 	segOrder := defaultOrder
 	if len(cfg.Order) > 0 {

@@ -19,6 +19,7 @@ var ModelPricing = map[string]ModelRates{
 	"claude-3-5-sonnet":          {3, 0.30, 3.75, 15},
 	"claude-3-5-haiku":           {0.80, 0.08, 1.00, 4},
     // Legacy/specific versions from hooks.go
+	"claude-opus-4-7":            {5, 0.50, 6.25, 25},
 	"claude-opus-4-6":            {5, 0.50, 6.25, 25},
 	"claude-opus-4-5":            {5, 0.50, 6.25, 25},
 	"claude-opus-4-1":            {15, 1.50, 18.75, 75},

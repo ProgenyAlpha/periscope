@@ -420,13 +420,37 @@ func hookStop() {
 		}
 	}
 
-	settingsPath := filepath.Join(home, ".claude", "settings.json")
-	if raw, err := os.ReadFile(settingsPath); err == nil {
-		var settings struct {
-			EffortLevel string `json:"effortLevel"`
+	// Effort level resolution order (most-current first):
+	//   1. ~/.periscope/effort/<session_id>.json — live value persisted by
+	//      cmdStatusline from Claude Code's statusline stdin payload
+	//   2. CLAUDE_CODE_EFFORT_LEVEL env var
+	//   3. ~/.claude/settings.json effortLevel (stale: gets cleared by the
+	//      slider UI per issue #30726)
+	state.EffortLevel = ""
+	effortPath := filepath.Join(home, ".periscope", "effort", payload.SessionID+".json")
+	if raw, err := os.ReadFile(effortPath); err == nil {
+		var live struct {
+			Level     string `json:"level"`
+			UpdatedAt string `json:"updatedAt"`
 		}
-		if json.Unmarshal(raw, &settings) == nil && settings.EffortLevel != "" {
-			state.EffortLevel = settings.EffortLevel
+		if json.Unmarshal(raw, &live) == nil && live.Level != "" {
+			state.EffortLevel = live.Level
+		}
+	}
+	if state.EffortLevel == "" {
+		if envEffort := os.Getenv("CLAUDE_CODE_EFFORT_LEVEL"); envEffort != "" {
+			state.EffortLevel = envEffort
+		}
+	}
+	if state.EffortLevel == "" {
+		settingsPath := filepath.Join(home, ".claude", "settings.json")
+		if raw, err := os.ReadFile(settingsPath); err == nil {
+			var settings struct {
+				EffortLevel string `json:"effortLevel"`
+			}
+			if json.Unmarshal(raw, &settings) == nil && settings.EffortLevel != "" {
+				state.EffortLevel = settings.EffortLevel
+			}
 		}
 	}
 
@@ -489,7 +513,11 @@ func hookDisplay() {
 		return
 	}
 
-	slog.Info("display hook: processing", "sid", payload.SessionID[:8])
+	shortSid := payload.SessionID
+	if len(shortSid) > 8 {
+		shortSid = shortSid[:8]
+	}
+	slog.Info("display hook: processing", "sid", shortSid)
 
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -531,10 +559,6 @@ func hookDisplay() {
 	slog.Info("display hook: loaded sidecar", "cost", c.Cost, "calls", totalCalls)
 
 	// Append history entry
-	shortSid := payload.SessionID
-	if len(shortSid) > 8 {
-		shortSid = shortSid[:8]
-	}
 	historyEntry := map[string]any{
 		"ts":    time.Now().UTC().Format("2006-01-02T15:04:05Z"),
 		"sid":   shortSid,
@@ -624,9 +648,39 @@ func hookDisplay() {
 		forecastStr = forecast.BuildForecast(stateDir, usage)
 	}
 
+	// Live effort: prefer the value cmdStatusline persists from Claude Code's
+	// stdin payload (always current), fall back to sidecar state (last Stop).
+	liveEffort := state.EffortLevel
+	effortFile := filepath.Join(home, ".periscope", "effort", payload.SessionID+".json")
+	if raw, err := os.ReadFile(effortFile); err == nil {
+		var live struct {
+			Level string `json:"level"`
+		}
+		if json.Unmarshal(raw, &live) == nil && live.Level != "" {
+			liveEffort = live.Level
+		}
+	}
+
 	// Build single-line compact telemetry
 	seg := []string{fmt.Sprintf("T:%d(a%d t%d c%d) cache:%s",
 		totalCalls, c.AgentCalls, c.ToolCalls, c.ChatCalls, cacheStr)}
+	if liveEffort != "" {
+		// Mirror the statusline's drift indicator: if the persisted default
+		// in settings.json disagrees with the in-flight slider value, show
+		// both so the user (and Claude reading telemetry) sees the override.
+		effortStr := "eff:" + liveEffort
+		if settingsPath := filepath.Join(home, ".claude", "settings.json"); settingsPath != "" {
+			if raw, err := os.ReadFile(settingsPath); err == nil {
+				var s struct {
+					EffortLevel string `json:"effortLevel"`
+				}
+				if json.Unmarshal(raw, &s) == nil && s.EffortLevel != "" && !strings.EqualFold(s.EffortLevel, liveEffort) {
+					effortStr = "eff:" + liveEffort + "!" + strings.ToLower(s.EffortLevel)
+				}
+			}
+		}
+		seg = append(seg, effortStr)
+	}
 	if pct5hr >= 0 {
 		seg = append(seg, fmt.Sprintf("5h:%d%% wk:%d%%", pct5hr, pctWk))
 	}
@@ -658,44 +712,20 @@ func hookDisplay() {
 	slog.Debug("display hook: output sent")
 }
 
-// hookRefreshUsage returns current usage data, refreshing from the Anthropic API if the
-// cache is stale (>30s).
+// hookRefreshUsage returns current usage data from the cache file.
+// The server's polling loop is responsible for refreshing the cache from the API.
+// The hook must NOT make its own API calls — doing so burns through Anthropic's
+// rate limit budget and extends the 429 cooldown window.
 func hookRefreshUsage(stateDir, claudeDir string) map[string]any {
 	cachePath := filepath.Join(stateDir, "usage-api-cache.json")
-
 	cached := readUsageCache(cachePath)
 	if cached != nil {
 		if fetched, ok := cached["fetched_at"].(float64); ok {
 			age := time.Since(time.Unix(int64(fetched), 0))
-			if age < 30*time.Second {
-				slog.Debug("usage cache fresh", "age_s", int(age.Seconds()))
-				return cached
-			}
-			slog.Debug("usage cache stale", "age_s", int(age.Seconds()))
+			slog.Debug("usage cache read", "age_s", int(age.Seconds()))
 		}
 	}
-
-	client, err := anthropic.NewClientFromDisk(claudeDir)
-	if err != nil {
-		slog.Warn("cannot create API client, using stale cache", "err", err)
-		return cached
-	}
-
-	resp, err := client.FetchUsage()
-	if err != nil {
-		slog.Warn("API request failed, using stale cache", "err", err)
-		return cached
-	}
-
-	slog.Debug("usage data fetched from API")
-	usage := anthropic.TransformUsage(resp)
-
-	result, _ := json.Marshal(usage)
-	if err := os.WriteFile(cachePath, result, 0644); err != nil {
-		slog.Error("failed to write usage cache", "err", err)
-	}
-
-	return usage
+	return cached
 }
 
 func readUsageCache(path string) map[string]any {

@@ -194,12 +194,16 @@ func BuildForecast(stateDir string, usage map[string]any) string {
 			verdict = "monitor"
 		}
 
+		// Projection-only format: the current % already appears in the
+		// telemetry's prefix section (e.g. `5h:13% wk:11%`), so showing it
+		// here as `5h:13%→70%` invites misreads (range / current-of-70%).
+		// `proj-5h:70%` is unambiguously a forward projection.
 		if verdict == "OK" || verdict == "idle" {
-			parts = append(parts, fmt.Sprintf("%s:%d%%→%d%%(%s@%s)",
-				w.label, w.current, proj, tl, rateStr))
+			parts = append(parts, fmt.Sprintf("proj-%s:%d%%(%s@%s)",
+				w.label, proj, tl, rateStr))
 		} else {
-			parts = append(parts, fmt.Sprintf("%s:%d%%→%d%%(%s@%s)%s",
-				w.label, w.current, proj, tl, rateStr, verdict))
+			parts = append(parts, fmt.Sprintf("proj-%s:%d%%(%s@%s) %s",
+				w.label, proj, tl, rateStr, verdict))
 		}
 	}
 

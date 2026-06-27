@@ -82,6 +82,7 @@ func watchLoop(app *App, watcher *fsnotify.Watcher) {
 			// Push fresh data to all WS clients
 			data, err := store.BuildDashboardData(app.DB)
 			if err == nil {
+				annotateLiveEffort(data)
 				app.Hub.broadcastJSON("data", data)
 				slog.Debug("broadcasted updated data to ws clients")
 			} else {

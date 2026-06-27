@@ -108,7 +108,10 @@ func CalcPhantomUsage(db *sql.DB) *PhantomData {
 	}
 
 	// Walk consecutive snapshots. If pctWeekly grew and no CLI activity
-	// occurred between them, attribute that growth to phantom.
+	// occurred between them (with ±5min tolerance), attribute that growth to phantom.
+	// The tolerance accounts for usage-history entries only being written on hook triggers,
+	// not continuously — so there are natural gaps even during active CLI use.
+	const activityTolerance = 5 // minutes before/after snapshot interval to check
 	var phantomPct, cliPct float64
 	for i := 1; i < len(snapshots); i++ {
 		prev := snapshots[i-1]
@@ -119,9 +122,10 @@ func CalcPhantomUsage(db *sql.DB) *PhantomData {
 		}
 
 		hasActivity := false
-		t := prev.ts.UTC().Truncate(time.Minute)
-		end := cur.ts.UTC().Truncate(time.Minute)
-		for !t.After(end) {
+		searchStart := prev.ts.UTC().Add(-time.Duration(activityTolerance) * time.Minute).Truncate(time.Minute)
+		searchEnd := cur.ts.UTC().Add(time.Duration(activityTolerance) * time.Minute).Truncate(time.Minute)
+		t := searchStart
+		for !t.After(searchEnd) {
 			if activeMinutes[t.Format(time.RFC3339)] {
 				hasActivity = true
 				break

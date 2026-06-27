@@ -320,6 +320,7 @@ a{color:var(--c-primary);text-decoration:none}
 // --- Shared Constants ---
 const TOKEN_WEIGHTS = { input: 1, cache_read: 0, cache_write: 1, output: 5 };
 const MODEL_PRICING = {
+  'opus-4-7':   { input: 5,    cache_read: 0.50, cache_write: 6.25,  output: 25 },
   'opus-4-6':   { input: 5,    cache_read: 0.50, cache_write: 6.25,  output: 25 },
   'opus-4-5':   { input: 5,    cache_read: 0.50, cache_write: 6.25,  output: 25 },
   'opus-4-1':   { input: 15,   cache_read: 1.50, cache_write: 18.75, output: 75 },
@@ -925,7 +926,14 @@ const Periscope = {
     // Update header badges
     const sidecars = data.sidecars || [];
     const nSessions = sidecars.length;
-    const latest = sidecars.length > 0 ? sidecars[sidecars.length - 1] : null;
+    // Pick the most recently updated sidecar — array order isn't time-sorted,
+    // so sidecars[length-1] may be an old session and would mis-label the model.
+    let latest = null;
+    let latestUpd = '';
+    for (const s of sidecars) {
+      const upd = s.updated_at || '';
+      if (!latest || upd > latestUpd) { latest = s; latestUpd = upd; }
+    }
     const model = latest && latest.data && latest.data.lastTurn ? latest.data.lastTurn.model : 'unknown';
     document.getElementById('badge-model').textContent = model.replace('claude-','').replace('-',' ');
     document.getElementById('badge-sessions').textContent = nSessions + ' sessions';
@@ -933,18 +941,41 @@ const Periscope = {
     // Effort level badge — find from most recent sidecar
     const effortEl = document.getElementById('badge-effort');
     if (effortEl) {
-      let effort = '';
-      for (let i = sidecars.length - 1; i >= 0; i--) {
-        if (sidecars[i].data && sidecars[i].data.effortLevel) {
-          effort = sidecars[i].data.effortLevel;
-          break;
+      // Prefer the most-recently-updated sidecar (matches model badge logic).
+      // Old code walked array order, which is not time-sorted.
+      let effort = latest && latest.data && latest.data.effortLevel ? latest.data.effortLevel : '';
+      if (!effort) {
+        for (let i = sidecars.length - 1; i >= 0; i--) {
+          if (sidecars[i].data && sidecars[i].data.effortLevel) { effort = sidecars[i].data.effortLevel; break; }
         }
       }
       if (effort) {
-        effortEl.textContent = effort.toUpperCase();
-        const eColors = {low:'var(--c-secondary)',medium:'var(--c-primary)',high:'var(--c-danger)'};
-        effortEl.style.color = eColors[effort] || 'var(--text-dim)';
-        effortEl.style.borderColor = eColors[effort] ? 'color-mix(in srgb, ' + eColors[effort] + ' 30%, transparent)' : 'var(--rule)';
+        // xhigh (and legacy "max") use the same emphatic color as high
+        // since they're more expensive than the visual ramp suggests.
+        const eColors = {
+          low:    'var(--c-secondary)',
+          medium: 'var(--c-primary)',
+          high:   'var(--c-danger)',
+          xhigh:  'var(--c-danger)',
+          max:    'var(--c-danger)',
+        };
+        // Drift indicator: if the live in-flight effort differs from the
+        // sidecar-recorded one, mark it. Display matches the statusline's
+        // `eff:xhigh!medium` convention so the dashboard tells the same story.
+        const live = (data.live_effort || '').toLowerCase();
+        const persisted = effort.toLowerCase();
+        let label = persisted.toUpperCase();
+        let pickColor = eColors[persisted] || 'var(--text-dim)';
+        if (live && live !== persisted) {
+          label = live.toUpperCase() + '!' + persisted;
+          pickColor = eColors[live] || 'var(--c-warning, var(--c-primary))';
+          effortEl.title = 'In-flight: ' + live + '  •  Sidecar/settings: ' + persisted + '  (slider override active)';
+        } else {
+          effortEl.title = 'Current effort level: ' + persisted;
+        }
+        effortEl.textContent = label;
+        effortEl.style.color = pickColor;
+        effortEl.style.borderColor = 'color-mix(in srgb, ' + pickColor + ' 30%, transparent)';
       } else {
         effortEl.textContent = 'EFFORT: --';
         effortEl.style.color = '';

@@ -798,30 +798,35 @@ Periscope.registerWidget({
         // --- Effort Gauge: vertical aircraft-style indicator ---
         var effortEl = chronoPanel.querySelector('[data-effort-gauge]');
         if (effortEl) {
-          // Compute weighted effort from all active sidecars
+          // Compute weighted effort from all active sidecars.
+          // Five-step ramp matches Claude Code's /effort menu (low→medium→high→xhigh→max).
           var sidecars = data.sidecars || [];
           var totalTokens = 0, weightedSum = 0;
-          var effortWeights = {low:0, medium:0.5, high:1.0};
+          var effortWeights = {low:0.0, medium:0.25, high:0.5, xhigh:0.75, max:1.0};
           for (var si = 0; si < sidecars.length; si++) {
             var sc = sidecars[si];
             if (!sc.data) continue;
-            var eff = sc.data.effortLevel || 'medium';
+            var eff = (sc.data.effortLevel || 'medium').toLowerCase();
             var cum = sc.data.cumulative;
             var toks = cum ? (cum.input||0) + (cum.cache_read||0) + (cum.cache_write||0) + (cum.output||0) : 0;
             if (toks > 0) {
               totalTokens += toks;
-              weightedSum += toks * (effortWeights[eff] != null ? effortWeights[eff] : 0.5);
+              weightedSum += toks * (effortWeights[eff] != null ? effortWeights[eff] : 0.25);
             }
           }
-          var effortPct = totalTokens > 0 ? weightedSum / totalTokens : 0.5;
-          // Current session effort label
-          var curEffort = '--';
-          for (var si2 = sidecars.length - 1; si2 >= 0; si2--) {
-            if (sidecars[si2].data && sidecars[si2].data.effortLevel) {
-              curEffort = sidecars[si2].data.effortLevel.toUpperCase();
-              break;
+          var effortPct = totalTokens > 0 ? weightedSum / totalTokens : 0.25;
+          // Current session effort: prefer the LIVE slider value (data.live_effort),
+          // fall back to the most-recent sidecar's recorded effortLevel.
+          var curEffortRaw = (data.live_effort || '').toLowerCase();
+          if (!curEffortRaw) {
+            for (var si2 = sidecars.length - 1; si2 >= 0; si2--) {
+              if (sidecars[si2].data && sidecars[si2].data.effortLevel) {
+                curEffortRaw = sidecars[si2].data.effortLevel.toLowerCase();
+                break;
+              }
             }
           }
+          var curEffort = (curEffortRaw || 'medium').toUpperCase();
 
           // SVG dimensions — vacuum tube effort gauge
           var EW = 50, EH = 160;
@@ -833,20 +838,48 @@ Periscope.registerWidget({
           var capInset = tubeW / 2; // radius of rounded ends
           var zoneTop = tubeY + capInset, zoneBot = tubeY + tubeH - capInset;
           var zoneH = zoneBot - zoneTop;
-          var zHighH = zoneH * 0.33, zMedH = zoneH * 0.34, zLowH = zoneH * 0.33;
-          var zHighY = zoneTop;
-          var zMedY = zoneTop + zHighH;
-          var zLowY = zoneTop + zHighH + zMedH;
 
-          // Active zone
-          var activeZone = effortPct > 0.67 ? 'high' : (effortPct > 0.33 ? 'med' : 'low');
-          var activeZoneY = activeZone === 'high' ? zHighY : (activeZone === 'med' ? zMedY : zLowY);
-          var activeZoneH = activeZone === 'high' ? zHighH : (activeZone === 'med' ? zMedH : zLowH);
-          var bulbRgb = activeZone === 'high' ? rgbDng : (activeZone === 'med' ? rgbPri : rgbSec);
-          var nColor = activeZone === 'high' ? _cDng : (activeZone === 'med' ? _cPri : _cSec);
+          // Five zones, drawn top→bottom (most intense at top: MAX → LOW).
+          // Color ramp: low=green, medium=primary, high/xhigh/max blend toward danger.
+          var zoneDefs = [
+            { key:'max',    label:'MX', rgb:rgbDng, color:_cDng },
+            { key:'xhigh',  label:'X',  rgb:rgbDng, color:_cDng },
+            { key:'high',   label:'H',  rgb:rgbDng, color:_cDng },
+            { key:'medium', label:'M',  rgb:rgbPri, color:_cPri },
+            { key:'low',    label:'L',  rgb:rgbSec, color:_cSec },
+          ];
+          var zStep = zoneH / zoneDefs.length;
+          for (var zi = 0; zi < zoneDefs.length; zi++) {
+            zoneDefs[zi].y = zoneTop + zi * zStep;
+            zoneDefs[zi].h = zStep;
+          }
 
-          // Needle Y — mapped to inset zone range
-          var needleY = zoneBot - (effortPct * zoneH);
+          // Active zone — prefer the explicit current effort label so xhigh/max
+          // are unambiguous (the weighted-pct alone can't tell them apart).
+          var activeKey = (effortWeights[curEffortRaw] != null) ? curEffortRaw : 'medium';
+          var activeDef = zoneDefs[0];
+          for (var zk = 0; zk < zoneDefs.length; zk++) {
+            if (zoneDefs[zk].key === activeKey) { activeDef = zoneDefs[zk]; break; }
+          }
+          var activeZone = activeKey;
+          var activeZoneY = activeDef.y;
+          var activeZoneH = activeDef.h;
+          var bulbRgb = activeDef.rgb;
+          var nColor = activeDef.color;
+
+          // Needle Y — center of the active zone for the three middle bands,
+          // but pushed to the inside edge for max (top) and low (bottom) so
+          // the needle visually conveys "at the extreme" without crossing the
+          // rounded glass caps. Zones are already inset by capInset, so a
+          // 1px nudge inside the zone edge keeps the line clear of the curve.
+          var needleY;
+          if (activeKey === 'max') {
+            needleY = activeDef.y + 1; // top edge of the topmost band
+          } else if (activeKey === 'low') {
+            needleY = activeDef.y + activeDef.h - 1; // bottom edge of the bottom band
+          } else {
+            needleY = activeDef.y + activeDef.h / 2; // dead center
+          }
 
           var uid = (Math.random()*1e6|0);
           var svg = '<svg viewBox="0 0 '+EW+' '+EH+'" xmlns="http://www.w3.org/2000/svg" style="overflow:visible">';
@@ -855,8 +888,8 @@ Periscope.registerWidget({
           svg += '<defs>';
           // Tube clip
           svg += '<clipPath id="tc'+uid+'"><rect x="'+tubeX+'" y="'+tubeY+'" width="'+tubeW+'" height="'+tubeH+'" rx="'+tubeW/2+'"/></clipPath>';
-          // Segment clip — glow fills entire tube section (extends to caps for H/L)
-          var glowY = activeZone === 'high' ? tubeY : activeZoneY;
+          // Segment clip — glow fills entire tube section (extends to caps at top/bottom)
+          var glowY = activeZone === 'max' ? tubeY : activeZoneY;
           var glowBot = activeZone === 'low' ? (tubeY + tubeH) : (activeZoneY + activeZoneH);
           var glowH = glowBot - glowY;
           svg += '<clipPath id="sc'+uid+'"><rect x="'+(tubeX-4)+'" y="'+glowY.toFixed(1)+'" width="'+(tubeW+8)+'" height="'+glowH.toFixed(1)+'"/></clipPath>';
@@ -894,10 +927,11 @@ Periscope.registerWidget({
           // --- Glass tube body ---
           svg += '<rect x="'+tubeX+'" y="'+tubeY+'" width="'+tubeW+'" height="'+tubeH+'" rx="'+(tubeW/2)+'" fill="'+gp.tube+'" stroke="rgba('+rgbSec+','+gp.tubeStroke+')" stroke-width="0.8"/>';
 
-          // --- Zone tints (dim) ---
-          svg += '<rect x="'+tubeX+'" y="'+zHighY+'" width="'+tubeW+'" height="'+zHighH+'" fill="rgba('+rgbDng+','+gp.zoneAlpha+')" clip-path="url(#tc'+uid+')"/>';
-          svg += '<rect x="'+tubeX+'" y="'+zMedY+'" width="'+tubeW+'" height="'+zMedH+'" fill="rgba('+rgbPri+','+gp.zoneAlpha+')" clip-path="url(#tc'+uid+')"/>';
-          svg += '<rect x="'+tubeX+'" y="'+zLowY+'" width="'+tubeW+'" height="'+zLowH+'" fill="rgba('+rgbSec+','+gp.zoneAlpha+')" clip-path="url(#tc'+uid+')"/>';
+          // --- Zone tints (dim) — five bands matching /effort menu ---
+          for (var zt = 0; zt < zoneDefs.length; zt++) {
+            var zd = zoneDefs[zt];
+            svg += '<rect x="'+tubeX+'" y="'+zd.y.toFixed(1)+'" width="'+tubeW+'" height="'+zd.h.toFixed(1)+'" fill="rgba('+zd.rgb+','+gp.zoneAlpha+')" clip-path="url(#tc'+uid+')"/>';
+          }
 
           // --- Incandescent glow (fills full tube section including caps for H/L) ---
           var glowCY = glowY + glowH / 2;
@@ -910,25 +944,36 @@ Periscope.registerWidget({
           // White-hot center
           svg += '<rect x="'+(tubeX+6)+'" y="'+(glowY+4).toFixed(1)+'" width="'+(tubeW-12)+'" height="'+(Math.max(glowH-8,2)).toFixed(1)+'" rx="2" fill="rgba(255,255,255,'+gp.whiteHotAlpha+')" clip-path="url(#tc'+uid+')"/>';
 
-          // --- Zone divider wires ---
-          svg += '<line x1="'+tubeX+'" y1="'+zMedY.toFixed(1)+'" x2="'+(tubeX+tubeW)+'" y2="'+zMedY.toFixed(1)+'" stroke="rgba('+rgbSec+','+gp.wireAlpha+')" stroke-width="0.6"/>';
-          svg += '<line x1="'+tubeX+'" y1="'+zLowY.toFixed(1)+'" x2="'+(tubeX+tubeW)+'" y2="'+zLowY.toFixed(1)+'" stroke="rgba('+rgbSec+','+gp.wireAlpha+')" stroke-width="0.6"/>';
+          // --- Zone divider wires (between each pair of bands) ---
+          for (var zw = 1; zw < zoneDefs.length; zw++) {
+            var wy = zoneDefs[zw].y;
+            svg += '<line x1="'+tubeX+'" y1="'+wy.toFixed(1)+'" x2="'+(tubeX+tubeW)+'" y2="'+wy.toFixed(1)+'" stroke="rgba('+rgbSec+','+gp.wireAlpha+')" stroke-width="0.6"/>';
+          }
 
           // --- Glass sheen overlay ---
           svg += '<rect x="'+tubeX+'" y="'+tubeY+'" width="'+tubeW+'" height="'+tubeH+'" rx="'+(tubeW/2)+'" fill="url(#gs'+uid+')"/>';
 
-          // --- Tick marks (left side) ---
-          for (var t = 0; t <= 10; t++) {
-            var ty = tubeY + (t/10) * tubeH;
-            var tw = (t % 5 === 0) ? 5 : 2.5;
-            svg += '<line x1="'+(tubeX-tw-1)+'" y1="'+ty.toFixed(1)+'" x2="'+(tubeX-1)+'" y2="'+ty.toFixed(1)+'" stroke="rgba('+rgbSec+','+gp.tickStrokeAlpha+')" stroke-width="0.5"/>';
+          // --- Tick marks (left side) — aligned to zone bands, never crossing caps ---
+          // Major ticks at the 6 zone boundaries (incl. top-of-max & bottom-of-low,
+          // both inset from the rounded cap arcs). Minor ticks at each zone center.
+          for (var tb = 0; tb <= zoneDefs.length; tb++) {
+            var bty = zoneTop + tb * zStep;
+            svg += '<line x1="'+(tubeX-5-1)+'" y1="'+bty.toFixed(1)+'" x2="'+(tubeX-1)+'" y2="'+bty.toFixed(1)+'" stroke="rgba('+rgbSec+','+gp.tickStrokeAlpha+')" stroke-width="0.5"/>';
+          }
+          for (var tc = 0; tc < zoneDefs.length; tc++) {
+            var cty = zoneTop + tc * zStep + zStep / 2;
+            svg += '<line x1="'+(tubeX-2.5-1)+'" y1="'+cty.toFixed(1)+'" x2="'+(tubeX-1)+'" y2="'+cty.toFixed(1)+'" stroke="rgba('+rgbSec+','+gp.tickStrokeAlpha+')" stroke-width="0.5"/>';
           }
 
-          // --- Zone labels (left side) ---
+          // --- Zone labels (left side) — five bands, dim when not active ---
           var lblX = tubeX - 9;
-          svg += '<text x="'+lblX+'" y="'+(zHighY+zHighH/2+2)+'" text-anchor="middle" font-family="Michroma,sans-serif" font-size="5.5" font-weight="700" fill="'+_cDng+'" opacity="'+(activeZone==='high'?'1':'0.3')+'">H</text>';
-          svg += '<text x="'+lblX+'" y="'+(zMedY+zMedH/2+2)+'" text-anchor="middle" font-family="Michroma,sans-serif" font-size="5.5" font-weight="700" fill="'+_cPri+'" opacity="'+(activeZone==='med'?'1':'0.3')+'">M</text>';
-          svg += '<text x="'+lblX+'" y="'+(zLowY+zLowH/2+2)+'" text-anchor="middle" font-family="Michroma,sans-serif" font-size="5.5" font-weight="700" fill="'+_cSec+'" opacity="'+(activeZone==='low'?'1':'0.3')+'">L</text>';
+          for (var zl = 0; zl < zoneDefs.length; zl++) {
+            var zd2 = zoneDefs[zl];
+            var lblOpacity = (activeZone === zd2.key) ? '1' : '0.3';
+            // Compress font slightly so 'MX' fits without overflowing.
+            var lblSize = (zd2.label.length > 1) ? '4.5' : '5.5';
+            svg += '<text x="'+lblX+'" y="'+(zd2.y+zd2.h/2+2).toFixed(1)+'" text-anchor="middle" font-family="Michroma,sans-serif" font-size="'+lblSize+'" font-weight="700" fill="'+zd2.color+'" opacity="'+lblOpacity+'">'+zd2.label+'</text>';
+          }
 
           // --- Needle — pointer from RIGHT, arrow points LEFT (<) ---
           var arrowBase = tubeX + tubeW + 8;

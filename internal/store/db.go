@@ -662,6 +662,7 @@ type DashboardData struct {
 	Layout           json.RawMessage        `json:"layout"`
 	PhantomUsage     *analytics.PhantomData `json:"phantomUsage,omitempty"`
 	Teams            json.RawMessage        `json:"teams,omitempty"`
+	LiveEffort       string                 `json:"live_effort,omitempty"`
 }
 
 type SidecarEntry struct {

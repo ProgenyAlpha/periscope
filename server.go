@@ -337,12 +337,17 @@ func startServer(ctx context.Context, app *App) {
 		}()
 
 		const (
-			baseInterval = 30 * time.Second
-			maxInterval  = 10 * time.Minute
+			// Headers-based polling can run aggressively because /v1/messages
+			// is the path Claude Code itself uses — no special rate-limit budget.
+			// Cost: ~$0.00001 per ping × cadence × devices, so even worst-case
+			// 30s flat is ~$0.86/month/device. Graph fidelity wins.
+			fastInterval    = 30 * time.Second
+			defaultInterval = 60 * time.Second
+			maxInterval     = 60 * time.Minute
 		)
-		backoff := baseInterval
+		backoff := defaultInterval
 
-		slog.Info("polling started", "interval", baseInterval)
+		slog.Info("polling started", "interval", defaultInterval)
 
 		// Initial fetch on startup
 		if result, err := fetchAndCacheUsage(app); err == nil {
@@ -378,18 +383,30 @@ func startServer(ctx context.Context, app *App) {
 					slog.Info("usage fetch recovered", "previousErrors", consecutiveErrors)
 				}
 				consecutiveErrors = 0
-				backoff = baseInterval
+				// Cross-device-aware cadence: tighten to fastInterval when
+				// utilization is climbing in the snapshot history (any device
+				// on this account is burning). Settle to defaultInterval when
+				// utilization is flat (everyone idle).
+				backoff = adaptivePollInterval(app.DataDir, fastInterval, defaultInterval)
 				if cycleCount%10 == 0 {
-					slog.Debug("poll heartbeat", "cycle", cycleCount)
+					slog.Debug("poll heartbeat", "cycle", cycleCount, "nextInterval", backoff)
 				}
 			} else {
 				consecutiveErrors++
 				if anthropic.IsRateLimited(err) {
-					backoff = min(backoff*4, maxInterval) // back off harder on 429
+					if consecutiveErrors >= 3 {
+						// Hard stop: Anthropic's usage API has ~5 req/token budget.
+						// Each 429 retry resets their cooldown (~90min).
+						// Stop retrying and wait for the max interval.
+						backoff = maxInterval
+						slog.Warn("usage API rate limited — backing off to max interval", "consecutive", consecutiveErrors, "nextRetry", backoff)
+					} else {
+						backoff = min(backoff*4, maxInterval)
+					}
 				} else {
 					backoff = min(backoff*2, maxInterval)
 				}
-				if consecutiveErrors == 1 || consecutiveErrors%60 == 0 {
+				if consecutiveErrors == 1 {
 					slog.Warn("usage fetch failed", "consecutive", consecutiveErrors, "nextRetry", backoff, "err", err)
 				}
 			}
@@ -490,6 +507,9 @@ func handleData(app *App, w http.ResponseWriter, r *http.Request) {
 		writeError(w, 500, err.Error())
 		return
 	}
+
+	// Annotate the most recently captured live effort from any active session.
+	annotateLiveEffort(data)
 
 	// Side effect: refresh profile if stale
 	go refreshProfileIfStale(app)
@@ -618,15 +638,39 @@ func handleStatuslineToggle(app *App, w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"ok": true, "enabled": req.Enabled})
 }
 
+var lastManualSync time.Time
+
 func handleUsage(app *App, w http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
 		http.Error(w, "method not allowed", 405)
 		return
 	}
 
+	// Cooldown: manual sync limited to once per 5 minutes to protect API budget
+	if since := time.Since(lastManualSync); since < 5*time.Minute {
+		remaining := 5*time.Minute - since
+		slog.Info("sync cooldown active", "remaining", remaining.Round(time.Second))
+		// Serve cached data instead
+		if cached := store.KVGet(app.DB, "cache:usage-api"); cached != nil {
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+			w.Write(cached)
+			return
+		}
+		writeError(w, 429, fmt.Sprintf("sync cooldown: %s remaining", remaining.Round(time.Second)))
+		return
+	}
+	lastManualSync = time.Now()
+
 	result, err := fetchAndCacheUsage(app)
 	if err != nil {
 		slog.Error("usage fetch error", "err", err)
+		// On rate limit or transient error, serve cached data instead of failing
+		if cached := store.KVGet(app.DB, "cache:usage-api"); cached != nil {
+			slog.Info("serving cached usage after API error")
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+			w.Write(cached)
+			return
+		}
 		writeError(w, 500, err.Error())
 		return
 	}
@@ -763,6 +807,226 @@ var (
 	lastSessionSnapshotMu sync.RWMutex
 )
 
+// adaptivePollInterval returns the next polling interval based on whether
+// utilization is climbing in the recent snapshot history.
+//
+// "Climbing" means pct5hr or pctWeekly increased between the last two
+// non-overlapping snapshots — which captures cross-device burn (e.g.
+// you're on a different machine). When that happens we tighten to `fast`
+// so dormant devices still see fresh data. When utilization is flat we
+// settle to `slow` to keep ping costs minimal.
+//
+// With /v1/messages-header polling, this is purely a cost dial — there's
+// no Anthropic-side rate-limit budget to protect anymore.
+func adaptivePollInterval(dataDir string, fast, slow time.Duration) time.Duration {
+	histPath := filepath.Join(dataDir, "limit-history.jsonl")
+	f, err := os.Open(histPath)
+	if err != nil {
+		return slow
+	}
+	defer f.Close()
+
+	// Read tail (~last 16 entries) so we can find the last two distinct snapshots.
+	fi, err := f.Stat()
+	if err != nil {
+		return slow
+	}
+	const tailBytes = 4096
+	off := fi.Size() - tailBytes
+	if off < 0 {
+		off = 0
+	}
+	if _, err := f.Seek(off, io.SeekStart); err != nil {
+		return slow
+	}
+	buf, err := io.ReadAll(f)
+	if err != nil {
+		return slow
+	}
+
+	type snap struct {
+		ts     time.Time
+		pct5hr int
+		pctWk  int
+	}
+	var snaps []snap
+	for _, line := range strings.Split(string(buf), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || !strings.HasPrefix(line, "{") {
+			continue
+		}
+		var e struct {
+			TS     string  `json:"ts"`
+			Pct5   float64 `json:"pct5hr"`
+			PctWk  float64 `json:"pctWeekly"`
+		}
+		if json.Unmarshal([]byte(line), &e) != nil {
+			continue
+		}
+		t, err := time.Parse(time.RFC3339, e.TS)
+		if err != nil {
+			continue
+		}
+		snaps = append(snaps, snap{ts: t, pct5hr: int(e.Pct5), pctWk: int(e.PctWk)})
+	}
+	if len(snaps) < 2 {
+		return slow
+	}
+
+	// Compare most recent snapshot against the most recent one >=2min older
+	// (avoids false positives from the same poll appearing twice in history).
+	last := snaps[len(snaps)-1]
+	var prev *snap
+	for i := len(snaps) - 2; i >= 0; i-- {
+		if last.ts.Sub(snaps[i].ts) >= 2*time.Minute {
+			prev = &snaps[i]
+			break
+		}
+	}
+	if prev == nil {
+		return slow
+	}
+	if last.pct5hr > prev.pct5hr || last.pctWk > prev.pctWk {
+		return fast
+	}
+	return slow
+}
+
+// lastOAuthUsageFetch tracks when /api/oauth/usage was last called so the
+// hourly refresh schedule can stay well under the ~5-call-per-90min budget.
+var lastOAuthUsageFetch time.Time
+
+// annotateLiveEffort sets data.LiveEffort to the most recently captured
+// effort level from ~/.periscope/effort/<sid>.json (written by cmdStatusline
+// on every Claude Code statusline render). Newest mtime wins.
+//
+// Called from BOTH the GET /api/data handler and the watcher's broadcast
+// path so the dashboard sees a consistent value whether it loaded fresh or
+// is taking a websocket push.
+func annotateLiveEffort(data *store.DashboardData) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return
+	}
+	effortDir := filepath.Join(home, ".periscope", "effort")
+	entries, err := os.ReadDir(effortDir)
+	if err != nil {
+		return
+	}
+	var newestMtime time.Time
+	var newestLevel string
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		if info.ModTime().After(newestMtime) {
+			raw, err := os.ReadFile(filepath.Join(effortDir, e.Name()))
+			if err != nil {
+				continue
+			}
+			var live struct {
+				Level string `json:"level"`
+			}
+			if json.Unmarshal(raw, &live) == nil && live.Level != "" {
+				newestMtime = info.ModTime()
+				newestLevel = live.Level
+			}
+		}
+	}
+	if newestLevel != "" {
+		data.LiveEffort = newestLevel
+	}
+}
+
+// needsOAuthRefresh returns true if /api/oauth/usage should run this cycle:
+// either it hasn't run in over an hour (so the static `monthly_limit` cap
+// stays fresh) or no cap is cached yet (fresh install / first poll).
+func needsOAuthRefresh(app *App) bool {
+	const refreshInterval = time.Hour
+	if !lastOAuthUsageFetch.IsZero() && time.Since(lastOAuthUsageFetch) < refreshInterval {
+		return false
+	}
+	return true
+}
+
+// supplementWithCachedExtraUsage augments a fresh header-derived usage map
+// with the static `extra_usage` fields (is_enabled, monthly_limit) preserved
+// from the previous cache, deriving `used_credits` from the live overage
+// utilization that headers DO report. Also preserves sonnet/opus utilization
+// from the previous cache when headers omit those windows (Anthropic only
+// returns 7d_sonnet/7d_opus in headers when those models were recently used,
+// so a sonnet-quiet header response would otherwise blank the dashboard
+// segment to -1).
+func supplementWithCachedExtraUsage(app *App, fresh map[string]any) {
+	prev := store.KVGet(app.DB, "cache:usage-api")
+	var prevMap map[string]any
+	if prev != nil {
+		_ = json.Unmarshal(prev, &prevMap)
+	}
+
+	// Preserve per-window utilization that headers may legitimately omit.
+	// pctSonnet/pctOpus default to -1 when the corresponding header pair
+	// is missing — fall back to the last good value rather than blank.
+	// TransformUsage stores these as int; cache reads come back as float64
+	// after json round-trip, so accept either.
+	asNumber := func(v any) (float64, bool) {
+		switch n := v.(type) {
+		case float64:
+			return n, true
+		case int:
+			return float64(n), true
+		case int64:
+			return float64(n), true
+		}
+		return 0, false
+	}
+	if prevMap != nil {
+		preserveIfMissing := func(pctKey, resetKey string) {
+			cur, ok := asNumber(fresh[pctKey])
+			if !ok || cur < 0 {
+				if prev, ok := asNumber(prevMap[pctKey]); ok && prev >= 0 {
+					fresh[pctKey] = prev
+				}
+				if v, ok := prevMap[resetKey]; ok {
+					fresh[resetKey] = v
+				}
+			}
+		}
+		preserveIfMissing("pctSonnet", "resetSonnet")
+		preserveIfMissing("pctOpus", "resetOpus")
+	}
+
+	if _, ok := fresh["extra_usage"].(map[string]any); ok {
+		return // oauth/usage path already populated this fully
+	}
+	overageUtil, hasOverage := fresh["overage_utilization"].(float64)
+	if !hasOverage {
+		return // headers didn't carry overage; nothing to derive
+	}
+	if prevMap == nil {
+		return
+	}
+	prevEU, ok := prevMap["extra_usage"].(map[string]any)
+	if !ok {
+		return
+	}
+	cap_, capOk := prevEU["monthly_limit"].(float64)
+	enabled, _ := prevEU["is_enabled"].(bool)
+	merged := map[string]any{
+		"is_enabled": enabled,
+	}
+	if capOk {
+		merged["monthly_limit"] = cap_
+		merged["used_credits"] = cap_ * overageUtil
+	}
+	merged["utilization"] = overageUtil
+	fresh["extra_usage"] = merged
+}
+
 // fetchAndCacheUsage fetches usage from the Anthropic API, caches result to DB and file.
 func fetchAndCacheUsage(app *App) (json.RawMessage, error) {
 	app.clientMu.RLock()
@@ -781,7 +1045,35 @@ func fetchAndCacheUsage(app *App) (json.RawMessage, error) {
 		app.clientMu.Unlock()
 	}
 
-	resp, err := client.FetchUsage()
+	// Primary path: read rate-limit headers from a /v1/messages ping. This
+	// avoids /api/oauth/usage's tight 5-req-per-90min budget and gives the
+	// same five_hour / seven_day / seven_day_sonnet utilization data per
+	// Claude Code issue #12829. One ping costs ~$0.00001.
+	//
+	// Fallback to /api/oauth/usage runs (a) on header failure and (b) on the
+	// hourly schedule so the static `extra_usage.monthly_limit` cap stays
+	// fresh for derive-used-credits-from-overage-utilization.
+	useOAuth := needsOAuthRefresh(app)
+	var resp *anthropic.APIResponse
+	var err error
+	if !useOAuth {
+		resp, err = client.FetchUsageFromHeaders()
+		if err != nil {
+			slog.Debug("header ping failed, falling back to oauth/usage", "err", err)
+			resp, err = client.FetchUsage()
+			if err == nil {
+				lastOAuthUsageFetch = time.Now()
+			}
+		}
+	} else {
+		resp, err = client.FetchUsage()
+		if err == nil {
+			lastOAuthUsageFetch = time.Now()
+		} else {
+			slog.Debug("oauth/usage refresh failed, falling back to header ping", "err", err)
+			resp, err = client.FetchUsageFromHeaders()
+		}
+	}
 	if err != nil {
 		// On auth error, try reloading token (may have been refreshed)
 		if anthropic.IsAuthError(err) {
@@ -790,7 +1082,10 @@ func fetchAndCacheUsage(app *App) (json.RawMessage, error) {
 				app.clientMu.Lock()
 				app.AnthropicClient = newClient
 				app.clientMu.Unlock()
-				resp, err = newClient.FetchUsage()
+				resp, err = newClient.FetchUsageFromHeaders()
+				if err != nil {
+					resp, err = newClient.FetchUsage()
+				}
 				if err != nil {
 					return nil, err
 				}
@@ -803,6 +1098,10 @@ func fetchAndCacheUsage(app *App) (json.RawMessage, error) {
 	}
 
 	usage := anthropic.TransformUsage(resp)
+	if resp.OverageUtilization != nil {
+		usage["overage_utilization"] = *resp.OverageUtilization
+	}
+	supplementWithCachedExtraUsage(app, usage)
 	result, _ := json.Marshal(usage)
 
 	// Cache to DB and file
