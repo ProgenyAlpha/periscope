@@ -143,44 +143,13 @@ func BuildForecast(stateDir string, usage map[string]any) string {
 			tl = fmt.Sprintf("%.1fd", hrsLeft/24)
 			rateStr = fmt.Sprintf("%.1f%%/ah", burnRate)
 		} else {
-			// 5hr: current rate (last 30min) blended with average rate
-			cutoff := now.Add(-30 * time.Minute)
-			var recent []limitPoint
-			for _, s := range series {
-				if !s.ts.Before(cutoff) {
-					recent = append(recent, s)
-				}
+			// 5hr: delegate to the canonical shared projection function
+			var ok bool
+			proj, rateStr, ok = Project5hr(stateDir, w.current, w.resetStr)
+			if !ok {
+				continue
 			}
-
-			curRate := 0.0
-			if len(recent) >= 2 {
-				first, last := recent[0], recent[len(recent)-1]
-				dh := last.ts.Sub(first.ts).Hours()
-				if dh > 0.01 {
-					curRate = (last.pct5hr - first.pct5hr) / dh
-				}
-			}
-
-			firstAll, lastAll := series[0], series[len(series)-1]
-			dAll := lastAll.ts.Sub(firstAll.ts).Hours()
-			avgRate := 0.0
-			if dAll > 0.05 {
-				avgRate = (lastAll.pct5hr - firstAll.pct5hr) / dAll
-			}
-
-			// Weighted blend: 60% current, 40% average
-			rate := 0.0
-			if curRate > 0 && avgRate > 0 {
-				rate = 0.6*curRate + 0.4*avgRate
-			} else if curRate > 0 {
-				rate = curRate
-			} else if avgRate > 0 {
-				rate = avgRate
-			}
-
-			proj = int(math.Round(float64(w.current) + rate*hrsLeft))
 			tl = fmt.Sprintf("%.1fh", hrsLeft)
-			rateStr = fmt.Sprintf("%.1f%%/h", rate)
 		}
 
 		verdict := "OK"
@@ -213,11 +182,121 @@ func BuildForecast(stateDir string, usage map[string]any) string {
 	return strings.Join(parts, " | ")
 }
 
+// Project5hr computes the canonical 5-hour rate-limit projection using a
+// 60/40 blend of the recent (last 30 min) and historical average rates.
+// It is the single source of truth shared by BuildForecast and statusline.
+// Returns (projected%, rateAnnotation, ok).  ok is false when there is
+// insufficient history or the reset window has already elapsed.
+func Project5hr(stateDir string, current int, resetStr string) (proj int, rateStr string, ok bool) {
+	now := time.Now().UTC()
+	resetTime, err := time.Parse(time.RFC3339, resetStr)
+	if err != nil {
+		return 0, "", false
+	}
+	hrsLeft := resetTime.Sub(now).Hours()
+	if hrsLeft <= 0 {
+		return 0, "", false
+	}
+
+	histPath := filepath.Join(stateDir, "limit-history.jsonl")
+	data, err := os.ReadFile(histPath)
+	if err != nil {
+		return 0, "", false
+	}
+
+	allLines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	start := len(allLines) - 60
+	if start < 0 {
+		start = 0
+	}
+
+	type limitPoint struct {
+		ts     time.Time
+		pct5hr float64
+	}
+
+	var pts []limitPoint
+	for _, line := range allLines[start:] {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var entry map[string]any
+		if json.Unmarshal([]byte(line), &entry) != nil {
+			continue
+		}
+		tsStr, ok2 := entry["ts"].(string)
+		if !ok2 {
+			continue
+		}
+		t, err := time.Parse(time.RFC3339, tsStr)
+		if err != nil {
+			continue
+		}
+		v := FloatOrDefault(entry["pct5hr"], -1)
+		if v < 0 {
+			continue
+		}
+		pts = append(pts, limitPoint{ts: t, pct5hr: v})
+	}
+
+	// Build series with reset detection (big drop = window rolled over)
+	var series []limitPoint
+	prev := -1.0
+	for _, pt := range pts {
+		if prev >= 0 && pt.pct5hr < prev-15 {
+			series = nil
+		}
+		series = append(series, pt)
+		prev = pt.pct5hr
+	}
+	if len(series) < 2 {
+		return 0, "", false
+	}
+
+	cutoff := now.Add(-30 * time.Minute)
+	var recent []limitPoint
+	for _, s := range series {
+		if !s.ts.Before(cutoff) {
+			recent = append(recent, s)
+		}
+	}
+
+	curRate := 0.0
+	if len(recent) >= 2 {
+		first, last := recent[0], recent[len(recent)-1]
+		dh := last.ts.Sub(first.ts).Hours()
+		if dh > 0.01 {
+			curRate = (last.pct5hr - first.pct5hr) / dh
+		}
+	}
+
+	firstAll, lastAll := series[0], series[len(series)-1]
+	dAll := lastAll.ts.Sub(firstAll.ts).Hours()
+	avgRate := 0.0
+	if dAll > 0.05 {
+		avgRate = (lastAll.pct5hr - firstAll.pct5hr) / dAll
+	}
+
+	rate := 0.0
+	if curRate > 0 && avgRate > 0 {
+		rate = 0.6*curRate + 0.4*avgRate
+	} else if curRate > 0 {
+		rate = curRate
+	} else if avgRate > 0 {
+		rate = avgRate
+	}
+
+	proj = int(math.Round(float64(current) + rate*hrsLeft))
+	rateStr = fmt.Sprintf("%.1f%%/h", rate)
+	return proj, rateStr, true
+}
+
 // IntOrDefault extracts an int from an any value, returning def if not numeric.
 func IntOrDefault(v any, def int) int {
 	switch n := v.(type) {
 	case float64:
-		return int(n)
+		return int(math.Round(n))
 	case int:
 		return n
 	}

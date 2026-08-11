@@ -26,10 +26,11 @@ func LocalBurn(stateDir string, window time.Duration) (float64, bool) {
 	cutoff := time.Now().UTC().Add(-window)
 
 	type sessionSpan struct {
-		costAtCutoff float64
-		costLatest   float64
-		seenInside   bool
-		seenOutside  bool
+		costAtCutoff    float64
+		costFirstInside float64
+		costLatest      float64
+		seenInside      bool
+		seenOutside     bool
 	}
 	spans := map[string]*sessionSpan{}
 
@@ -61,6 +62,9 @@ func LocalBurn(stateDir string, window time.Duration) (float64, bool) {
 			s.costAtCutoff = e.Cost
 			s.seenOutside = true
 		} else {
+			if !s.seenInside {
+				s.costFirstInside = e.Cost
+			}
 			s.costLatest = e.Cost
 			s.seenInside = true
 		}
@@ -73,12 +77,12 @@ func LocalBurn(stateDir string, window time.Duration) (float64, bool) {
 			continue
 		}
 		any = true
-		// If we never saw the session before the window, the session began
-		// inside the window — its earliest in-window cost is its starting
-		// cumulative cost at session-start, which we approximate as 0.
+		// Without a pre-window snapshot the session's spend before the window
+		// is unknown, so its first in-window cumulative cost is the baseline.
+		// Assuming 0 books a resumed session's entire lifetime cost as burn.
 		base := s.costAtCutoff
 		if !s.seenOutside {
-			base = 0
+			base = s.costFirstInside
 		}
 		delta := s.costLatest - base
 		if delta > 0 {
