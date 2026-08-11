@@ -96,13 +96,15 @@ Periscope.registerWidget({
     'dir':        {l:'dir',     d:'~/Desktop/Apps', ck:'blue',  t:'Working directory',                    dr:1},
     'git':        {l:'git',     d:'main*',          ck:'purple',t:'Git branch (* = dirty)',                dr:1},
     'model':      {l:'model',   d:'opus',           ck:'cyan',  t:'Active Claude model',                  dr:1},
+    'effort':     {l:'effort',  d:'eff:xhigh',      ck:'peach', t:'Reasoning effort (! marks a session override)', dr:1},
+    'fast':       {l:'fast',    d:'fast',           ck:'peach', t:'Shown only while fast mode is on',     dr:1},
     'turns':      {l:'turns',   d:'t:42',           ck:'cyan',  t:'API turns this session',               dr:1},
     'cost':       {l:'cost',    d:'$1.23',          ck:'yellow',t:'Session cost (API-equiv pricing)',      dr:1},
+    'burn':       {l:'burn',    d:'$3.40/hr',       ck:'yellow',t:'Spend rate over the last hour',         dr:1},
     'tools':      {l:'tools',   d:'[Bash Read]',    ck:'peach', t:'Tools used in last turn',              dr:1},
     'vim':        {l:'vim',     d:'NORMAL',         ck:'yellow',t:'Vim keybinding mode',                  dr:1},
     'rate-5hr':   {l:'rate-5hr',d:'5h:7%',          ck:'green', t:'5-hour sliding window rate limit',     dr:2},
     'rate-weekly':{l:'rate-wk', d:'wk:95%',         ck:'red',   t:'Weekly rate limit usage',              dr:2},
-    'rate-sonnet':{l:'rate-sn', d:'sn:30%',         ck:'yellow',t:'Sonnet-specific rate limit (legacy \u2014 API stopped reporting it)', dr:2},
     'rate-scoped':{l:'rate-mdl',d:'fb:10%',         ck:'yellow',t:'Per-model weekly caps the API reports', dr:2},
     'reset':      {l:'reset',   d:'rst:2h14m',      ck:'cyan',  t:'Nearest rate limit reset',             dr:2},
     'proj':       {l:'proj',    d:'pj:12%',         ck:'green', t:'Projected 5hr usage at burn rate',     dr:2},
@@ -110,7 +112,7 @@ Periscope.registerWidget({
     'context':    {l:'ctx',     d:'\u2588\u2588\u2588\u2588\u2588\u2588\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591 45%',ck:'green',t:'Context window usage',dr:2}
   },
 
-  _dOrder:['dir','git','model','turns','cost','tools','vim','rate-5hr','rate-weekly','rate-sonnet','rate-scoped','reset','proj','cache','context'],
+  _dOrder:['dir','git','model','effort','fast','turns','cost','burn','tools','vim','rate-5hr','rate-weekly','rate-scoped','reset','proj','cache','context'],
   _st:null,_ds:null,_jd:false,
 
   _c:function(i){return this._a256[i]||'#888'},
