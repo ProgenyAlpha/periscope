@@ -322,6 +322,8 @@ const TOKEN_WEIGHTS = { input: 1, cache_read: 0, cache_write: 1, output: 5 };
 const MODEL_PRICING = {
   'fable-5':    { input: 10,   cache_read: 1.00, cache_write: 12.50, output: 50 },
   'mythos-5':   { input: 10,   cache_read: 1.00, cache_write: 12.50, output: 50 },
+  'opus-5':     { input: 5,    cache_read: 0.50, cache_write: 6.25,  output: 25 },
+  'sonnet-5':   { input: 3,    cache_read: 0.30, cache_write: 3.75,  output: 15 },
   'sonnet-4-6': { input: 3,    cache_read: 0.30, cache_write: 3.75,  output: 15 },
   'opus-4-8':   { input: 5,    cache_read: 0.50, cache_write: 6.25,  output: 25 },
   'opus-4-7':   { input: 5,    cache_read: 0.50, cache_write: 6.25,  output: 25 },
@@ -333,6 +335,10 @@ const MODEL_PRICING = {
   'haiku-3-5':  { input: 0.80, cache_read: 0.08, cache_write: 1.00,  output: 4  },
   'default':    { input: 5,    cache_read: 0.50, cache_write: 6.25,  output: 25 }
 };
+let LIVE_PRICING = null;
+fetch('/api/pricing').then(function(r) { return r.json(); }).then(function(data) {
+  if (data && typeof data === 'object') LIVE_PRICING = data;
+}).catch(function() {});
 const WINDOW_5HR_MS = 5 * 3600000;
 const WINDOW_WEEKLY_MS = 7 * 24 * 3600000;
 const RANGE_MS = { '5h': 5*3600e3, '24h': 24*3600e3, '7d': 7*24*3600e3, '30d': 30*24*3600e3 };
@@ -432,10 +438,12 @@ function fmtDateRange(from, to) {
 // --- Shared Calculations ---
 function getModelPricing(modelStr) {
   if (!modelStr) return MODEL_PRICING['default'];
+  if (LIVE_PRICING && LIVE_PRICING[modelStr]) return LIVE_PRICING[modelStr];
   if (MODEL_PRICING[modelStr]) return MODEL_PRICING[modelStr];
   const m = modelStr.replace('claude-','').replace(/-\d{8}$/,'');
-  for (const key in MODEL_PRICING) { if (m.startsWith(key)) return MODEL_PRICING[key]; }
-  return MODEL_PRICING['default'];
+  let bestKey = null;
+  for (const key in MODEL_PRICING) { if (m.startsWith(key) && (!bestKey || key.length > bestKey.length)) bestKey = key; }
+  return bestKey ? MODEL_PRICING[bestKey] : MODEL_PRICING['default'];
 }
 function weightedTokens(input, cr, cw, output) {
   return (input||0)*TOKEN_WEIGHTS.input + (cr||0)*TOKEN_WEIGHTS.cache_read + (cw||0)*TOKEN_WEIGHTS.cache_write + (output||0)*TOKEN_WEIGHTS.output;

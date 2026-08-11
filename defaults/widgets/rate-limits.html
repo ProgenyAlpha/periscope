@@ -6,6 +6,7 @@
 /* Gauges column */
 .w-rlhud .hud-gauges{display:flex;gap:14px;align-items:center;flex-shrink:0}
 .w-rlhud .hud-gauge{display:flex;flex-direction:column;align-items:center;gap:3px}
+.w-rlhud .hud-gauges > [data-scoped="wrap"]{display:contents}
 .w-rlhud .hud-gauge svg{filter:drop-shadow(0 0 8px var(--glow));transition:filter 0.3s}
 .w-rlhud .hud-gauge:hover svg{filter:drop-shadow(0 0 14px var(--glow))}
 .w-rlhud .gauge-ring-bg{fill:none;stroke:var(--rule);stroke-width:8;opacity:0.4}
@@ -164,17 +165,8 @@ Periscope.registerWidget({
                 '<span class="data-age">--</span>' +
               '</div>' +
             '</div>' +
-            /* Sonnet gauge */
-            '<div class="hud-gauge" data-gauge="sonnet">' +
-              '<svg width="100" height="100" viewBox="0 0 120 120">' +
-                '<circle class="gauge-ring-bg" cx="60" cy="60" r="48"/>' +
-                '<circle class="gauge-ring-glow" cx="60" cy="60" r="48" stroke-dasharray="' + CIRC + '" stroke-dashoffset="' + CIRC + '" transform="rotate(-90 60 60)"/>' +
-                '<circle class="gauge-ring-fill" cx="60" cy="60" r="48" stroke-dasharray="' + CIRC + '" stroke-dashoffset="' + CIRC + '" transform="rotate(-90 60 60)"/>' +
-                '<text class="gauge-center-val" x="60" y="55">--%</text>' +
-                '<text class="gauge-center-label" x="60" y="72">SONNET</text>' +
-              '</svg>' +
-              '<div class="hud-gauge-reset" data-reset="sonnet"></div>' +
-            '</div>' +
+            /* Per-model gauges — one per scoped weekly cap the API reports */
+            '<span data-scoped="wrap"></span>' +
           '</div>' +
           /* Extra usage credit bar — hidden until data arrives */
           '<div class="hud-extra" data-extra="wrap"></div>' +
@@ -331,10 +323,36 @@ Periscope.registerWidget({
     var pctW = lu && lu.pctWeekly >= 0 ? lu.pctWeekly : null;
     var pctS = lu && lu.pctSonnet >= 0 ? lu.pctSonnet : null;
 
+    // Per-model caps come from the API's scoped limits — currently Fable.
+    // Legacy pctSonnet is folded in when it survives as a flat field.
+    var scoped = (lu && Array.isArray(lu.scoped)) ? lu.scoped.slice() : [];
+    if (!scoped.length && pctS != null) {
+      scoped.push({model: 'Sonnet', pct: pctS, reset: lu.resetSonnet});
+    }
+    var scopedWrap = el.querySelector('[data-scoped="wrap"]');
+    if (scopedWrap && scopedWrap.dataset.models !== scoped.map(function(s){return s.model}).join(',')) {
+      scopedWrap.dataset.models = scoped.map(function(s){return s.model}).join(',');
+      scopedWrap.innerHTML = scoped.map(function(s, i) {
+        var key = 'scoped' + i;
+        return '<div class="hud-gauge" data-gauge="' + key + '">' +
+          '<svg width="100" height="100" viewBox="0 0 120 120">' +
+            '<circle class="gauge-ring-bg" cx="60" cy="60" r="48"/>' +
+            '<circle class="gauge-ring-glow" cx="60" cy="60" r="48" stroke-dasharray="' + CIRC + '" stroke-dashoffset="' + CIRC + '" transform="rotate(-90 60 60)"/>' +
+            '<circle class="gauge-ring-fill" cx="60" cy="60" r="48" stroke-dasharray="' + CIRC + '" stroke-dashoffset="' + CIRC + '" transform="rotate(-90 60 60)"/>' +
+            '<text class="gauge-center-val" x="60" y="55">--%</text>' +
+            '<text class="gauge-center-label" x="60" y="72">' + String(s.model).toUpperCase().replace(/[<>&]/g, '') + '</text>' +
+          '</svg>' +
+          '<div class="hud-gauge-reset" data-reset="' + key + '"></div>' +
+        '</div>';
+      }).join('');
+    }
+
     // Set ring gauges
     setRing('5hr', pct5, lu ? lu.reset5hr : null);
     setRing('weekly', pctW, lu ? lu.resetWeekly : null);
-    setRing('sonnet', pctS, lu ? lu.resetSonnet : null);
+    scoped.forEach(function(s, i) {
+      setRing('scoped' + i, s.pct >= 0 ? s.pct : null, s.reset || null);
+    });
 
     // --- Data age + signal state ---
     var ageEl = el.querySelector('.data-age');

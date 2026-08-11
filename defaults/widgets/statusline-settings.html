@@ -102,14 +102,15 @@ Periscope.registerWidget({
     'vim':        {l:'vim',     d:'NORMAL',         ck:'yellow',t:'Vim keybinding mode',                  dr:1},
     'rate-5hr':   {l:'rate-5hr',d:'5h:7%',          ck:'green', t:'5-hour sliding window rate limit',     dr:2},
     'rate-weekly':{l:'rate-wk', d:'wk:95%',         ck:'red',   t:'Weekly rate limit usage',              dr:2},
-    'rate-sonnet':{l:'rate-sn', d:'sn:30%',         ck:'yellow',t:'Sonnet-specific rate limit',           dr:2},
+    'rate-sonnet':{l:'rate-sn', d:'sn:30%',         ck:'yellow',t:'Sonnet-specific rate limit (legacy \u2014 API stopped reporting it)', dr:2},
+    'rate-scoped':{l:'rate-mdl',d:'fb:10%',         ck:'yellow',t:'Per-model weekly caps the API reports', dr:2},
     'reset':      {l:'reset',   d:'rst:2h14m',      ck:'cyan',  t:'Nearest rate limit reset',             dr:2},
     'proj':       {l:'proj',    d:'pj:12%',         ck:'green', t:'Projected 5hr usage at burn rate',     dr:2},
     'cache':      {l:'cache',   d:'87%',            ck:'green', t:'Prompt cache hit rate',                dr:2},
     'context':    {l:'ctx',     d:'\u2588\u2588\u2588\u2588\u2588\u2588\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591 45%',ck:'green',t:'Context window usage',dr:2}
   },
 
-  _dOrder:['dir','git','model','turns','cost','tools','vim','rate-5hr','rate-weekly','rate-sonnet','reset','proj','cache','context'],
+  _dOrder:['dir','git','model','turns','cost','tools','vim','rate-5hr','rate-weekly','rate-sonnet','rate-scoped','reset','proj','cache','context'],
   _st:null,_ds:null,_jd:false,
 
   _c:function(i){return this._a256[i]||'#888'},
