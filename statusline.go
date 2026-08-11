@@ -861,6 +861,28 @@ func segVim(input *StatuslineInput, theme *TerminalTheme) segment {
 
 // --- Segment Dispatcher ---
 
+// defaultPriority ranks segments for width-based truncation: lower survives
+// longer. Without this every segment shared one priority and the truncation
+// loop, which scans for a strictly greater value from index 0, always dropped
+// the leftmost segment first regardless of its worth.
+func defaultPriority(name string) int {
+	switch name {
+	case "dir", "model", "rate-5hr", "rate-weekly":
+		return 2
+	case "git", "cost", "context":
+		return 3
+	case "effort", "fast", "rate-scoped":
+		return 4
+	case "reset":
+		return 5
+	case "turns", "burn", "vim", "cache", "proj":
+		return 6
+	case "tools":
+		return 7
+	}
+	return 5
+}
+
 func getSegment(name string, input *StatuslineInput, sc slSidecar, rates slRates, dataDir string, opts StatuslineOptions, theme *TerminalTheme) segment {
 	switch name {
 	case "dir":
@@ -1178,7 +1200,7 @@ func cmdStatusline() {
 
 	for _, name := range segOrder {
 		enabled := true
-		priority := 5
+		priority := defaultPriority(name)
 		if sc, ok := cfg.Segments[name]; ok {
 			if sc.Enabled != nil {
 				enabled = *sc.Enabled
