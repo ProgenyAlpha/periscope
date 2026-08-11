@@ -28,6 +28,7 @@
 .w-agents .member-tree{color:var(--text-dim);flex-shrink:0}
 .w-agents .member-name{font-weight:500;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .w-agents .member-model{font-size:0.58rem;color:var(--text-dim)}
+.w-agents .member-session{font-size:0.58rem;color:var(--text-dim);opacity:0.75;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
 
 .w-agents .member-right{display:flex;align-items:center;gap:8px;flex-shrink:0}
 .w-agents .member-cost{color:var(--c-primary);font-weight:500}
@@ -43,6 +44,7 @@
 
 @media (max-width: 640px) {
   .w-agents .member-model{display:none}
+  .w-agents .member-session{display:none}
 }
 </style>
 <script>
@@ -84,6 +86,31 @@ Periscope.registerWidget({
     const esc = s => { const d = document.createElement('div'); d.textContent = s || ''; return d.innerHTML; };
     const shortModel = m => (m || '').replace(/^claude-/, '').replace(/-20\d{6}$/, '');
 
+    // teams carries sessionId per member; sidecars and sessionMeta are keyed by
+    // it, so the fields teams omits can be filled in rather than left blank.
+    const sc = {}, meta = data.sessionMeta || {};
+    (data.sidecars || []).forEach(function(e){ if (e && e.id) sc[e.id] = e.data || {}; });
+
+    const trim = (s, n) => { s = (s || '').replace(/\s+/g, ' ').trim(); return s.length > n ? s.slice(0, n - 1) + '\u2026' : s; };
+
+    const sessionLabel = sid => {
+      if (!sid) return '';
+      const d = sc[sid] || {}, m = meta[sid] || {};
+      const label = d.generatedTitle || m.firstPrompt || d.firstPrompt || '';
+      // A bare slash command is how a session started, not what it is about.
+      return /^\/\S+$/.test(label.trim()) ? '' : label;
+    };
+
+    const memberModel = m => {
+      if (m.model) return shortModel(m.model);
+      const models = (sc[m.sessionId] || {}).models || {};
+      let best = '', n = 0;
+      Object.keys(models).forEach(function(k){ if (models[k] > n) { n = models[k]; best = k; } });
+      return best;
+    };
+
+    const memberEffort = m => (sc[m.sessionId] || {}).effortLevel || '';
+
     let html = '';
     sorted.forEach(team => {
       const name = team.name || 'unnamed';
@@ -111,7 +138,10 @@ Periscope.registerWidget({
         const isLead = i === 0 || (m.agentType || '').includes('lead');
         const isLast = i === members.length - 1;
         const tree = isLast ? '\u2514\u2500' : '\u251C\u2500';
-        const model = shortModel(m.model);
+        const model = memberModel(m);
+        const effort = memberEffort(m);
+        const meta2 = [model, effort].filter(Boolean).join(' \u00b7 ');
+        const label = sessionLabel(m.sessionId);
         const cost = m.cost || 0;
         const status = m.status || 'unknown';
 
@@ -125,7 +155,8 @@ Periscope.registerWidget({
           <div class="member-left">
             <span class="member-tree">${tree}</span>
             <span class="member-name">${esc(m.name || m.agentId)}</span>
-            <span class="member-model">(${esc(model)})</span>
+            ${meta2 ? `<span class="member-model">(${esc(meta2)})</span>` : ''}
+            ${label ? `<span class="member-session" title="${esc(label)}">${esc(trim(label, 44))}</span>` : ''}
           </div>
           <div class="member-right">
             <span class="member-cost">${fmtCost(cost)}</span>
