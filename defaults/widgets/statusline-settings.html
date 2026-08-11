@@ -328,7 +328,12 @@ Periscope.registerWidget({
     if(cfg&&typeof cfg==='object'){
       if(cfg.theme)S._st.theme=cfg.theme;
       if(cfg.style)S._st.style=cfg.style;
-      if(cfg.order&&cfg.order.length)S._st.order=cfg.order;
+      if(cfg.order&&cfg.order.length){
+        var seen={},merged=[];
+        cfg.order.forEach(function(n){if(!seen[n]){seen[n]=1;merged.push(n)}});
+        S._dOrder.forEach(function(n){if(!seen[n]){seen[n]=1;merged.push(n)}});
+        S._st.order=merged;
+      }
       if(cfg.segments)for(var n in cfg.segments)S._st.segments[n]=cfg.segments[n];
       if(cfg.options){
         if(cfg.options.contextBarWidth)S._st.options.contextBarWidth=cfg.options.contextBarWidth;

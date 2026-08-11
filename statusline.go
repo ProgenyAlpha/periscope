@@ -1135,12 +1135,12 @@ func cmdStatusline() {
 
 	// Default row assignments: 1=top (work), 2=bottom (rates)
 	defaultRow := map[string]int{
-		"dir": 1, "git": 1, "model": 1, "effort": 1, "fast": 1, "turns": 1, "cost": 1, "burn": 1, "tools": 1,
+		"dir": 1, "git": 1, "model": 1, "effort": 1, "fast": 1, "turns": 1, "cost": 1, "burn": 1, "tools": 1, "vim": 1,
 		"rate-5hr": 2, "rate-weekly": 2, "rate-scoped": 2, "reset": 2, "proj": 2, "cache": 2, "context": 2,
 	}
 
 	// Segment order — use config order if set, else default
-	defaultOrder := []string{"dir", "git", "model", "effort", "fast", "turns", "cost", "burn", "tools",
+	defaultOrder := []string{"dir", "git", "model", "effort", "fast", "turns", "cost", "burn", "tools", "vim",
 		"rate-5hr", "rate-weekly", "rate-scoped", "reset", "proj", "cache", "context"}
 	segOrder := defaultOrder
 	if len(cfg.Order) > 0 {
