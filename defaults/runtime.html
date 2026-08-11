@@ -350,7 +350,10 @@ if (typeof Chart !== 'undefined') {
 }
 
 // --- Shared Formatters ---
-function escHtml(s) { if (!s) return ''; var d=document.createElement('div'); d.textContent=s; return d.innerHTML; }
+function escHtml(s) { if (!s) return ''; var d=document.createElement('div'); d.textContent=s;
+  // textContent escapes & < > but not quotes, which is unsafe inside an
+  // HTML attribute. Encode them so one helper is correct in both contexts.
+  return d.innerHTML.replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
 function fmt(n) { return typeof n === 'number' ? n.toLocaleString() : '--'; }
 function fmtK(n) { return typeof n === 'number' ? (n >= 1e6 ? (n/1e6).toFixed(1)+'M' : (n >= 1e3 ? (n/1e3).toFixed(0)+'K' : n.toString())) : '--'; }
 function fmtCost(n) { return typeof n === 'number' ? '$'+n.toFixed(2) : '--'; }
