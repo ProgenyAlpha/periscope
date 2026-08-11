@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"io/fs"
 	"log/slog"
 	"net/http"
 	"os"
@@ -54,6 +53,24 @@ func iPrompt(question string) bool {
 	return answer != "n" && answer != "no"
 }
 
+func printSyncSummary(r syncResult) {
+	if r.written > 0 {
+		iOK(fmt.Sprintf("Wrote %d files", r.written))
+	}
+	if r.adopted > 0 {
+		iInfo(fmt.Sprintf("Started tracking %d untouched files", r.adopted))
+	}
+	if r.unchanged > 0 {
+		iInfo(fmt.Sprintf("%d files already current", r.unchanged))
+	}
+	if len(r.preserved) > 0 {
+		iWarn(fmt.Sprintf("Preserved %d edited files (yours, not overwritten):", len(r.preserved)))
+		for _, p := range r.preserved {
+			fmt.Printf("    %s%s%s\n", cDim, p, cReset)
+		}
+	}
+}
+
 // ── Install ─────────────────────────────────────────────────────────────────
 
 func install(app *App) error {
@@ -103,42 +120,15 @@ func install(app *App) error {
 	slog.Info("directories ready", "created", dirsCreated, "existed", dirsExisted)
 	iOK(fmt.Sprintf("%d directories ready", len(dirs)))
 
-	// ── Step 2: Extract plugins ──
-	iStep(2, totalSteps, "Extracting bundled plugins")
-	slog.Info("extracting bundled plugins")
-	extracted := 0
-	skipped := 0
-	fs.WalkDir(defaultPlugins, "defaults", func(path string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
-			return err
-		}
-		rel, _ := filepath.Rel("defaults", path)
-		dest := filepath.Join(app.PluginDir, rel)
-
-		if _, err := os.Stat(dest); err == nil {
-			slog.Debug("file exists, skipping", "file", rel)
-			skipped++
-			return nil // Don't clobber user edits
-		}
-
-		data, err := defaultPlugins.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		if err := os.WriteFile(dest, data, 0644); err != nil {
-			return err
-		}
-		slog.Debug("file extracted", "file", rel)
-		extracted++
-		return nil
-	})
-	slog.Info("plugin extraction complete", "extracted", extracted, "skipped", skipped)
-	if extracted > 0 {
-		iOK(fmt.Sprintf("Extracted %d files", extracted))
+	// ── Step 2: Sync plugins ──
+	iStep(2, totalSteps, "Syncing bundled plugins")
+	slog.Info("syncing bundled plugins")
+	syncRes, err := syncPlugins(app.PluginDir)
+	if err != nil {
+		return fmt.Errorf("sync plugins: %w", err)
 	}
-	if skipped > 0 {
-		iInfo(fmt.Sprintf("Skipped %d existing files (preserving your edits)", skipped))
-	}
+	slog.Info("plugin sync complete", "written", syncRes.written, "adopted", syncRes.adopted, "unchanged", syncRes.unchanged, "preserved", len(syncRes.preserved))
+	printSyncSummary(syncRes)
 
 	// ── Step 3: Config ──
 	iStep(3, totalSteps, "Writing configuration")
@@ -198,7 +188,7 @@ port = %d
 	}
 
 	// ── Summary ──
-	slog.Info("installation complete", "dirs", len(dirs), "extracted", extracted)
+	slog.Info("installation complete", "dirs", len(dirs), "written", syncRes.written)
 	iDivider()
 	addr := fmt.Sprintf("http://%s:%d", app.Config.Server.Host, app.Config.Server.Port)
 	fmt.Println()
