@@ -15,9 +15,9 @@ import (
 	"time"
 
 	"github.com/BurntSushi/toml"
-	"github.com/fsnotify/fsnotify"
 	"github.com/ProgenyAlpha/periscope/internal/anthropic"
 	"github.com/ProgenyAlpha/periscope/internal/store"
+	"github.com/fsnotify/fsnotify"
 )
 
 // Version is set at build time via -ldflags.
@@ -30,11 +30,11 @@ type App struct {
 	Hub             *Hub
 	Watcher         *fsnotify.Watcher
 	AnthropicClient *anthropic.Client
-	clientMu        sync.RWMutex // protects AnthropicClient
-	HomeDir         string       // ~/.periscope
-	ClaudeDir       string       // ~/.claude
-	DataDir         string       // ~/.claude/hooks/cost-state
-	PluginDir       string       // ~/.periscope/plugins
+	clientMu        sync.RWMutex       // protects AnthropicClient
+	HomeDir         string             // ~/.periscope
+	ClaudeDir       string             // ~/.claude
+	DataDir         string             // ~/.claude/hooks/cost-state
+	PluginDir       string             // ~/.periscope/plugins
 	cancel          context.CancelFunc // triggers graceful shutdown
 }
 
@@ -85,10 +85,14 @@ func main() {
 		cmdServe()
 	case "status":
 		cmdStatus()
+	case "sync":
+		cmdSync()
 	case "uninstall":
 		cmdUninstall()
 	case "hook":
 		cmdHook()
+	case "substatusline":
+		cmdSubStatusline()
 	case "statusline":
 		cmdStatusline()
 	case "version":
@@ -106,9 +110,11 @@ Usage:
   periscope init          Set up plugins, database, and hooks
   periscope serve         Start the dashboard server
   periscope status        Check if server is running
+  periscope sync          Update built-in plugins, preserving your edits
   periscope hook stop     Process transcript (Stop hook)
   periscope hook display  Output telemetry context (UserPromptSubmit hook)
   periscope statusline    Render terminal statusline (reads JSON from stdin)
+  periscope substatusline Render agent-panel rows (reads JSON from stdin)
   periscope uninstall     Remove hooks and clean up
   periscope version       Print version`)
 }
@@ -286,6 +292,27 @@ func cmdStatus() {
 	}
 	defer resp.Body.Close()
 	fmt.Println("Server is running.")
+}
+
+func cmdSync() {
+	app, err := newApp()
+	if err != nil {
+		slog.Error("sync failed", "err", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("\n  %sSyncing plugins%s  %s\n\n", cBold, cReset, app.PluginDir)
+	slog.Info("syncing plugins", "dir", app.PluginDir)
+
+	result, err := syncPlugins(app.PluginDir)
+	if err != nil {
+		slog.Error("plugin sync failed", "err", err)
+		os.Exit(1)
+	}
+	slog.Info("plugin sync complete", "written", result.written, "adopted", result.adopted, "unchanged", result.unchanged, "preserved", len(result.preserved))
+
+	printSyncSummary(result)
+	fmt.Println()
 }
 
 func cmdHook() {
