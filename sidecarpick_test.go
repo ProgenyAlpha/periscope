@@ -48,3 +48,15 @@ func TestSidecarFallsBackToNewestWhenSessionUnknown(t *testing.T) {
 		t.Errorf("Turns = %d, want 2286 from newest when no session id", got.Turns)
 	}
 }
+
+// A session that has not written a sidecar yet must render nothing rather than
+// another session's numbers.
+func TestSidecarNeverBorrowsAnotherSession(t *testing.T) {
+	dir := t.TempDir()
+	writeSidecar(t, dir, "someone-else", 2286, time.Now())
+
+	got := loadSidecarForStatuslineFor(dir, "mine")
+	if got.HasSidecar || got.Turns != 0 {
+		t.Errorf("Turns=%d HasSidecar=%v, want 0/false — borrowed another session's sidecar", got.Turns, got.HasSidecar)
+	}
+}

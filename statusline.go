@@ -295,11 +295,16 @@ func loadSidecarForStatusline(dataDir string) slSidecar {
 func loadSidecarForStatuslineFor(dataDir, sessionID string) slSidecar {
 	result := slSidecar{}
 
+	// A known session reads its own file or nothing. Falling back to the newest
+	// sidecar here would show another session's turns, tools and cache rate,
+	// which is what every concurrent session did before it had written one.
 	if sessionID != "" {
 		p := filepath.Join(dataDir, sessionID+".json")
-		if info, err := os.Stat(p); err == nil {
-			return readSidecarFile(p, info.ModTime())
+		info, err := os.Stat(p)
+		if err != nil {
+			return result
 		}
+		return readSidecarFile(p, info.ModTime())
 	}
 
 	entries, err := os.ReadDir(dataDir)
