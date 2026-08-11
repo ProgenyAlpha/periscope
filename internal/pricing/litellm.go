@@ -80,6 +80,46 @@ func FetchLiteLLMPricing(dataDir string) (json.RawMessage, error) {
 	return data, nil
 }
 
+// LoadOverlay reads the LiteLLM pricing cache file from dataDir and returns
+// the model rates found there. It never makes a network call. A missing,
+// unreadable, or malformed file returns nil. An entry with a non-positive
+// input rate is skipped. The feed doesn't supply a 1h cache-write rate, so
+// it's derived as 2x the feed's input rate.
+func LoadOverlay(dataDir string) map[string]ModelRates {
+	cachePath := filepath.Join(dataDir, "litellm-pricing-cache.json")
+	raw, err := os.ReadFile(cachePath)
+	if err != nil {
+		return nil
+	}
+
+	var cache struct {
+		Data map[string]struct {
+			Input      float64 `json:"input"`
+			Output     float64 `json:"output"`
+			CacheRead  float64 `json:"cache_read"`
+			CacheWrite float64 `json:"cache_write"`
+		} `json:"data"`
+	}
+	if json.Unmarshal(raw, &cache) != nil {
+		return nil
+	}
+
+	rates := make(map[string]ModelRates, len(cache.Data))
+	for model, entry := range cache.Data {
+		if entry.Input <= 0 {
+			continue
+		}
+		rates[model] = ModelRates{
+			Input:        entry.Input,
+			CacheRead:    entry.CacheRead,
+			CacheWrite:   entry.CacheWrite,
+			CacheWrite1h: entry.Input * 2.0,
+			Output:       entry.Output,
+		}
+	}
+	return rates
+}
+
 func readCacheFallback(path string) (json.RawMessage, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {

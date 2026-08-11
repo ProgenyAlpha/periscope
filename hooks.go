@@ -39,10 +39,16 @@ type TranscriptMsg struct {
 }
 
 type TokenUsage struct {
-	InputTokens              int64 `json:"input_tokens"`
-	CacheReadInputTokens     int64 `json:"cache_read_input_tokens"`
-	CacheCreationInputTokens int64 `json:"cache_creation_input_tokens"`
-	OutputTokens             int64 `json:"output_tokens"`
+	InputTokens              int64          `json:"input_tokens"`
+	CacheReadInputTokens     int64          `json:"cache_read_input_tokens"`
+	CacheCreationInputTokens int64          `json:"cache_creation_input_tokens"`
+	CacheCreation            *CacheCreation `json:"cache_creation,omitempty"`
+	OutputTokens             int64          `json:"output_tokens"`
+}
+
+type CacheCreation struct {
+	Ephemeral1hInputTokens int64 `json:"ephemeral_1h_input_tokens"`
+	Ephemeral5mInputTokens int64 `json:"ephemeral_5m_input_tokens"`
 }
 
 // --- Sidecar State ---
@@ -52,6 +58,7 @@ type SidecarState struct {
 	Project        string         `json:"project,omitempty"`
 	EffortLevel    string         `json:"effortLevel,omitempty"`
 	FirstPrompt    string         `json:"firstPrompt,omitempty"`
+	TranscriptPath string         `json:"transcriptPath,omitempty"`
 	GeneratedTitle string         `json:"generatedTitle,omitempty"`
 	Cumulative     *Cumulative    `json:"cumulative"`
 	LastTurn       *LastTurn      `json:"lastTurn"`
@@ -59,18 +66,20 @@ type SidecarState struct {
 }
 
 type Cumulative struct {
-	Input      int64                `json:"input"`
-	CacheRead  int64                `json:"cache_read"`
-	CacheWrite int64                `json:"cache_write"`
-	Output     int64                `json:"output"`
-	Cost       float64              `json:"cost"`
-	AgentCost  float64              `json:"agent_cost"`
-	ToolCost   float64              `json:"tool_cost"`
-	ChatCost   float64              `json:"chat_cost"`
-	AgentCalls int                  `json:"agent_calls"`
-	ToolCalls  int                  `json:"tool_calls"`
-	ChatCalls  int                  `json:"chat_calls"`
-	Tools      map[string]*ToolStat `json:"tools"`
+	Input        int64                `json:"input"`
+	CacheRead    int64                `json:"cache_read"`
+	CacheWrite   int64                `json:"cache_write"`
+	CacheWrite1h int64                `json:"cache_write_1h"`
+	CacheWrite5m int64                `json:"cache_write_5m"`
+	Output       int64                `json:"output"`
+	Cost         float64              `json:"cost"`
+	AgentCost    float64              `json:"agent_cost"`
+	ToolCost     float64              `json:"tool_cost"`
+	ChatCost     float64              `json:"chat_cost"`
+	AgentCalls   int                  `json:"agent_calls"`
+	ToolCalls    int                  `json:"tool_calls"`
+	ChatCalls    int                  `json:"chat_calls"`
+	Tools        map[string]*ToolStat `json:"tools"`
 }
 
 type ToolStat struct {
@@ -79,14 +88,16 @@ type ToolStat struct {
 }
 
 type LastTurn struct {
-	Cost       float64  `json:"cost"`
-	Type       string   `json:"type"`
-	Model      string   `json:"model"`
-	Input      int64    `json:"input"`
-	CacheRead  int64    `json:"cache_read"`
-	CacheWrite int64    `json:"cache_write"`
-	Output     int64    `json:"output"`
-	Tools      []string `json:"tools"`
+	Cost         float64  `json:"cost"`
+	Type         string   `json:"type"`
+	Model        string   `json:"model"`
+	Input        int64    `json:"input"`
+	CacheRead    int64    `json:"cache_read"`
+	CacheWrite   int64    `json:"cache_write"`
+	CacheWrite1h int64    `json:"cache_write_1h"`
+	CacheWrite5m int64    `json:"cache_write_5m"`
+	Output       int64    `json:"output"`
+	Tools        []string `json:"tools"`
 }
 
 // --- Hook: Stop ---
@@ -268,6 +279,7 @@ func hookStop() {
 	}
 	stateDir := filepath.Join(home, ".claude", "hooks", "cost-state")
 	os.MkdirAll(stateDir, 0755)
+	pricing.InitOverlay(stateDir)
 	statePath := filepath.Join(stateDir, payload.SessionID+".json")
 
 	projectSlug := ""
@@ -333,10 +345,7 @@ func hookStop() {
 		model := entry.Message.Model
 		rates := pricing.GetRates(model)
 
-		cost := float64(usage.InputTokens)*rates.Input/1e6 +
-			float64(usage.CacheReadInputTokens)*rates.CacheRead/1e6 +
-			float64(usage.CacheCreationInputTokens)*rates.CacheWrite/1e6 +
-			float64(usage.OutputTokens)*rates.Output/1e6
+		cost, cacheWrite1h, cacheWrite5m := turnCost(usage, rates)
 
 		turnInfo := getTurnInfo(entry.Message.Content)
 
@@ -348,39 +357,12 @@ func hookStop() {
 		state.Cumulative.Input += usage.InputTokens
 		state.Cumulative.CacheRead += usage.CacheReadInputTokens
 		state.Cumulative.CacheWrite += usage.CacheCreationInputTokens
+		state.Cumulative.CacheWrite1h += cacheWrite1h
+		state.Cumulative.CacheWrite5m += cacheWrite5m
 		state.Cumulative.Output += usage.OutputTokens
 		state.Cumulative.Cost += cost
 
-		switch turnInfo.turnType {
-		case "agent":
-			state.Cumulative.AgentCost += cost
-			state.Cumulative.AgentCalls++
-		case "tool":
-			state.Cumulative.ToolCost += cost
-			state.Cumulative.ToolCalls++
-		default:
-			state.Cumulative.ChatCost += cost
-			state.Cumulative.ChatCalls++
-		}
-
-		seen := map[string]bool{}
-		for _, toolName := range turnInfo.tools {
-			tKey := toolName
-			if toolName == "Task" && len(turnInfo.agents) > 0 {
-				tKey = "Task/" + turnInfo.agents[0]
-			}
-			if state.Cumulative.Tools[tKey] == nil {
-				state.Cumulative.Tools[tKey] = &ToolStat{}
-			}
-			state.Cumulative.Tools[tKey].Calls++
-			seen[tKey] = true
-		}
-		if len(seen) > 0 {
-			perTool := weighted / float64(len(seen))
-			for tKey := range seen {
-				state.Cumulative.Tools[tKey].Weighted += perTool
-			}
-		}
+		recordTurn(state.Cumulative, turnInfo, cost, weighted)
 
 		mShort := model
 		mShort = strings.TrimPrefix(mShort, "claude-")
@@ -398,6 +380,8 @@ func hookStop() {
 		turn.Input += usage.InputTokens
 		turn.CacheRead += usage.CacheReadInputTokens
 		turn.CacheWrite += usage.CacheCreationInputTokens
+		turn.CacheWrite1h += cacheWrite1h
+		turn.CacheWrite5m += cacheWrite5m
 		turn.Output += usage.OutputTokens
 		turn.Tools = append(turn.Tools, turnInfo.tools...)
 		turn.Model = model
@@ -454,6 +438,7 @@ func hookStop() {
 		}
 	}
 
+	state.TranscriptPath = payload.TranscriptPath
 	data, _ := json.Marshal(state)
 	if err := os.WriteFile(statePath, data, 0644); err != nil {
 		slog.Error("stop hook: write sidecar failed", "path", statePath, "err", err)
@@ -463,12 +448,9 @@ func hookStop() {
 	}
 
 	totalCalls := state.Cumulative.AgentCalls + state.Cumulative.ToolCalls + state.Cumulative.ChatCalls
-	if state.GeneratedTitle == "" && totalCalls >= 5 {
-		prompts := extractUserPrompts(payload.TranscriptPath, 3)
-		if len(prompts) >= 2 {
-			generateSessionTitle(statePath, state.Project, prompts)
-		}
-	}
+	// Session-title generation moved off the hook critical path — the server's
+	// titleBackfill goroutine (server.go) generates titles asynchronously so the
+	// Stop hook never blocks on an Anthropic API call.
 
 	shortSid := payload.SessionID
 	if len(shortSid) > 8 {
@@ -839,10 +821,76 @@ func newCumulative() *Cumulative {
 	return &Cumulative{Tools: map[string]*ToolStat{}}
 }
 
+// turnCost computes the dollar cost and cache-write token split for one
+// assistant turn's usage. When usage.CacheCreation is present, the 1h and 5m
+// buckets are priced separately at their own rates. Otherwise the flat
+// CacheCreationInputTokens field is priced at the 5m rate, matching pre-1h
+// transcripts. The two paths are mutually exclusive to avoid double-counting.
+func turnCost(usage *TokenUsage, rates pricing.ModelRates) (cost float64, cacheWrite1h, cacheWrite5m int64) {
+	if usage.CacheCreation != nil {
+		cacheWrite1h = usage.CacheCreation.Ephemeral1hInputTokens
+		cacheWrite5m = usage.CacheCreation.Ephemeral5mInputTokens
+	} else {
+		cacheWrite5m = usage.CacheCreationInputTokens
+	}
+
+	cost = float64(usage.InputTokens)*rates.Input/1e6 +
+		float64(usage.CacheReadInputTokens)*rates.CacheRead/1e6 +
+		float64(cacheWrite1h)*rates.CacheWrite1h/1e6 +
+		float64(cacheWrite5m)*rates.CacheWrite/1e6 +
+		float64(usage.OutputTokens)*rates.Output/1e6
+	return cost, cacheWrite1h, cacheWrite5m
+}
+
 type turnInfo struct {
 	turnType string
 	tools    []string
 	agents   []string
+}
+
+// isAgentTool reports whether name is a subagent-spawning tool call. "Task"
+// is the legacy name (still present in old transcripts); "Agent" is the
+// current one. Both classify the same way.
+func isAgentTool(name string) bool {
+	return name == "Task" || name == "Agent"
+}
+
+// recordTurn classifies one turn's cost into the agent/tool/chat buckets and
+// accumulates per-tool call counts and weighted usage. Subagent spawns are
+// canonicalized under "Task/<subagent_type>" regardless of whether the turn
+// used the legacy "Task" name or the current "Agent" name, so the dashboard
+// doesn't split one subagent's history into two rows across the rename.
+func recordTurn(c *Cumulative, info turnInfo, cost, weighted float64) {
+	switch info.turnType {
+	case "agent":
+		c.AgentCost += cost
+		c.AgentCalls++
+	case "tool":
+		c.ToolCost += cost
+		c.ToolCalls++
+	default:
+		c.ChatCost += cost
+		c.ChatCalls++
+	}
+
+	seen := map[string]bool{}
+	for _, toolName := range info.tools {
+		tKey := toolName
+		if isAgentTool(toolName) && len(info.agents) > 0 {
+			tKey = "Task/" + info.agents[0]
+		}
+		if c.Tools[tKey] == nil {
+			c.Tools[tKey] = &ToolStat{}
+		}
+		c.Tools[tKey].Calls++
+		seen[tKey] = true
+	}
+	if len(seen) > 0 {
+		perTool := weighted / float64(len(seen))
+		for tKey := range seen {
+			c.Tools[tKey].Weighted += perTool
+		}
+	}
 }
 
 func getTurnInfo(content json.RawMessage) turnInfo {
@@ -863,7 +911,7 @@ func getTurnInfo(content json.RawMessage) turnInfo {
 	for _, b := range blocks {
 		if b.Type == "tool_use" {
 			info.tools = append(info.tools, b.Name)
-			if b.Name == "Task" {
+			if isAgentTool(b.Name) {
 				info.turnType = "agent"
 				if b.Input != nil && b.Input.SubagentType != "" {
 					info.agents = append(info.agents, b.Input.SubagentType)
@@ -887,15 +935,4 @@ func fmtTokens(v float64) string {
 		return fmt.Sprintf("%.0fK", v/1e3)
 	}
 	return fmt.Sprintf("%.0f", v)
-}
-
-func progressBar(pct, width int) string {
-	if pct < 0 {
-		pct = 0
-	}
-	filled := pct * width / 100
-	if filled > width {
-		filled = width
-	}
-	return strings.Repeat("#", filled) + strings.Repeat("-", width-filled)
 }
