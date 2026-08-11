@@ -8,8 +8,8 @@ import (
 	"net/http"
 	"time"
 
-	webpush "github.com/SherClockHolmes/webpush-go"
 	"github.com/ProgenyAlpha/periscope/internal/store"
+	webpush "github.com/SherClockHolmes/webpush-go"
 )
 
 // ensureVAPIDKeys generates a VAPID key pair if missing, stores in KV, and returns them.

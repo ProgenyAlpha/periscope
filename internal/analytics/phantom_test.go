@@ -70,10 +70,10 @@ func TestCalcPhantomUsage(t *testing.T) {
 	now := time.Now().UTC()
 
 	tests := []struct {
-		name      string
-		setup     func(t *testing.T, db *sql.DB)
-		wantCost  float64
-		wantInf   bool
+		name     string
+		setup    func(t *testing.T, db *sql.DB)
+		wantCost float64
+		wantInf  bool
 	}{
 		{
 			// Regression: all pctWeekly growth is phantom (cliPct==0).

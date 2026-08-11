@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/fsnotify/fsnotify"
 	"github.com/ProgenyAlpha/periscope/internal/store"
+	"github.com/fsnotify/fsnotify"
 )
 
 func startWatcher(app *App) (*fsnotify.Watcher, error) {
