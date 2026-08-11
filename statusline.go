@@ -20,18 +20,62 @@ import (
 
 // --- Statusline Input (piped from Claude Code via stdin) ---
 
+// costField mirrors Claude Code's authoritative per-session cost. Named
+// (rather than anonymous like most fields below) so segCost and its tests
+// can reference the type directly.
+type costField struct {
+	TotalCostUSD float64 `json:"total_cost_usd"`
+}
+
+// rateWindow is one rate-limit window (five_hour or seven_day). Claude Code
+// sends rate_limits only for Pro/Max subscribers, and only after the first
+// API response of a session — used_percentage is absent/null before that,
+// and again after /compact until the next API call. UsedPercentage is a
+// pointer so absence is distinguishable from a genuine 0.
+type rateWindow struct {
+	UsedPercentage *int  `json:"used_percentage"`
+	ResetsAt       int64 `json:"resets_at"`
+}
+
+type rateLimitsField struct {
+	FiveHour *rateWindow `json:"five_hour"`
+	SevenDay *rateWindow `json:"seven_day"`
+}
+
+// currentUsageField is the token breakdown from the most recent API
+// response. Null before the first API call in a session, and again
+// immediately after /compact until the next API call repopulates it.
+type currentUsageField struct {
+	InputTokens              int `json:"input_tokens"`
+	OutputTokens             int `json:"output_tokens"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+}
+
 type StatuslineInput struct {
-	SessionID string `json:"session_id"`
-	Workspace *struct {
-		CurrentDir string `json:"current_dir"`
-		ProjectDir string `json:"project_dir"`
+	SessionID   string `json:"session_id"`
+	SessionName string `json:"session_name"`
+	Version     string `json:"version"`
+	Workspace   *struct {
+		CurrentDir  string  `json:"current_dir"`
+		ProjectDir  string  `json:"project_dir"`
+		GitWorktree *string `json:"git_worktree"`
+		Repo        *struct {
+			Host  string `json:"host"`
+			Owner string `json:"owner"`
+			Name  string `json:"name"`
+		} `json:"repo"`
 	} `json:"workspace"`
 	Model *struct {
 		ModelID     string `json:"id"`
 		DisplayName string `json:"display_name"`
 	} `json:"model"`
 	ContextWindow *struct {
-		UsedPercentage float64 `json:"used_percentage"`
+		UsedPercentage    float64            `json:"used_percentage"`
+		ContextWindowSize int                `json:"context_window_size"`
+		TotalInputTokens  int                `json:"total_input_tokens"`
+		TotalOutputTokens int                `json:"total_output_tokens"`
+		CurrentUsage      *currentUsageField `json:"current_usage"`
 	} `json:"context_window"`
 	VimMode *struct {
 		Mode string `json:"mode"`
@@ -39,19 +83,24 @@ type StatuslineInput struct {
 	Effort *struct {
 		Level string `json:"level"`
 	} `json:"effort"`
-	Cost *struct {
-		TotalCostUSD float64 `json:"total_cost_usd"`
-	} `json:"cost"`
-	RateLimits *struct {
-		FiveHour *struct {
-			UsedPercentage int   `json:"used_percentage"`
-			ResetsAt       int64 `json:"resets_at"`
-		} `json:"five_hour"`
-		SevenDay *struct {
-			UsedPercentage int   `json:"used_percentage"`
-			ResetsAt       int64 `json:"resets_at"`
-		} `json:"seven_day"`
-	} `json:"rate_limits"`
+	Cost              *costField       `json:"cost"`
+	RateLimits        *rateLimitsField `json:"rate_limits"`
+	FastMode          bool             `json:"fast_mode"`
+	Exceeds200kTokens bool             `json:"exceeds_200k_tokens"`
+	Thinking          *struct {
+		Enabled bool `json:"enabled"`
+	} `json:"thinking"`
+	OutputStyle *struct {
+		Name string `json:"name"`
+	} `json:"output_style"`
+	Agent *struct {
+		Name string `json:"name"`
+	} `json:"agent"`
+	PR *struct {
+		Number      int     `json:"number"`
+		URL         string  `json:"url"`
+		ReviewState *string `json:"review_state"`
+	} `json:"pr"`
 }
 
 // --- Terminal Theme (ANSI 256-color) ---
@@ -118,6 +167,7 @@ type slSidecar struct {
 	Cost       float64
 	BurnRate   float64
 	BurnOK     bool
+	ModTime    time.Time // mtime of the sidecar file this data came from
 }
 
 // --- Default catppuccin-mocha terminal colors ---
@@ -278,6 +328,7 @@ func loadSidecarForStatusline(dataDir string) slSidecar {
 	result.Turns = c.AgentCalls + c.ToolCalls + c.ChatCalls
 	result.Cost = c.Cost
 	result.HasSidecar = true
+	result.ModTime = latestTime
 
 	totalIn := c.Input + c.CacheRead
 	if totalIn > 0 {
@@ -310,6 +361,13 @@ func loadSidecarForStatusline(dataDir string) slSidecar {
 	return result
 }
 
+// slScoped is one per-model weekly cap as reported by the API's limits array.
+type slScoped struct {
+	Model string
+	Pct   int
+	Reset string
+}
+
 type slRates struct {
 	Pct5hr      int
 	PctWeekly   int
@@ -317,6 +375,8 @@ type slRates struct {
 	Reset5hr    string
 	ResetWeekly string
 	ResetSonnet string
+	Scoped      []slScoped
+	FetchedAt   time.Time // when the polling loop wrote this cache
 }
 
 func loadRatesForStatusline(dataDir string) slRates {
@@ -337,6 +397,9 @@ func loadRatesForStatusline(dataDir string) slRates {
 	result.Pct5hr = forecast.IntOrDefault(cache["pct5hr"], -1)
 	result.PctWeekly = forecast.IntOrDefault(cache["pctWeekly"], -1)
 	result.PctSonnet = forecast.IntOrDefault(cache["pctSonnet"], -1)
+	if v, ok := cache["fetched_at"].(float64); ok {
+		result.FetchedAt = time.Unix(int64(v), 0)
+	}
 	if v, ok := cache["reset5hr"].(string); ok {
 		result.Reset5hr = v
 	}
@@ -346,8 +409,95 @@ func loadRatesForStatusline(dataDir string) slRates {
 	if v, ok := cache["resetSonnet"].(string); ok {
 		result.ResetSonnet = v
 	}
+	if raw, ok := cache["scoped"].([]any); ok {
+		for _, e := range raw {
+			m, ok := e.(map[string]any)
+			if !ok {
+				continue
+			}
+			name, _ := m["model"].(string)
+			if name == "" {
+				continue
+			}
+			reset, _ := m["reset"].(string)
+			result.Scoped = append(result.Scoped, slScoped{
+				Model: name,
+				Pct:   forecast.IntOrDefault(m["pct"], -1),
+				Reset: reset,
+			})
+		}
+	}
 
 	return result
+}
+
+// stateDir resolves the cost-state directory. PERISCOPE_STATE_DIR overrides it
+// so the cache-write path can be exercised without touching live state.
+func stateDir() string {
+	if d := os.Getenv("PERISCOPE_STATE_DIR"); d != "" {
+		return d
+	}
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".claude", "hooks", "cost-state")
+}
+
+// --- Staleness ---
+
+// The usage cache is polled roughly every 60s; the sidecar is written once
+// per turn by the Stop hook, and a single turn can legitimately run long, so
+// it gets a much looser bound.
+const (
+	usageCacheStaleAfter = 10 * time.Minute
+	sidecarStaleAfter    = 60 * time.Minute
+)
+
+// staleAt reports whether age is older than threshold. Strict: an age
+// exactly equal to threshold is not yet stale.
+func staleAt(age, threshold time.Duration) bool {
+	return age > threshold
+}
+
+// isStale reports whether t is older than threshold. A zero t means the
+// caller has no timestamp to judge by, so it's never treated as stale.
+func isStale(t time.Time, threshold time.Duration) (bool, time.Duration) {
+	if t.IsZero() {
+		return false, 0
+	}
+	age := time.Since(t)
+	return staleAt(age, threshold), age
+}
+
+// staleSuffix renders age as a compact tilde-prefixed suffix (~12m, ~3h,
+// ~5d). Empty if age rounds below one minute.
+func staleSuffix(age time.Duration) string {
+	mins := math.Round(age.Minutes())
+	if mins < 1 {
+		return ""
+	}
+	if mins < 60 {
+		return fmt.Sprintf("~%dm", int64(mins))
+	}
+	hrs := math.Round(age.Hours())
+	if hrs < 24 {
+		return fmt.Sprintf("~%dh", int64(hrs))
+	}
+	return fmt.Sprintf("~%dd", int64(math.Round(age.Hours()/24)))
+}
+
+// markStale dims seg and appends an age suffix when fetchedAt is older than
+// threshold. A segment that is empty stays empty — staleness never creates
+// output.
+func markStale(seg segment, fetchedAt time.Time, threshold time.Duration, theme *TerminalTheme) segment {
+	if seg.empty {
+		return seg
+	}
+	stale, age := isStale(fetchedAt, threshold)
+	if !stale {
+		return seg
+	}
+	seg.color = theme.Dim
+	seg.text += staleSuffix(age)
+	return seg
 }
 
 // --- Segment Functions ---
@@ -471,7 +621,8 @@ func segTurns(sc slSidecar, theme *TerminalTheme) segment {
 	if sc.Turns <= 0 {
 		return segment{empty: true}
 	}
-	return segment{text: fmt.Sprintf(" \uf021 t:%d", sc.Turns), color: theme.Cyan}
+	seg := segment{text: fmt.Sprintf(" \uf021 t:%d", sc.Turns), color: theme.Cyan}
+	return markStale(seg, sc.ModTime, sidecarStaleAfter, theme)
 }
 
 func segRate5hr(rates slRates, theme *TerminalTheme) segment {
@@ -479,7 +630,8 @@ func segRate5hr(rates slRates, theme *TerminalTheme) segment {
 		return segment{empty: true}
 	}
 	col := rateColor(rates.Pct5hr, theme)
-	return segment{text: fmt.Sprintf(" 5h:%d%%", rates.Pct5hr), color: col}
+	seg := segment{text: fmt.Sprintf(" 5h:%d%%", rates.Pct5hr), color: col}
+	return markStale(seg, rates.FetchedAt, usageCacheStaleAfter, theme)
 }
 
 func segRateWeekly(rates slRates, theme *TerminalTheme) segment {
@@ -487,23 +639,65 @@ func segRateWeekly(rates slRates, theme *TerminalTheme) segment {
 		return segment{empty: true}
 	}
 	col := rateColor(rates.PctWeekly, theme)
-	return segment{text: fmt.Sprintf(" wk:%d%%", rates.PctWeekly), color: col}
+	seg := segment{text: fmt.Sprintf(" wk:%d%%", rates.PctWeekly), color: col}
+	return markStale(seg, rates.FetchedAt, usageCacheStaleAfter, theme)
 }
 
-func segRateSonnet(rates slRates, theme *TerminalTheme) segment {
-	if rates.PctSonnet < 0 {
-		return segment{empty: true}
-	}
-	col := rateColor(rates.PctSonnet, theme)
-	return segment{text: fmt.Sprintf(" sn:%d%%", rates.PctSonnet), color: col}
+var scopedAbbrev = map[string]string{
+	"fable":  "fb",
+	"sonnet": "sn",
+	"opus":   "op",
+	"haiku":  "hk",
 }
 
-func segCost(sc slSidecar, theme *TerminalTheme) segment {
-	if sc.Cost <= 0 {
+func scopedLabel(model string) string {
+	m := strings.ToLower(model)
+	if a, ok := scopedAbbrev[m]; ok {
+		return a
+	}
+	if len(m) > 2 {
+		return m[:2]
+	}
+	return m
+}
+
+// segRateScoped renders every per-model weekly cap the API reports, e.g.
+// " fb:10%". Colored by the highest of them.
+func segRateScoped(rates slRates, theme *TerminalTheme) segment {
+	var parts []string
+	worst := -1
+	for _, s := range rates.Scoped {
+		if s.Pct < 0 {
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("%s:%d%%", scopedLabel(s.Model), s.Pct))
+		if s.Pct > worst {
+			worst = s.Pct
+		}
+	}
+	if len(parts) == 0 {
 		return segment{empty: true}
 	}
-	val := math.Round(sc.Cost*100) / 100
-	return segment{text: fmt.Sprintf(" $%.2f", val), color: theme.Yellow}
+	seg := segment{text: " " + strings.Join(parts, " "), color: rateColor(worst, theme)}
+	return markStale(seg, rates.FetchedAt, usageCacheStaleAfter, theme)
+}
+
+func segCost(input *StatuslineInput, sc slSidecar, theme *TerminalTheme) segment {
+	cost := sc.Cost
+	fromSidecar := true
+	if input != nil && input.Cost != nil && input.Cost.TotalCostUSD > 0 {
+		cost = input.Cost.TotalCostUSD
+		fromSidecar = false
+	}
+	if cost <= 0 {
+		return segment{empty: true}
+	}
+	val := math.Round(cost*100) / 100
+	seg := segment{text: fmt.Sprintf(" $%.2f", val), color: theme.Yellow}
+	if fromSidecar {
+		seg = markStale(seg, sc.ModTime, sidecarStaleAfter, theme)
+	}
+	return seg
 }
 
 func segBurn(sc slSidecar, theme *TerminalTheme) segment {
@@ -516,7 +710,11 @@ func segBurn(sc slSidecar, theme *TerminalTheme) segment {
 func segReset(rates slRates, theme *TerminalTheme) segment {
 	now := time.Now().UTC()
 	var nearest float64
-	for _, r := range []string{rates.Reset5hr, rates.ResetWeekly, rates.ResetSonnet} {
+	candidates := []string{rates.Reset5hr, rates.ResetWeekly, rates.ResetSonnet}
+	for _, s := range rates.Scoped {
+		candidates = append(candidates, s.Reset)
+	}
+	for _, r := range candidates {
 		if r == "" {
 			continue
 		}
@@ -540,43 +738,43 @@ func segReset(rates slRates, theme *TerminalTheme) segment {
 	} else {
 		display = fmt.Sprintf("%dm", mins)
 	}
-	return segment{text: " rst:" + display, color: theme.Cyan}
+	seg := segment{text: " rst:" + display, color: theme.Cyan}
+	return markStale(seg, rates.FetchedAt, usageCacheStaleAfter, theme)
 }
 
-func segProj(rates slRates, theme *TerminalTheme) segment {
+func segProj(rates slRates, dataDir string, theme *TerminalTheme) segment {
 	if rates.Pct5hr < 0 || rates.Reset5hr == "" {
 		return segment{empty: true}
 	}
-	now := time.Now().UTC()
-	resetDt, err := time.Parse(time.RFC3339, rates.Reset5hr)
-	if err != nil {
+	proj, _, ok := forecast.Project5hr(dataDir, rates.Pct5hr, rates.Reset5hr)
+	if !ok {
 		return segment{empty: true}
 	}
-	windowStart := resetDt.Add(-5 * time.Hour)
-	elapsed := now.Sub(windowStart).Hours()
-	if elapsed <= 0.05 {
-		return segment{empty: true}
-	}
-	remaining := resetDt.Sub(now).Hours()
-	if remaining <= 0 {
-		return segment{empty: true}
-	}
-	rate := float64(rates.Pct5hr) / elapsed
-	projected := int(math.Round(float64(rates.Pct5hr) + rate*remaining))
 	col := theme.Green
-	if projected >= 80 {
+	if proj >= 80 {
 		col = theme.Red
-	} else if projected >= 50 {
+	} else if proj >= 50 {
 		col = theme.Yellow
 	}
-	return segment{text: fmt.Sprintf(" pj:%d%%", projected), color: col}
+	seg := segment{text: fmt.Sprintf(" pj:%d%%", proj), color: col}
+	return markStale(seg, rates.FetchedAt, usageCacheStaleAfter, theme)
 }
 
-func segCache(sc slSidecar, theme *TerminalTheme) segment {
+func segCache(input *StatuslineInput, sc slSidecar, theme *TerminalTheme) segment {
+	if input != nil && input.ContextWindow != nil && input.ContextWindow.CurrentUsage != nil {
+		cu := input.ContextWindow.CurrentUsage
+		total := cu.InputTokens + cu.CacheReadInputTokens
+		pct := 0
+		if total > 0 {
+			pct = int(math.Round(float64(cu.CacheReadInputTokens) / float64(total) * 100))
+		}
+		return segment{text: fmt.Sprintf(" \uf0e7%d%%", pct), color: theme.Green}
+	}
 	if !sc.HasSidecar {
 		return segment{empty: true}
 	}
-	return segment{text: fmt.Sprintf(" \uf0e7%d%%", sc.CachePct), color: theme.Green}
+	seg := segment{text: fmt.Sprintf(" \uf0e7%d%%", sc.CachePct), color: theme.Green}
+	return markStale(seg, sc.ModTime, sidecarStaleAfter, theme)
 }
 
 func segTools(sc slSidecar, theme *TerminalTheme) segment {
@@ -584,7 +782,15 @@ func segTools(sc slSidecar, theme *TerminalTheme) segment {
 		return segment{empty: true}
 	}
 	list := strings.Join(sc.Tools, " ")
-	return segment{text: fmt.Sprintf(" [%s]", list), color: theme.Peach}
+	seg := segment{text: fmt.Sprintf(" [%s]", list), color: theme.Peach}
+	return markStale(seg, sc.ModTime, sidecarStaleAfter, theme)
+}
+
+func segFast(input *StatuslineInput, theme *TerminalTheme) segment {
+	if input == nil || !input.FastMode {
+		return segment{empty: true}
+	}
+	return segment{text: " fast", color: theme.Peach}
 }
 
 func segContext(input *StatuslineInput, opts StatuslineOptions, theme *TerminalTheme) segment {
@@ -630,7 +836,7 @@ func segVim(input *StatuslineInput, theme *TerminalTheme) segment {
 
 // --- Segment Dispatcher ---
 
-func getSegment(name string, input *StatuslineInput, sc slSidecar, rates slRates, opts StatuslineOptions, theme *TerminalTheme) segment {
+func getSegment(name string, input *StatuslineInput, sc slSidecar, rates slRates, dataDir string, opts StatuslineOptions, theme *TerminalTheme) segment {
 	switch name {
 	case "dir":
 		return segDir(input, theme)
@@ -646,16 +852,16 @@ func getSegment(name string, input *StatuslineInput, sc slSidecar, rates slRates
 		return segRate5hr(rates, theme)
 	case "rate-weekly":
 		return segRateWeekly(rates, theme)
-	case "rate-sonnet":
-		return segRateSonnet(rates, theme)
+	case "rate-scoped":
+		return segRateScoped(rates, theme)
 	case "cost":
-		return segCost(sc, theme)
+		return segCost(input, sc, theme)
 	case "reset":
 		return segReset(rates, theme)
 	case "proj":
-		return segProj(rates, theme)
+		return segProj(rates, dataDir, theme)
 	case "cache":
-		return segCache(sc, theme)
+		return segCache(input, sc, theme)
 	case "tools":
 		return segTools(sc, theme)
 	case "context":
@@ -664,6 +870,8 @@ func getSegment(name string, input *StatuslineInput, sc slSidecar, rates slRates
 		return segVim(input, theme)
 	case "burn":
 		return segBurn(sc, theme)
+	case "fast":
+		return segFast(input, theme)
 	default:
 		return segment{empty: true}
 	}
@@ -807,6 +1015,17 @@ func visibleLen(s string) int {
 
 // --- Main Statusline Command ---
 
+// writeFileAtomic writes data to a temp file in path's directory, then
+// renames it into place — atomic on POSIX, so concurrent readers never see
+// a partial write.
+func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
+	tmp := fmt.Sprintf("%s.tmp.%d", path, os.Getpid())
+	if err := os.WriteFile(tmp, data, perm); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
 func cmdStatusline() {
 	// Read JSON input from stdin
 	stdinData, err := io.ReadAll(os.Stdin)
@@ -837,33 +1056,15 @@ func cmdStatusline() {
 		}
 	}
 	// Write native rate-limit data from Claude Code into the polling cache,
-	// merging so we don't clobber sonnet/opus/extra_usage keys.
-	if input.RateLimits != nil {
-		if home, err := os.UserHomeDir(); err == nil {
-			cachePath := filepath.Join(home, ".claude", "hooks", "cost-state", "usage-api-cache.json")
-			cached := map[string]any{}
-			if raw, err := os.ReadFile(cachePath); err == nil {
-				stripped := stripBOM(raw)
-				json.Unmarshal(stripped, &cached)
-			}
-			if rl := input.RateLimits.FiveHour; rl != nil {
-				cached["pct5hr"] = rl.UsedPercentage
-				cached["reset5hr"] = time.Unix(rl.ResetsAt, 0).UTC().Format(time.RFC3339)
-			}
-			if rl := input.RateLimits.SevenDay; rl != nil {
-				cached["pctWeekly"] = rl.UsedPercentage
-				cached["resetWeekly"] = time.Unix(rl.ResetsAt, 0).UTC().Format(time.RFC3339)
-			}
-			if payload, err := json.Marshal(cached); err == nil {
-				os.WriteFile(cachePath, payload, 0644)
-			}
-		}
-	}
+	// merging so we don't clobber sonnet/opus/extra_usage keys. The server's
+	// polling loop owns the same file, so the merge is atomic and a no-op
+	// write is skipped entirely.
+	dataDir := stateDir()
+	writeRateLimitHint(dataDir, input.SessionID, input.RateLimits)
 
 	home, _ := os.UserHomeDir()
 	periscopeDir := filepath.Join(home, ".periscope")
 	pluginDir := filepath.Join(periscopeDir, "plugins")
-	dataDir := filepath.Join(home, ".claude", "hooks", "cost-state")
 	claudeDir := filepath.Join(home, ".claude")
 
 	// Load config
@@ -909,13 +1110,13 @@ func cmdStatusline() {
 
 	// Default row assignments: 1=top (work), 2=bottom (rates)
 	defaultRow := map[string]int{
-		"dir": 1, "git": 1, "model": 1, "effort": 1, "turns": 1, "cost": 1, "burn": 1, "tools": 1,
-		"rate-5hr": 2, "rate-weekly": 2, "rate-sonnet": 2, "reset": 2, "proj": 2, "cache": 2, "context": 2,
+		"dir": 1, "git": 1, "model": 1, "effort": 1, "fast": 1, "turns": 1, "cost": 1, "burn": 1, "tools": 1,
+		"rate-5hr": 2, "rate-weekly": 2, "rate-scoped": 2, "reset": 2, "proj": 2, "cache": 2, "context": 2,
 	}
 
 	// Segment order — use config order if set, else default
-	defaultOrder := []string{"dir", "git", "model", "effort", "turns", "cost", "burn", "tools",
-		"rate-5hr", "rate-weekly", "rate-sonnet", "reset", "proj", "cache", "context"}
+	defaultOrder := []string{"dir", "git", "model", "effort", "fast", "turns", "cost", "burn", "tools",
+		"rate-5hr", "rate-weekly", "rate-scoped", "reset", "proj", "cache", "context"}
 	segOrder := defaultOrder
 	if len(cfg.Order) > 0 {
 		seen := map[string]bool{}
@@ -973,7 +1174,7 @@ func cmdStatusline() {
 			continue
 		}
 
-		seg := getSegment(name, &input, sidecar, rates, cfg.Options, theme)
+		seg := getSegment(name, &input, sidecar, rates, dataDir, cfg.Options, theme)
 		if seg.empty {
 			continue
 		}
