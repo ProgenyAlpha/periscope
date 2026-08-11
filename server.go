@@ -7,11 +7,13 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -107,10 +109,79 @@ func (h *Hub) clientCount() int {
 	return len(h.clients)
 }
 
-// originAllowed permits same-origin requests plus loopback, so the dashboard
-// works on whatever address the server is bound to without widening
-// cross-site access. An absent Origin (non-browser client) is allowed.
+var (
+	allowedHostsMu sync.RWMutex
+	allowedHosts   map[string]bool
+)
+
+// setAllowedHosts fixes the host:port values this server answers for. Both the
+// request's Host and any Origin are checked against it, so a rebound DNS name
+// cannot present a matching pair and pass a same-origin test.
+func setAllowedHosts(host string, port int, extra ...string) {
+	if host == "" {
+		allowedHostsMu.Lock()
+		allowedHosts = nil
+		allowedHostsMu.Unlock()
+		return
+	}
+	m := map[string]bool{}
+	names := append([]string{host, "localhost", "127.0.0.1", "::1"}, extra...)
+	if host == "0.0.0.0" || host == "::" {
+		if addrs, err := net.InterfaceAddrs(); err == nil {
+			for _, a := range addrs {
+				if ipnet, ok := a.(*net.IPNet); ok {
+					names = append(names, ipnet.IP.String())
+				}
+			}
+		}
+	}
+	if h, err := os.Hostname(); err == nil && h != "" {
+		names = append(names, h)
+	}
+	for _, n := range names {
+		if n == "" || n == "0.0.0.0" || n == "::" {
+			continue
+		}
+		// An entry carrying its own port is taken verbatim; otherwise accept it
+		// both bare and on the listen port, so a reverse proxy terminating on
+		// 80/443 (where the browser sends no port) still matches.
+		if _, _, err := net.SplitHostPort(n); err == nil {
+			m[n] = true
+			continue
+		}
+		m[n] = true
+		m[net.JoinHostPort(n, strconv.Itoa(port))] = true
+	}
+	allowedHostsMu.Lock()
+	allowedHosts = m
+	allowedHostsMu.Unlock()
+}
+
+func hostAllowed(hostPort string) bool {
+	if hostPort == "" {
+		return false
+	}
+	allowedHostsMu.RLock()
+	m := allowedHosts
+	allowedHostsMu.RUnlock()
+	if m != nil {
+		return m[hostPort]
+	}
+	// Not configured (unit tests, or before serve starts): loopback only.
+	h, _, err := net.SplitHostPort(hostPort)
+	if err != nil {
+		h = hostPort
+	}
+	return h == "localhost" || h == "127.0.0.1" || h == "::1"
+}
+
+// originAllowed answers only for hosts this server was configured to serve, and
+// requires any Origin to be one of them too. r.Host is attacker-controlled, so
+// it is validated rather than trusted as a comparison baseline.
 func originAllowed(r *http.Request) bool {
+	if !hostAllowed(r.Host) {
+		return false
+	}
 	origin := r.Header.Get("Origin")
 	if origin == "" {
 		return true
@@ -119,9 +190,11 @@ func originAllowed(r *http.Request) bool {
 	if err != nil {
 		return false
 	}
-	if u.Host == r.Host {
+	if hostAllowed(u.Host) {
 		return true
 	}
+	// A loopback Origin can only come from a page actually served on this
+	// machine, so it is safe on any port; a rebound name cannot forge it.
 	switch u.Hostname() {
 	case "localhost", "127.0.0.1", "::1":
 		return true
@@ -453,12 +526,13 @@ func startServer(ctx context.Context, app *App) {
 	go healthWatchdog(ctx, app)
 
 	addr := fmt.Sprintf("%s:%d", app.Config.Server.Host, app.Config.Server.Port)
+	setAllowedHosts(app.Config.Server.Host, app.Config.Server.Port, app.Config.Server.AllowedHosts...)
 	slog.Info("server starting", "addr", addr)
 	slog.Info("websocket endpoint", "addr", "ws://"+addr+"/ws")
 
 	server := &http.Server{
 		Addr:         addr,
-		Handler:      authMiddleware(app.Config.Server.Token, rateLimitMiddleware(corsMiddleware(mux))),
+		Handler:      hostGuardMiddleware(authMiddleware(app.Config.Server.Token, rateLimitMiddleware(corsMiddleware(mux)))),
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 30 * time.Second,
 		IdleTimeout:  60 * time.Second,
@@ -503,6 +577,23 @@ func startServer(ctx context.Context, app *App) {
 		os.Exit(1)
 	}
 	slog.Info("server stopped")
+}
+
+// hostGuardMiddleware refuses requests whose Host this server does not answer
+// for. Without it a rebound DNS name reaches the handler and its page reads the
+// response as same-origin, which no CORS header can prevent.
+func hostGuardMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		allowedHostsMu.RLock()
+		configured := allowedHosts != nil
+		allowedHostsMu.RUnlock()
+		if configured && !hostAllowed(r.Host) {
+			slog.Warn("request rejected: unknown host", "host", r.Host, "path", r.URL.Path)
+			http.Error(w, "unknown host", http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func corsMiddleware(next http.Handler) http.Handler {

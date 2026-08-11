@@ -303,6 +303,7 @@ func TestCORS(t *testing.T) {
 
 			handler := newTestHandler(app)
 			req := httptest.NewRequest(tt.method, "/api/health", nil)
+			req.Host = "localhost:8384"
 			if tt.origin != "" {
 				req.Header.Set("Origin", tt.origin)
 			}

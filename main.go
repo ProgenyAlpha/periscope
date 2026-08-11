@@ -44,9 +44,10 @@ type AppConfig struct {
 }
 
 type ServerConfig struct {
-	Port  int    `toml:"port"`
-	Host  string `toml:"host"`
-	Token string `toml:"token"`
+	Port         int      `toml:"port"`
+	Host         string   `toml:"host"`
+	AllowedHosts []string `toml:"allowed_hosts"`
+	Token        string   `toml:"token"`
 }
 
 func setupLogging(logPath string) {
