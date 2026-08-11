@@ -285,7 +285,22 @@ func loadTerminalTheme(pluginDir, themeName string) *TerminalTheme {
 // --- Data Loaders ---
 
 func loadSidecarForStatusline(dataDir string) slSidecar {
+	return loadSidecarForStatuslineFor(dataDir, "")
+}
+
+// loadSidecarForStatuslineFor reads the sidecar belonging to sessionID. Falling
+// back to the most recently modified file is only correct before this session
+// has written one — with concurrent sessions the newest file is usually
+// somebody else's.
+func loadSidecarForStatuslineFor(dataDir, sessionID string) slSidecar {
 	result := slSidecar{}
+
+	if sessionID != "" {
+		p := filepath.Join(dataDir, sessionID+".json")
+		if info, err := os.Stat(p); err == nil {
+			return readSidecarFile(p, info.ModTime())
+		}
+	}
 
 	entries, err := os.ReadDir(dataDir)
 	if err != nil {
@@ -313,7 +328,12 @@ func loadSidecarForStatusline(dataDir string) slSidecar {
 		return result
 	}
 
-	data, err := os.ReadFile(filepath.Join(dataDir, latest.Name()))
+	return readSidecarFile(filepath.Join(dataDir, latest.Name()), latestTime)
+}
+
+func readSidecarFile(path string, modTime time.Time) slSidecar {
+	result := slSidecar{}
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return result
 	}
@@ -328,7 +348,7 @@ func loadSidecarForStatusline(dataDir string) slSidecar {
 	result.Turns = c.AgentCalls + c.ToolCalls + c.ChatCalls
 	result.Cost = c.Cost
 	result.HasSidecar = true
-	result.ModTime = latestTime
+	result.ModTime = modTime
 
 	totalIn := c.Input + c.CacheRead
 	if totalIn > 0 {
@@ -1104,7 +1124,7 @@ func cmdStatusline() {
 	theme := loadTerminalTheme(pluginDir, cfg.Theme)
 
 	// Load data
-	sidecar := loadSidecarForStatusline(dataDir)
+	sidecar := loadSidecarForStatuslineFor(dataDir, input.SessionID)
 	sidecar.BurnRate, sidecar.BurnOK = forecast.LocalBurnRate(dataDir, time.Hour)
 	rates := loadRatesForStatusline(dataDir)
 
