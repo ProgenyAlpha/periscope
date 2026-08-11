@@ -15,10 +15,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gorilla/websocket"
 	"github.com/ProgenyAlpha/periscope/internal/anthropic"
 	"github.com/ProgenyAlpha/periscope/internal/pricing"
 	"github.com/ProgenyAlpha/periscope/internal/store"
+	"github.com/gorilla/websocket"
 )
 
 // --- WebSocket Hub ---
@@ -333,6 +333,9 @@ func buildMux(app *App) *http.ServeMux {
 
 func startServer(ctx context.Context, app *App) {
 	mux := buildMux(app)
+
+	// Background session-title backfill (off the Stop-hook critical path)
+	go titleBackfill(ctx, app)
 
 	// Background usage refresh with exponential backoff
 	go func() {
@@ -880,9 +883,9 @@ func adaptivePollInterval(dataDir string, fast, slow time.Duration) time.Duratio
 			continue
 		}
 		var e struct {
-			TS     string  `json:"ts"`
-			Pct5   float64 `json:"pct5hr"`
-			PctWk  float64 `json:"pctWeekly"`
+			TS    string  `json:"ts"`
+			Pct5  float64 `json:"pct5hr"`
+			PctWk float64 `json:"pctWeekly"`
 		}
 		if json.Unmarshal([]byte(line), &e) != nil {
 			continue
@@ -991,6 +994,73 @@ func needsOAuthRefresh(app *App) bool {
 // returns 7d_sonnet/7d_opus in headers when those models were recently used,
 // so a sonnet-quiet header response would otherwise blank the dashboard
 // segment to -1).
+// resetInFuture reports whether an RFC3339 reset timestamp is still ahead of
+// now. An unparseable or empty value counts as expired.
+func resetInFuture(s string) bool {
+	if s == "" {
+		return false
+	}
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return false
+	}
+	return t.After(time.Now())
+}
+
+// preserveScopedIfMissing carries per-model weekly caps across header pings,
+// which never report them — only /api/oauth/usage does, and that runs hourly.
+// Entries past their reset are dropped rather than carried.
+func preserveScopedIfMissing(fresh, prevMap map[string]any) {
+	if _, ok := fresh["scoped"]; ok {
+		return
+	}
+	prevScoped, ok := prevMap["scoped"].([]any)
+	if !ok {
+		return
+	}
+	var live []any
+	for _, e := range prevScoped {
+		m, ok := e.(map[string]any)
+		if !ok {
+			continue
+		}
+		if r, _ := m["reset"].(string); resetInFuture(r) {
+			live = append(live, m)
+		}
+	}
+	if len(live) > 0 {
+		fresh["scoped"] = live
+	}
+}
+
+// spendMaxAge bounds how long a cached `spend` value may be carried forward.
+// spend has no reset timestamp of its own (unlike scoped weekly caps), so
+// staleness is bounded by age instead, using the spend_fetched_at recorded
+// alongside it.
+const spendMaxAge = 24 * time.Hour
+
+// preserveSpendIfMissing carries the `spend` object across header pings,
+// which never report it — only /api/oauth/usage does. Dropped once older
+// than spendMaxAge rather than carried indefinitely.
+func preserveSpendIfMissing(fresh, prevMap map[string]any) {
+	if _, ok := fresh["spend"]; ok {
+		return
+	}
+	prevSpend, ok := prevMap["spend"]
+	if !ok {
+		return
+	}
+	fetchedAt, ok := prevMap["spend_fetched_at"].(float64)
+	if !ok {
+		return
+	}
+	if time.Since(time.Unix(int64(fetchedAt), 0)) > spendMaxAge {
+		return
+	}
+	fresh["spend"] = prevSpend
+	fresh["spend_fetched_at"] = prevMap["spend_fetched_at"]
+}
+
 func supplementWithCachedExtraUsage(app *App, fresh map[string]any) {
 	prev := store.KVGet(app.DB, "cache:usage-api")
 	var prevMap map[string]any
@@ -1017,17 +1087,28 @@ func supplementWithCachedExtraUsage(app *App, fresh map[string]any) {
 	if prevMap != nil {
 		preserveIfMissing := func(pctKey, resetKey string) {
 			cur, ok := asNumber(fresh[pctKey])
-			if !ok || cur < 0 {
-				if prev, ok := asNumber(prevMap[pctKey]); ok && prev >= 0 {
-					fresh[pctKey] = prev
-				}
-				if v, ok := prevMap[resetKey]; ok {
-					fresh[resetKey] = v
-				}
+			if ok && cur >= 0 {
+				return
 			}
+			prevPct, ok := asNumber(prevMap[pctKey])
+			if !ok || prevPct < 0 {
+				return
+			}
+			// Only carry a window forward while its own reset is still ahead.
+			// Anthropic stopped reporting seven_day_sonnet on 2026-06-30; an
+			// unconditional carry-forward pinned that dead 22% to the
+			// statusline for six weeks.
+			resetStr, _ := prevMap[resetKey].(string)
+			if !resetInFuture(resetStr) {
+				return
+			}
+			fresh[pctKey] = prevPct
+			fresh[resetKey] = resetStr
 		}
 		preserveIfMissing("pctSonnet", "resetSonnet")
 		preserveIfMissing("pctOpus", "resetOpus")
+		preserveScopedIfMissing(fresh, prevMap)
+		preserveSpendIfMissing(fresh, prevMap)
 	}
 
 	if _, ok := fresh["extra_usage"].(map[string]any); ok {
@@ -1132,6 +1213,7 @@ func fetchAndCacheUsage(app *App) (json.RawMessage, error) {
 	}
 
 	usage := anthropic.TransformUsage(resp)
+	applyRateLimitHints(usage, app.DataDir)
 	if resp.OverageUtilization != nil {
 		usage["overage_utilization"] = *resp.OverageUtilization
 	}
@@ -1220,6 +1302,74 @@ func fetchAndCacheProfile(app *App) {
 
 // --- Middleware ---
 
+// titleBackfill generates session titles asynchronously, off the Stop-hook
+// critical path. It scans sidecars for sessions with >=5 turns and no title,
+// re-extracts prompts from the transcript, and calls Haiku via the OAuth token.
+// Bounded per cycle and to recent sessions so a first run can't burst the API.
+// Titles only generate while `periscope serve` is running (the normal mode).
+func titleBackfill(ctx context.Context, app *App) {
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("title backfill goroutine panicked", "err", r)
+		}
+	}()
+	const (
+		interval     = 60 * time.Second
+		initialDelay = 20 * time.Second
+		maxPerCycle  = 2
+		maxAge       = 7 * 24 * time.Hour
+	)
+	timer := time.NewTimer(initialDelay)
+	defer timer.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-timer.C:
+		}
+
+		generated := 0
+		if entries, err := os.ReadDir(app.DataDir); err == nil {
+			for _, e := range entries {
+				if generated >= maxPerCycle {
+					break
+				}
+				if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") || store.SidecarExclude[e.Name()] {
+					continue
+				}
+				fpath := filepath.Join(app.DataDir, e.Name())
+				info, err := os.Stat(fpath)
+				if err != nil || time.Since(info.ModTime()) > maxAge {
+					continue
+				}
+				raw, err := os.ReadFile(fpath)
+				if err != nil {
+					continue
+				}
+				var state SidecarState
+				if json.Unmarshal(store.StripBOM(raw), &state) != nil || state.Cumulative == nil {
+					continue
+				}
+				if state.GeneratedTitle != "" || state.TranscriptPath == "" {
+					continue
+				}
+				totalCalls := state.Cumulative.AgentCalls + state.Cumulative.ToolCalls + state.Cumulative.ChatCalls
+				if totalCalls < 5 {
+					continue
+				}
+				prompts := extractUserPrompts(state.TranscriptPath, 3)
+				if len(prompts) < 2 {
+					continue
+				}
+				generateSessionTitle(fpath, state.Project, prompts)
+				generated++
+			}
+		}
+
+		timer.Reset(interval)
+	}
+}
+
 func authMiddleware(token string, next http.Handler) http.Handler {
 	if token == "" {
 		return next // auth disabled — backward compatible
@@ -1287,7 +1437,7 @@ func (rl *rateLimiter) allow() bool {
 }
 
 var (
-	externalLimiter = newRateLimiter(10, 3)  // /api/usage, /api/pricing — hits external APIs
+	externalLimiter = newRateLimiter(10, 3)   // /api/usage, /api/pricing — hits external APIs
 	generalLimiter  = newRateLimiter(120, 10) // everything else
 )
 

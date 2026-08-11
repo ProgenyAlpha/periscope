@@ -6,10 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -46,6 +48,27 @@ type UsageWindow struct {
 	ResetsAt    string  `json:"resets_at"`
 }
 
+// LimitEntry is one row of the `limits` array returned by /api/oauth/usage.
+// Anthropic added it alongside the flat seven_day_* fields and, as of
+// 2026-06-30, uses it as the only carrier for per-model weekly caps:
+// seven_day_sonnet and seven_day_opus now return null, while a
+// kind="weekly_scoped" entry reports the capped model in scope.model.
+type LimitEntry struct {
+	Kind     string  `json:"kind"`
+	Group    string  `json:"group"`
+	Percent  float64 `json:"percent"`
+	Severity string  `json:"severity"`
+	ResetsAt string  `json:"resets_at"`
+	IsActive bool    `json:"is_active"`
+	Scope    *struct {
+		Model *struct {
+			ID          *string `json:"id"`
+			DisplayName string  `json:"display_name"`
+		} `json:"model"`
+		Surface *string `json:"surface"`
+	} `json:"scope"`
+}
+
 // APIResponse represents the usage API response structure.
 type APIResponse struct {
 	FiveHour          *UsageWindow `json:"five_hour"`
@@ -54,16 +77,38 @@ type APIResponse struct {
 	SevenDayOpus      *UsageWindow `json:"seven_day_opus"`
 	SevenDayOauthApps *UsageWindow `json:"seven_day_oauth_apps"`
 	SevenDayCowork    *UsageWindow `json:"seven_day_cowork"`
-	ExtraUsage *struct {
+	Limits            []LimitEntry `json:"limits"`
+	ExtraUsage        *struct {
 		IsEnabled    bool     `json:"is_enabled"`
 		MonthlyLimit *float64 `json:"monthly_limit"`
 		UsedCredits  float64  `json:"used_credits"`
 		Utilization  *float64 `json:"utilization"`
 	} `json:"extra_usage"`
+	// Spend is the credits object /api/oauth/usage started returning
+	// alongside extra_usage. Amounts are in minor units (e.g. cents); the
+	// exponent says how many places to shift, and it isn't always 2.
+	Spend *struct {
+		Used *struct {
+			AmountMinor float64 `json:"amount_minor"`
+			Exponent    int     `json:"exponent"`
+		} `json:"used"`
+		Limit *struct {
+			AmountMinor float64 `json:"amount_minor"`
+			Exponent    int     `json:"exponent"`
+		} `json:"limit"`
+		Percent        float64 `json:"percent"`
+		Enabled        bool    `json:"enabled"`
+		DisabledReason *string `json:"disabled_reason"`
+	} `json:"spend"`
 	// OverageUtilization is populated only by parseUnifiedHeaders. Used to
 	// derive UsedCredits from a cached monthly_limit cap when the dedicated
 	// /api/oauth/usage endpoint isn't being called.
 	OverageUtilization *float64 `json:"-"`
+	// RepresentativeClaim, OverageStatus, and OverageDisabledReason are
+	// populated only by parseUnifiedHeaders.
+	RepresentativeClaim   *string `json:"-"`
+	OverageStatus         *string `json:"-"`
+	OverageDisabledReason *string `json:"-"`
 }
 
 // NewClientFromDisk reads credentials from the standard Claude location.
@@ -188,7 +233,17 @@ func parseUnifiedHeaders(h http.Header) *APIResponse {
 			resp.OverageUtilization = &f
 		}
 	}
-	if resp.FiveHour == nil && resp.SevenDay == nil && resp.SevenDaySonnet == nil && resp.SevenDayOpus == nil && resp.OverageUtilization == nil {
+	if v := get("representative-claim"); v != "" {
+		resp.RepresentativeClaim = &v
+	}
+	if v := get("overage-status"); v != "" {
+		resp.OverageStatus = &v
+	}
+	if v := get("overage-disabled-reason"); v != "" {
+		resp.OverageDisabledReason = &v
+	}
+	if resp.FiveHour == nil && resp.SevenDay == nil && resp.SevenDaySonnet == nil && resp.SevenDayOpus == nil &&
+		resp.OverageUtilization == nil && resp.RepresentativeClaim == nil && resp.OverageStatus == nil && resp.OverageDisabledReason == nil {
 		return nil
 	}
 	return resp
@@ -221,11 +276,64 @@ func (c *Client) FetchProfile() (map[string]any, error) {
 	return parsed, nil
 }
 
+// ScopedWindows extracts per-model weekly caps from the limits array. The
+// model set is whatever Anthropic reports — currently Fable — so no model
+// name is hardcoded here.
+func ScopedWindows(limits []LimitEntry) []map[string]any {
+	var out []map[string]any
+	for _, l := range limits {
+		if l.Group != "weekly" || l.Scope == nil || l.Scope.Model == nil {
+			continue
+		}
+		name := l.Scope.Model.DisplayName
+		if name == "" {
+			continue
+		}
+		out = append(out, map[string]any{
+			"model": name,
+			"pct":   int(l.Percent + 0.5),
+			"reset": l.ResetsAt,
+		})
+	}
+	return out
+}
+
+// ActiveSeverity returns the severity of the limit entry Anthropic flags as
+// is_active — the window currently binding the rate limit — or "" if none is
+// active. Only populated when limits[] is present, i.e. from /api/oauth/usage.
+func ActiveSeverity(limits []LimitEntry) string {
+	for _, l := range limits {
+		if l.IsActive {
+			return l.Severity
+		}
+	}
+	return ""
+}
+
+// minorUnitsToWhole converts an integer minor-unit amount (e.g. cents) to a
+// whole currency value using the reported exponent rather than assuming 100.
+func minorUnitsToWhole(amountMinor float64, exponent int) float64 {
+	return amountMinor / math.Pow(10, float64(exponent))
+}
+
 // TransformUsage converts an APIResponse into the flat map[string]any format
 // used by the dashboard, hooks, and statusline cache.
 func TransformUsage(resp *APIResponse) map[string]any {
 	usage := map[string]any{
 		"fetched_at": time.Now().Unix(),
+	}
+
+	scoped := ScopedWindows(resp.Limits)
+	if len(scoped) > 0 {
+		usage["scoped"] = scoped
+	}
+	findScoped := func(name string) map[string]any {
+		for _, s := range scoped {
+			if m, ok := s["model"].(string); ok && strings.EqualFold(m, name) {
+				return s
+			}
+		}
+		return nil
 	}
 
 	if resp.FiveHour != nil {
@@ -243,12 +351,18 @@ func TransformUsage(resp *APIResponse) map[string]any {
 	if resp.SevenDaySonnet != nil {
 		usage["pctSonnet"] = int(resp.SevenDaySonnet.Utilization + 0.5)
 		usage["resetSonnet"] = resp.SevenDaySonnet.ResetsAt
+	} else if s := findScoped("Sonnet"); s != nil {
+		usage["pctSonnet"] = s["pct"]
+		usage["resetSonnet"] = s["reset"]
 	} else {
 		usage["pctSonnet"] = -1
 	}
 	if resp.SevenDayOpus != nil {
 		usage["pctOpus"] = int(resp.SevenDayOpus.Utilization + 0.5)
 		usage["resetOpus"] = resp.SevenDayOpus.ResetsAt
+	} else if s := findScoped("Opus"); s != nil {
+		usage["pctOpus"] = s["pct"]
+		usage["resetOpus"] = s["reset"]
 	}
 	if resp.SevenDayOauthApps != nil {
 		usage["pctOauthApps"] = int(resp.SevenDayOauthApps.Utilization + 0.5)
@@ -270,6 +384,35 @@ func TransformUsage(resp *APIResponse) map[string]any {
 			eu["utilization"] = *resp.ExtraUsage.Utilization
 		}
 		usage["extra_usage"] = eu
+	}
+	if resp.Spend != nil {
+		spend := map[string]any{
+			"percent": resp.Spend.Percent,
+			"enabled": resp.Spend.Enabled,
+		}
+		if resp.Spend.Used != nil {
+			spend["used"] = minorUnitsToWhole(resp.Spend.Used.AmountMinor, resp.Spend.Used.Exponent)
+		}
+		if resp.Spend.Limit != nil {
+			spend["limit"] = minorUnitsToWhole(resp.Spend.Limit.AmountMinor, resp.Spend.Limit.Exponent)
+		}
+		if resp.Spend.DisabledReason != nil {
+			spend["disabled_reason"] = *resp.Spend.DisabledReason
+		}
+		usage["spend"] = spend
+		usage["spend_fetched_at"] = time.Now().Unix()
+	}
+	if resp.RepresentativeClaim != nil {
+		usage["representativeClaim"] = *resp.RepresentativeClaim
+	}
+	if sev := ActiveSeverity(resp.Limits); sev != "" {
+		usage["severity"] = sev
+	}
+	if resp.OverageStatus != nil {
+		usage["overageStatus"] = *resp.OverageStatus
+	}
+	if resp.OverageDisabledReason != nil {
+		usage["overageDisabledReason"] = *resp.OverageDisabledReason
 	}
 
 	return usage

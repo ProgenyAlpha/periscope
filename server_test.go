@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ProgenyAlpha/periscope/internal/store"
 )
@@ -258,11 +259,11 @@ func TestCORS(t *testing.T) {
 	app := newTestApp(t, "")
 
 	tests := []struct {
-		name       string
-		origin     string
-		method     string
-		wantACHeader bool   // expect Access-Control-Allow-Origin set
-		wantStatus   int    // 0 means don't check
+		name         string
+		origin       string
+		method       string
+		wantACHeader bool // expect Access-Control-Allow-Origin set
+		wantStatus   int  // 0 means don't check
 	}{
 		{
 			name:         "no origin",
@@ -553,4 +554,70 @@ func TestHandlers(t *testing.T) {
 			t.Errorf("got %d, want 400 or 404", rr.Code)
 		}
 	})
+}
+
+func TestPreserveScopedIfMissingDropsExpired(t *testing.T) {
+	future := time.Now().Add(2 * time.Hour).Format(time.RFC3339)
+	past := time.Now().Add(-48 * time.Hour).Format(time.RFC3339)
+	prev := map[string]any{"scoped": []any{
+		map[string]any{"model": "Fable", "pct": float64(10), "reset": future},
+		map[string]any{"model": "Ghost", "pct": float64(22), "reset": past},
+	}}
+
+	fresh := map[string]any{}
+	preserveScopedIfMissing(fresh, prev)
+
+	got, ok := fresh["scoped"].([]any)
+	if !ok || len(got) != 1 {
+		t.Fatalf("scoped = %#v, want only the unexpired entry", fresh["scoped"])
+	}
+	if got[0].(map[string]any)["model"] != "Fable" {
+		t.Errorf("kept %v, want Fable", got[0])
+	}
+}
+
+func TestResetInFuture(t *testing.T) {
+	cases := map[string]bool{
+		time.Now().Add(time.Hour).Format(time.RFC3339):  true,
+		time.Now().Add(-time.Hour).Format(time.RFC3339): false,
+		"2026-07-04T09:00:00.337359+00:00":              false,
+		"":                                              false,
+		"not-a-time":                                    false,
+	}
+	for in, want := range cases {
+		if got := resetInFuture(in); got != want {
+			t.Errorf("resetInFuture(%q) = %v, want %v", in, got, want)
+		}
+	}
+}
+
+func TestPreserveSpendIfMissingDropsStale(t *testing.T) {
+	spend := map[string]any{"used": 10.0, "limit": 55.0}
+
+	fresh := map[string]any{}
+	recentPrev := map[string]any{
+		"spend":            spend,
+		"spend_fetched_at": float64(time.Now().Add(-1 * time.Hour).Unix()),
+	}
+	preserveSpendIfMissing(fresh, recentPrev)
+	if _, ok := fresh["spend"]; !ok {
+		t.Errorf("spend should be carried forward when under 24h old")
+	}
+
+	fresh2 := map[string]any{}
+	stalePrev := map[string]any{
+		"spend":            spend,
+		"spend_fetched_at": float64(time.Now().Add(-25 * time.Hour).Unix()),
+	}
+	preserveSpendIfMissing(fresh2, stalePrev)
+	if _, ok := fresh2["spend"]; ok {
+		t.Errorf("stale (>24h) spend should be dropped, not carried forward")
+	}
+
+	// A fresh map that already has spend must not be overwritten.
+	fresh3 := map[string]any{"spend": map[string]any{"used": 1.0}}
+	preserveSpendIfMissing(fresh3, recentPrev)
+	if fresh3["spend"].(map[string]any)["used"] != 1.0 {
+		t.Errorf("spend already present in fresh should not be overwritten")
+	}
 }
