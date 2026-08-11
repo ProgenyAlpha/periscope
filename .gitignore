@@ -22,3 +22,6 @@ periscope
 temp-*.ps1
 tmp-*.ps1
 nul
+
+# Local runtime data (model cache, scratch DBs)
+data/

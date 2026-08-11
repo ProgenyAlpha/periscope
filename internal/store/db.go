@@ -21,7 +21,7 @@ import (
 )
 
 // currentSchemaVersion is the latest migration version.
-const currentSchemaVersion = 2
+const currentSchemaVersion = 3
 
 // migrations is an ordered list of schema changes. Each entry runs once,
 // keyed by its index+1 as the version number.
@@ -58,7 +58,18 @@ var migrations = []string{
 	CREATE INDEX IF NOT EXISTS idx_limit_history_ts ON limit_history(ts);`,
 	// v2: index on sessions.updated_at (hot path: phantom calc, dashboard)
 	`CREATE INDEX IF NOT EXISTS idx_sessions_updated_at ON sessions(updated_at);`,
-	// v3, v4, ... append here
+	// v3: idempotent JSONL re-imports — purge existing duplicates, then add
+	// unique indexes so INSERT OR IGNORE makes subsequent imports safe.
+	// history: natural key is (ts, data) — SnapshotSidecarsToHistory can emit
+	// multiple rows at the same second (one per session), so ts alone is not
+	// sufficient; pairing with data covers both JSONL imports and snapshots.
+	// limit_history: natural key is ts — AppendLimitSnapshot guarantees
+	// unique timestamps per snapshot.
+	`DELETE FROM history WHERE id NOT IN (SELECT MIN(id) FROM history GROUP BY ts, data);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_history_ts_data ON history(ts, data);
+DELETE FROM limit_history WHERE id NOT IN (SELECT MIN(id) FROM limit_history GROUP BY ts);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_limit_history_ts_unique ON limit_history(ts);`,
+	// v4, v5, ... append here
 }
 
 // OpenDB opens and migrates the SQLite database.
@@ -377,13 +388,7 @@ func ImportJSONL(db *sql.DB, path, table string) error {
 	}
 	data = StripBOM(data)
 
-	var count int
-	db.QueryRow(fmt.Sprintf("SELECT COUNT(*) FROM %s", table)).Scan(&count)
-
 	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
-	if count >= len(lines) {
-		return nil
-	}
 
 	tx, err := db.Begin()
 	if err != nil {
@@ -391,14 +396,17 @@ func ImportJSONL(db *sql.DB, path, table string) error {
 	}
 	defer tx.Rollback()
 
-	stmt, err := tx.Prepare(fmt.Sprintf("INSERT INTO %s(ts, data) VALUES(?, ?)", table))
+	// INSERT OR IGNORE relies on the unique indexes added in migration v3
+	// (history: (ts,data), limit_history: ts).  All lines are attempted on
+	// every import, so malformed/skipped lines can never cause subsequent
+	// lines to be re-inserted.
+	stmt, err := tx.Prepare(fmt.Sprintf("INSERT OR IGNORE INTO %s(ts, data) VALUES(?, ?)", table))
 	if err != nil {
 		return err
 	}
 	defer stmt.Close()
 
-	imported := 0
-	for _, line := range lines[count:] {
+	for _, line := range lines {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
@@ -411,9 +419,7 @@ func ImportJSONL(db *sql.DB, path, table string) error {
 		if ts == "" {
 			ts = time.Now().UTC().Format(time.RFC3339)
 		}
-		if _, err := stmt.Exec(ts, line); err == nil {
-			imported++
-		}
+		stmt.Exec(ts, line)
 	}
 	return tx.Commit()
 }
@@ -670,16 +676,16 @@ func SnapshotSidecarsToHistory(db *sql.DB, lastSessionSnapshot map[string]float6
 // --- Dashboard Data ---
 
 type DashboardData struct {
-	GeneratedAt      string            `json:"generatedAt"`
-	UsageConfig      json.RawMessage   `json:"usageConfig"`
-	StatuslineConfig json.RawMessage   `json:"statuslineConfig"`
-	Sessions         []any             `json:"sessions"`
-	History          []json.RawMessage `json:"history"`
-	Sidecars         []SidecarEntry    `json:"sidecars"`
-	LiveUsage        json.RawMessage   `json:"liveUsage"`
-	Profile          json.RawMessage   `json:"profile"`
-	SessionMeta      json.RawMessage   `json:"sessionMeta"`
-	LimitHistory     []json.RawMessage `json:"limitHistory"`
+	GeneratedAt      string                 `json:"generatedAt"`
+	UsageConfig      json.RawMessage        `json:"usageConfig"`
+	StatuslineConfig json.RawMessage        `json:"statuslineConfig"`
+	Sessions         []any                  `json:"sessions"`
+	History          []json.RawMessage      `json:"history"`
+	Sidecars         []SidecarEntry         `json:"sidecars"`
+	LiveUsage        json.RawMessage        `json:"liveUsage"`
+	Profile          json.RawMessage        `json:"profile"`
+	SessionMeta      json.RawMessage        `json:"sessionMeta"`
+	LimitHistory     []json.RawMessage      `json:"limitHistory"`
 	Layout           json.RawMessage        `json:"layout"`
 	PhantomUsage     *analytics.PhantomData `json:"phantomUsage,omitempty"`
 	Teams            json.RawMessage        `json:"teams,omitempty"`
@@ -961,4 +967,3 @@ func CompactLimitHistory(db *sql.DB, dataDir string) {
 		slog.Error("compact: surviving rows error", "err", err)
 	}
 }
-
