@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -106,18 +107,35 @@ func (h *Hub) clientCount() int {
 	return len(h.clients)
 }
 
+// originAllowed permits same-origin requests plus loopback, so the dashboard
+// works on whatever address the server is bound to without widening
+// cross-site access. An absent Origin (non-browser client) is allowed.
+func originAllowed(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return true
+	}
+	u, err := url.Parse(origin)
+	if err != nil {
+		return false
+	}
+	if u.Host == r.Host {
+		return true
+	}
+	switch u.Hostname() {
+	case "localhost", "127.0.0.1", "::1":
+		return true
+	}
+	return false
+}
+
 var upgrader = websocket.Upgrader{
 	ReadBufferSize:  1024,
 	WriteBufferSize: 4096,
 	CheckOrigin: func(r *http.Request) bool {
-		origin := r.Header.Get("Origin")
-		allowed := origin == "" ||
-			origin == "http://localhost" ||
-			origin == "http://127.0.0.1" ||
-			strings.HasPrefix(origin, "http://localhost:") ||
-			strings.HasPrefix(origin, "http://127.0.0.1:")
+		allowed := originAllowed(r)
 		if !allowed {
-			slog.Warn("ws upgrade rejected", "origin", origin)
+			slog.Warn("ws upgrade rejected", "origin", r.Header.Get("Origin"), "host", r.Host)
 		}
 		return allowed
 	},
@@ -446,12 +464,35 @@ func startServer(ctx context.Context, app *App) {
 		IdleTimeout:  60 * time.Second,
 	}
 
+	// Always keep a loopback listener alongside any non-local bind. The launcher
+	// script, `periscope status`, and the hooks all reach the server over
+	// localhost, and binding only to a remote address silently breaks them.
+	var loopback *http.Server
+	if h := app.Config.Server.Host; h != "localhost" && h != "127.0.0.1" && h != "" {
+		loopback = &http.Server{
+			Addr:         fmt.Sprintf("127.0.0.1:%d", app.Config.Server.Port),
+			Handler:      server.Handler,
+			ReadTimeout:  server.ReadTimeout,
+			WriteTimeout: server.WriteTimeout,
+			IdleTimeout:  server.IdleTimeout,
+		}
+		go func() {
+			slog.Info("loopback listener starting", "addr", loopback.Addr)
+			if err := loopback.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				slog.Warn("loopback listener stopped", "err", err)
+			}
+		}()
+	}
+
 	// Graceful shutdown: wait for context cancellation, then drain connections
 	go func() {
 		<-ctx.Done()
 		slog.Info("graceful shutdown initiated")
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer shutdownCancel()
+		if loopback != nil {
+			loopback.Shutdown(shutdownCtx)
+		}
 		if err := server.Shutdown(shutdownCtx); err != nil {
 			slog.Error("shutdown error", "err", err)
 		}
@@ -467,11 +508,7 @@ func startServer(ctx context.Context, app *App) {
 func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
-		if origin == "" ||
-			origin == "http://localhost" ||
-			origin == "http://127.0.0.1" ||
-			strings.HasPrefix(origin, "http://localhost:") ||
-			strings.HasPrefix(origin, "http://127.0.0.1:") {
+		if originAllowed(r) {
 			if origin != "" {
 				w.Header().Set("Access-Control-Allow-Origin", origin)
 			}
