@@ -13,6 +13,8 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -1491,18 +1493,172 @@ func AppendLimitSnapshot(db *sql.DB, dataDir string, liveUsage json.RawMessage) 
 	}
 }
 
-// CompactLimitHistory applies tiered dedup: <24h keep all, 24h-7d keep 5min, 7d-30d keep 60min, 30d+ keep 4hr.
+// Tiered rollup thresholds for limit_history.
+//
+// The old policy was a pure time-gap thinner — "keep whichever sample happens
+// to come first in each 5/60/240-minute window, drop the rest". Two problems.
+// It was far too lax (the 24h–7d tier alone licensed 1728 rows at 5-minute
+// spacing, which is most of the 2907 rows / 1.28 MB the live table was
+// shipping in every /api/data response and every websocket broadcast), and
+// because it kept the *first* sample of each window rather than the extremes,
+// a rate-limit spike that peaked between two grid points was silently erased.
+//
+// The replacement buckets by wall-clock time and keeps the rows that carry the
+// shape: the bucket minimum, the bucket maximum, and the bucket's last sample.
+// Peaks survive by construction. So does the sawtooth trough after a 5h-window
+// reset, which is what the minimum is there for — the limit-timeline widget
+// draws a line through these points, and dropping the trough turns a reset
+// edge into a plateau.
+const (
+	// limitFullResolutionAge: everything newer is kept verbatim. The widget's
+	// 6h and 24h ranges plot these samples one-for-one and computeWeightedRate
+	// regresses over them, so any thinning here is visible. At the 60s snapshot
+	// cadence this tier is bounded at ~1440 rows.
+	limitFullResolutionAge = 24 * time.Hour
+
+	// limitHourlyAge: from 24h out to 30d, one hourly bucket. The widget's
+	// widest bucketed ranges are 8d and 30d; 30 days is 720 hours drawn across
+	// a chart a few hundred pixels wide, so an hourly bucket is already at or
+	// finer than the rendering resolution and extra samples cannot be seen.
+	limitHourlyAge = 30 * 24 * time.Hour
+
+	// Beyond limitHourlyAge the bucket is a UTC day. Past 30 days the only
+	// range the widget offers is "all", where a 6-month span leaves well under
+	// a pixel per hour; a day's min/max/last is precisely the band it can draw.
+	limitDailyBucket = 24 * time.Hour
+)
+
+// limitEntry is one limit_history row, decoded down to the fields the rollup
+// reasons about.
+type limitEntry struct {
+	id        int64
+	ts        time.Time
+	data      string
+	pct5hr    float64
+	pctWeekly float64
+}
+
+// limitBucketKey groups rows that compete for the same slot. The tier is part
+// of the key so an hourly bucket and a daily bucket can never collide.
+type limitBucketKey struct {
+	tier  int
+	start time.Time
+}
+
+// planLimitCompaction returns the ids to delete, applying the tiered rollup
+// above plus the same 365-day retention `history` uses.
+//
+// Buckets are aligned to absolute UTC time rather than to `now`, which makes
+// the function idempotent: re-running it at the same instant picks the same
+// extrema out of the survivors and deletes nothing more. A gap-from-last-kept
+// scheme has no such property.
+//
+// Nothing inside the retention window is deleted outright — a row is only ever
+// dropped because a neighbour in its own bucket carries the same shape.
+func planLimitCompaction(all []limitEntry, now time.Time) []int64 {
+	if len(all) == 0 {
+		return nil
+	}
+
+	// The caller's query orders by ts, but do not depend on it: bucket
+	// selection needs "last in bucket" to really be last.
+	sorted := make([]limitEntry, len(all))
+	copy(sorted, all)
+	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].ts.Before(sorted[j].ts) })
+
+	keep := make(map[int64]bool, len(sorted))
+	buckets := make(map[limitBucketKey][]int)
+	var expired []int64
+
+	for i, e := range sorted {
+		age := now.Sub(e.ts)
+		switch {
+		case age > HistoryRetention:
+			// Outside retention. Consistent with CompactHistory.
+			expired = append(expired, e.id)
+		case age <= limitFullResolutionAge:
+			keep[e.id] = true
+		case age <= limitHourlyAge:
+			k := limitBucketKey{tier: 1, start: e.ts.UTC().Truncate(time.Hour)}
+			buckets[k] = append(buckets[k], i)
+		default:
+			k := limitBucketKey{tier: 2, start: e.ts.UTC().Truncate(limitDailyBucket)}
+			buckets[k] = append(buckets[k], i)
+		}
+	}
+
+	for _, idxs := range buckets {
+		// Minimum keeps the first sample of a rising bucket and, more
+		// importantly, the trough left by a mid-bucket window reset.
+		// Maximum keeps the peak — the whole reason this is not a mean.
+		// Last anchors the bucket's right edge so the line joins the next
+		// bucket at the right value.
+		minIdx, maxIdx, wkMaxIdx := idxs[0], idxs[0], idxs[0]
+		for _, i := range idxs {
+			if sorted[i].pct5hr < sorted[minIdx].pct5hr {
+				minIdx = i
+			}
+			// >= so a plateau keeps its trailing edge rather than its leading one.
+			if sorted[i].pct5hr >= sorted[maxIdx].pct5hr {
+				maxIdx = i
+			}
+			if sorted[i].pctWeekly >= sorted[wkMaxIdx].pctWeekly {
+				wkMaxIdx = i
+			}
+		}
+		keep[sorted[minIdx].id] = true
+		keep[sorted[maxIdx].id] = true
+		keep[sorted[wkMaxIdx].id] = true
+		keep[sorted[idxs[len(idxs)-1]].id] = true
+	}
+
+	deleteIDs := expired
+	for _, idxs := range buckets {
+		for _, i := range idxs {
+			if !keep[sorted[i].id] {
+				deleteIDs = append(deleteIDs, sorted[i].id)
+			}
+		}
+	}
+	sort.Slice(deleteIDs, func(i, j int) bool { return deleteIDs[i] < deleteIDs[j] })
+	return deleteIDs
+}
+
+// limitNum pulls a numeric field out of a decoded snapshot, tolerating the
+// number-as-string forms older rows occasionally carry.
+func limitNum(m map[string]any, key string) float64 {
+	switch v := m[key].(type) {
+	case float64:
+		return v
+	case json.Number:
+		f, _ := v.Float64()
+		return f
+	case string:
+		f, err := strconv.ParseFloat(v, 64)
+		if err != nil {
+			return 0
+		}
+		return f
+	}
+	return 0
+}
+
+// CompactLimitHistory rolls limit_history up in tiers: full resolution inside
+// limitFullResolutionAge, hourly buckets out to limitHourlyAge, daily buckets
+// beyond, and nothing older than HistoryRetention.
+//
+// Rows that survive are the ORIGINAL rows, byte for byte. No averaged or
+// synthesised row is ever written: the dashboard reads reset5hr, resetWeekly
+// and wtWeekly straight off these objects, and a fabricated row would have no
+// coherent value for them. The /api/data JSON contract is unchanged — this
+// only reduces how many elements the limitHistory array carries.
 //
 // The whole prune runs as one transaction with a rollback path. The old version
 // began a transaction with no `defer tx.Rollback()`, logged a failed delete and
 // fell straight through to Commit — committing a partial compaction — and the
 // commit-failure branch returned without rolling back either.
 func CompactLimitHistory(db *sql.DB, dataDir string) error {
-	type entry struct {
-		id   int64
-		ts   time.Time
-		data string
-	}
+	type entry = limitEntry
 
 	// Drain and close the cursor before any write: on a single-connection pool
 	// a write issued while this is open would deadlock.
@@ -1524,6 +1680,14 @@ func CompactLimitHistory(db *sql.DB, dataDir string) error {
 			e.ts = t
 		} else {
 			continue
+		}
+		// A row whose data will not decode gets zeroed metrics rather than
+		// being skipped: it still occupies a bucket slot and must stay
+		// eligible for pruning, but it must never win an extremum on garbage.
+		var m map[string]any
+		if json.Unmarshal([]byte(e.data), &m) == nil {
+			e.pct5hr = limitNum(m, "pct5hr")
+			e.pctWeekly = limitNum(m, "pctWeekly")
 		}
 		all = append(all, e)
 	}
@@ -1559,30 +1723,7 @@ func CompactLimitHistory(db *sql.DB, dataDir string) error {
 		}
 	}
 
-	now := time.Now()
-	var deleteIDs []int64
-	var lastKept time.Time
-
-	for _, e := range all {
-		age := now.Sub(e.ts)
-		var minGap time.Duration
-		switch {
-		case age < 24*time.Hour:
-			minGap = 0
-		case age < 7*24*time.Hour:
-			minGap = 5 * time.Minute
-		case age < 30*24*time.Hour:
-			minGap = 60 * time.Minute
-		default:
-			minGap = 4 * time.Hour
-		}
-
-		if minGap > 0 && !lastKept.IsZero() && e.ts.Sub(lastKept) < minGap {
-			deleteIDs = append(deleteIDs, e.id)
-		} else {
-			lastKept = e.ts
-		}
-	}
+	deleteIDs := planLimitCompaction(all, time.Now())
 
 	if len(deleteIDs) == 0 {
 		slog.Debug("compact: no entries pruned", "total", len(all))

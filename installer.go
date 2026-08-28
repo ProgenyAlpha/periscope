@@ -263,36 +263,71 @@ func offerAutostart(app *App) error {
 	return nil
 }
 
-func registerHooks(app *App) error {
-	binary := periscopeBinary()
-	slog.Debug("using binary", "path", binary)
+// probeHost turns a configured bind address into something the SessionStart
+// launcher can actually dial.
+//
+// "", "0.0.0.0" and "::" are wildcards — a server bound to them is reachable,
+// but they are not destinations, so the probe uses loopback instead. Bare IPv6
+// literals get bracketed so they survive being pasted into a URL.
+func probeHost(host string) string {
+	host = strings.TrimSpace(host)
+	host = strings.TrimPrefix(strings.TrimSuffix(host, "]"), "[")
+	switch host {
+	case "", "0.0.0.0", "::":
+		return "localhost"
+	}
+	if strings.Contains(host, ":") {
+		return "[" + host + "]"
+	}
+	return host
+}
 
-	// Write the launcher script (health-check → auto-start)
-	var launcherContent string
-	var launcherName string
+// launcherScript builds the SessionStart auto-start script.
+//
+// The health probe MUST target the configured host:port. It used to be
+// hardcoded to http://localhost:<port>: with `host` set to anything other than
+// loopback the probe could never succeed, so every SessionStart spawned
+// `periscope serve`, which then hit its own already-running check on the
+// CONFIGURED host, found the live server and exited. The hook burned a process
+// per session and never actually started anything.
+//
+// goos is passed in rather than read from runtime.GOOS so both branches are
+// testable from one platform.
+func launcherScript(cfg ServerConfig, binary, goos string) (name, content string) {
+	port := cfg.Port
+	if port == 0 {
+		port = 8384 // same default newApp applies when config.toml omits it
+	}
+	healthURL := fmt.Sprintf("http://%s:%d/api/health", probeHost(cfg.Host), port)
 
-	if runtime.GOOS == "windows" {
-		launcherName = "periscope-ensure.ps1"
-		launcherContent = fmt.Sprintf(`# Ensure periscope server is running
+	if goos == "windows" {
+		return "periscope-ensure.ps1", fmt.Sprintf(`# Ensure periscope server is running
 $ErrorActionPreference = 'SilentlyContinue'
 try {
-    $resp = Invoke-WebRequest -Uri 'http://localhost:%d/api/health' -TimeoutSec 1 -UseBasicParsing
+    $resp = Invoke-WebRequest -Uri '%s' -TimeoutSec 1 -UseBasicParsing
     if ($resp.StatusCode -eq 200) { exit 0 }
 } catch {}
 
 # Not running — start it
 Start-Process -WindowStyle Hidden -FilePath '%s' -ArgumentList 'serve'
-`, app.Config.Server.Port, binary)
-	} else {
-		launcherName = "periscope-ensure.sh"
-		launcherContent = fmt.Sprintf(`#!/bin/sh
+`, healthURL, binary)
+	}
+
+	return "periscope-ensure.sh", fmt.Sprintf(`#!/bin/sh
 # Ensure periscope server is running
-if curl -sf http://localhost:%d/api/health >/dev/null 2>&1; then
+if curl -sf %s >/dev/null 2>&1; then
     exit 0
 fi
 nohup "%s" serve >/dev/null 2>&1 &
-`, app.Config.Server.Port, binary)
-	}
+`, healthURL, binary)
+}
+
+func registerHooks(app *App) error {
+	binary := periscopeBinary()
+	slog.Debug("using binary", "path", binary)
+
+	// Write the launcher script (health-check → auto-start)
+	launcherName, launcherContent := launcherScript(app.Config.Server, binary, runtime.GOOS)
 
 	launcherPath := filepath.Join(app.HomeDir, launcherName)
 	if err := os.WriteFile(launcherPath, []byte(launcherContent), 0755); err != nil {

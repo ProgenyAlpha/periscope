@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/subtle"
 	"encoding/json"
@@ -28,9 +29,24 @@ import (
 
 // --- WebSocket Hub ---
 
+// wsBroadcast is one hub message, already framed.
+//
+// It carries a *websocket.PreparedMessage rather than raw bytes so the deflate
+// pass runs ONCE per broadcast instead of once per connected client. gorilla
+// caches the wire representation per (isServer, compressed, level) triple, so a
+// browser that negotiated permessage-deflate and a client that did not both
+// read from the same prepared message and each gets the form it can decode.
+//
+// rawLen is kept alongside because the prepared message does not expose the
+// uncompressed size, and the broadcast log line reports it.
+type wsBroadcast struct {
+	msg    *websocket.PreparedMessage
+	rawLen int
+}
+
 type Hub struct {
 	clients    map[*Client]bool
-	broadcast  chan []byte
+	broadcast  chan wsBroadcast
 	register   chan *Client
 	unregister chan *Client
 	mu         sync.RWMutex
@@ -39,7 +55,7 @@ type Hub struct {
 type Client struct {
 	hub      *Hub
 	conn     *websocket.Conn
-	send     chan []byte
+	send     chan wsBroadcast
 	closeOne sync.Once
 }
 
@@ -50,7 +66,7 @@ func (c *Client) closeSend() {
 func newHub() *Hub {
 	return &Hub{
 		clients:    make(map[*Client]bool),
-		broadcast:  make(chan []byte, 64),
+		broadcast:  make(chan wsBroadcast, 64),
 		register:   make(chan *Client),
 		unregister: make(chan *Client),
 	}
@@ -86,7 +102,7 @@ func (h *Hub) run() {
 				}
 			}
 			h.mu.Unlock()
-			slog.Debug("hub broadcast sent", "clients", clientCount, "bytes", len(message))
+			slog.Debug("hub broadcast sent", "clients", clientCount, "bytes", message.rawLen)
 		}
 	}
 }
@@ -98,11 +114,16 @@ func (h *Hub) broadcastJSON(msgType string, payload any) {
 		slog.Error("hub marshal failed", "type", msgType, "err", err)
 		return
 	}
+	prepared, err := websocket.NewPreparedMessage(websocket.TextMessage, data)
+	if err != nil {
+		slog.Error("hub prepare failed", "type", msgType, "err", err)
+		return
+	}
 	h.mu.RLock()
 	clientCount := len(h.clients)
 	h.mu.RUnlock()
-	slog.Debug("hub broadcasting", "type", msgType, "clients", clientCount)
-	h.broadcast <- data
+	slog.Debug("hub broadcasting", "type", msgType, "clients", clientCount, "bytes", len(data))
+	h.broadcast <- wsBroadcast{msg: prepared, rawLen: len(data)}
 }
 
 func (h *Hub) clientCount() int {
@@ -204,9 +225,22 @@ func originAllowed(r *http.Request) bool {
 	return false
 }
 
+// wsCompressionLevel is the flate level used for permessage-deflate frames.
+// It matches gzipLevel so the websocket push and the /api/data poll compress
+// the same payload to the same size; gorilla's own default is 1, which leaves
+// most of the win on the table for a multi-megabyte dashboard payload.
+const wsCompressionLevel = 6
+
 var upgrader = websocket.Upgrader{
 	ReadBufferSize:  1024,
 	WriteBufferSize: 4096,
+	// permessage-deflate. gorilla negotiates it only if the client offers it,
+	// and falls back to plain frames otherwise, so this is transparent to any
+	// client that does not support it. gorilla's implementation is
+	// no-context-takeover (each message is deflated independently), which is
+	// exactly what a broadcast of whole snapshots wants — there is no
+	// cross-message window to share and every frame stays self-contained.
+	EnableCompression: true,
 	CheckOrigin: func(r *http.Request) bool {
 		allowed := originAllowed(r)
 		if !allowed {
@@ -223,7 +257,15 @@ func serveWS(app *App, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	client := &Client{hub: app.Hub, conn: conn, send: make(chan []byte, 64)}
+	// No-ops unless the handshake actually negotiated permessage-deflate.
+	// Setting the level uniformly on every connection keeps gorilla's prepared
+	// -message cache down to one compressed frame per broadcast.
+	conn.EnableWriteCompression(true)
+	if err := conn.SetCompressionLevel(wsCompressionLevel); err != nil {
+		slog.Warn("ws compression level rejected", "level", wsCompressionLevel, "err", err)
+	}
+
+	client := &Client{hub: app.Hub, conn: conn, send: make(chan wsBroadcast, 64)}
 	app.Hub.register <- client
 
 	// Writer goroutine
@@ -241,7 +283,7 @@ func serveWS(app *App, w http.ResponseWriter, r *http.Request) {
 					conn.WriteMessage(websocket.CloseMessage, []byte{})
 					return
 				}
-				if err := conn.WriteMessage(websocket.TextMessage, message); err != nil {
+				if err := conn.WritePreparedMessage(message.msg); err != nil {
 					slog.Debug("ws write error", "err", err)
 					return
 				}
@@ -697,9 +739,7 @@ func handleData(app *App, w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	if _, err := w.Write(buf.Bytes()); err != nil {
-		slog.Debug("data write error", "err", err)
-	}
+	writeMaybeGzip(w, r, buf.Bytes())
 }
 
 func handleConfig(app *App, w http.ResponseWriter, r *http.Request) {
@@ -1703,6 +1743,106 @@ func healthWatchdog(ctx context.Context, app *App) {
 			sendPushNotification(app.DB, "Periscope", fmt.Sprintf("DB recovered after %d failures", consecutiveDBFailures))
 			consecutiveDBFailures = 0
 		}
+	}
+}
+
+// --- Transparent response compression ---
+
+const (
+	// gzipLevel trades a little CPU for most of the win. On the real /api/data
+	// payload level 6 is ~10x; level 9 buys under 1% more for roughly double
+	// the CPU, and this body is rebuilt on every poll and every broadcast.
+	gzipLevel = 6
+
+	// gzipMinSize is the floor below which compressing is not worth it: the
+	// gzip header plus trailer is 18 bytes, and a small JSON object can come
+	// out larger than it went in.
+	gzipMinSize = 1024
+)
+
+// gzipWriterPool reuses the ~256KB deflate window across requests instead of
+// allocating one per response.
+var gzipWriterPool = sync.Pool{
+	New: func() any {
+		zw, err := gzip.NewWriterLevel(io.Discard, gzipLevel)
+		if err != nil {
+			// gzipLevel is a constant, so this cannot fail at run time.
+			panic(fmt.Sprintf("gzip.NewWriterLevel(%d): %v", gzipLevel, err))
+		}
+		return zw
+	},
+}
+
+// acceptsGzip reports whether the client actually asked for gzip. A bare
+// substring match would wrongly match "x-gzip" and, worse, would honour
+// "gzip;q=0" — which is an explicit refusal.
+func acceptsGzip(r *http.Request) bool {
+	for _, part := range strings.Split(r.Header.Get("Accept-Encoding"), ",") {
+		fields := strings.Split(part, ";")
+		if !strings.EqualFold(strings.TrimSpace(fields[0]), "gzip") {
+			continue
+		}
+		for _, param := range fields[1:] {
+			k, v, ok := strings.Cut(param, "=")
+			if !ok || !strings.EqualFold(strings.TrimSpace(k), "q") {
+				continue
+			}
+			q, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
+			if err == nil && q <= 0 {
+				return false // explicitly refused
+			}
+		}
+		return true
+	}
+	return false
+}
+
+// writeMaybeGzip sends an already-complete response body, compressing it only
+// when the client asked and the body is big enough to be worth it.
+//
+// The body arrives complete on purpose. Streaming a gzip.Writer straight into
+// the ResponseWriter would put the 200 and the Content-Encoding header on the
+// wire before the payload was known to be encodable, so a mid-encode failure
+// would leave the client with a truncated document it could not distinguish
+// from a good one. Compressing a finished buffer keeps that guarantee: if the
+// compression itself fails we still hold the plain bytes and fall back to them.
+//
+// Vary is set unconditionally. A cache that saw only the identity response
+// must still know this URL varies by Accept-Encoding, or it will serve those
+// bytes to a client that negotiated gzip (and vice versa).
+func writeMaybeGzip(w http.ResponseWriter, r *http.Request, body []byte) {
+	w.Header().Add("Vary", "Accept-Encoding")
+
+	if len(body) < gzipMinSize || !acceptsGzip(r) {
+		if _, err := w.Write(body); err != nil {
+			slog.Debug("response write error", "err", err)
+		}
+		return
+	}
+
+	var buf bytes.Buffer
+	buf.Grow(len(body) / 4)
+	zw := gzipWriterPool.Get().(*gzip.Writer)
+	zw.Reset(&buf)
+	_, werr := zw.Write(body)
+	cerr := zw.Close()
+	gzipWriterPool.Put(zw)
+
+	if werr != nil || cerr != nil {
+		// Nothing has been written to the client yet, so the plain body is
+		// still a valid, complete response.
+		slog.Warn("gzip failed, sending identity", "writeErr", werr, "closeErr", cerr)
+		if _, err := w.Write(body); err != nil {
+			slog.Debug("response write error", "err", err)
+		}
+		return
+	}
+
+	w.Header().Set("Content-Encoding", "gzip")
+	w.Header().Set("Content-Length", strconv.Itoa(buf.Len()))
+	slog.Debug("response compressed", "path", r.URL.Path, "raw", len(body), "gzip", buf.Len())
+	if _, err := w.Write(buf.Bytes()); err != nil {
+		slog.Debug("response write error", "err", err)
 	}
 }
 

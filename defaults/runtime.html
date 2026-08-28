@@ -68,6 +68,16 @@ a{color:var(--c-primary);text-decoration:none}
 .btn.danger:hover{border-color:var(--c-danger);color:var(--c-danger);box-shadow:0 0 12px rgba(var(--rgb-danger),0.3)}
 
 /* Stripe */
+/* Staleness banner. The dashboard rendered five-day-old session data with no
+   visual difference from live data: the server was up, /api/health returned
+   200, and limit_history kept polling because that path needs no hooks. Every
+   widget fed from `sidecars` is only as fresh as the newest sidecar row, so one
+   banner above the grid speaks for all of them. */
+.stale-banner{display:none;position:relative;z-index:2;max-width:1480px;margin:0 auto 16px;padding:9px 16px;font-family:var(--font-mono);font-size:11px;line-height:1.5;letter-spacing:.4px;border:1px solid var(--c-primary);background:color-mix(in srgb,var(--c-primary) 10%,transparent);color:var(--c-primary)}
+.stale-banner.show{display:block}
+.stale-banner.critical{border-color:var(--c-danger);background:color-mix(in srgb,var(--c-danger) 12%,transparent);color:var(--c-danger)}
+.stale-banner b{font-weight:700;letter-spacing:1px}
+.stale-banner span{color:var(--text-dim)}
 .stripe{display:none;height:3px;background:linear-gradient(90deg,#C82337 0%,#C82337 25%,#E06236 25%,#E06236 50%,#D7AB61 50%,#D7AB61 75%,#2F4C79 75%,#2F4C79 100%)}
 [data-theme="starfield-dark"] .stripe,[data-theme="starfield-light"] .stripe{display:block}
 
@@ -310,6 +320,7 @@ a{color:var(--c-primary);text-decoration:none}
 </header>
 
 <div class="stripe"></div>
+<div class="stale-banner" id="stale-banner" role="status" aria-live="polite"></div>
 <div class="grid-stack" id="widget-grid"></div>
 <div class="status-bar">
   <span id="status-left">Periscope v0.1.0</span>
@@ -317,6 +328,64 @@ a{color:var(--c-primary);text-decoration:none}
 </div>
 
 <script>
+// --- Staleness ---
+// Thresholds mirror sidecarWarnAge / sidecarFailAge in doctor.go; keep them in
+// step so `periscope doctor` and the dashboard never disagree about whether the
+// data on screen is current.
+const STALE_WARN_MS = 6 * 60 * 60 * 1000;
+const STALE_FAIL_MS = 24 * 60 * 60 * 1000;
+
+// sessions.updated_at is normally RFC3339 UTC, but a row that fell back to the
+// CURRENT_TIMESTAMP column default uses a space instead of a T and carries no
+// zone. Both are UTC.
+function parseStaleStamp(value) {
+  if (!value) return NaN;
+  var t = String(value).trim().replace(' ', 'T');
+  if (!/(Z|[+-]\d{2}:?\d{2})$/.test(t)) t += 'Z';
+  return Date.parse(t);
+}
+
+function staleAgeLabel(ms) {
+  var mins = Math.floor(ms / 60000);
+  if (mins < 60) return mins + 'm';
+  var hours = Math.floor(mins / 60);
+  if (hours < 24) return hours + 'h ' + (mins % 60) + 'm';
+  return Math.floor(hours / 24) + 'd ' + (hours % 24) + 'h';
+}
+
+// updateStalenessBanner is the dashboard's half of the ingestion check: if the
+// newest session row is old, say so rather than drawing it as if it were live.
+function updateStalenessBanner(newestUpdatedAt, generatedAt) {
+  var el = document.getElementById('stale-banner');
+  if (!el) return;
+
+  var newest = parseStaleStamp(newestUpdatedAt);
+  var now = Date.parse(generatedAt || '') || Date.now();
+
+  if (!newest) {
+    el.className = 'stale-banner show critical';
+    el.innerHTML = '<b>NO SESSION DATA</b> — nothing has been imported into the sessions table. ' +
+      '<span>Run <b>periscope doctor</b> to find out which link in the chain is broken.</span>';
+    return;
+  }
+
+  var age = now - newest;
+  if (age < STALE_WARN_MS) {
+    el.className = 'stale-banner';
+    el.textContent = '';
+    return;
+  }
+
+  var when = new Date(newest).toLocaleString();
+  var critical = age >= STALE_FAIL_MS;
+  el.className = 'stale-banner show' + (critical ? ' critical' : '');
+  el.innerHTML = '<b>' + (critical ? 'SESSION DATA IS STALE' : 'SESSION DATA IS AGEING') + '</b> — ' +
+    'last session update was <b>' + staleAgeLabel(age) + '</b> ago (' + when + '). ' +
+    '<span>Everything below is drawn from that snapshot' +
+    (critical ? '. Run <b>periscope doctor</b> — the Stop hook or the importer may have stopped.' : '.') +
+    '</span>';
+}
+
 // --- Shared Constants ---
 const TOKEN_WEIGHTS = { input: 1, cache_read: 0, cache_write: 1, output: 5 };
 const MODEL_PRICING = {
@@ -949,6 +1018,7 @@ const Periscope = {
       const upd = s.updated_at || '';
       if (!latest || upd > latestUpd) { latest = s; latestUpd = upd; }
     }
+    updateStalenessBanner(latestUpd, data.generatedAt);
     const model = latest && latest.data && latest.data.lastTurn ? latest.data.lastTurn.model : 'unknown';
     document.getElementById('badge-model').textContent = model.replace('claude-','').replace('-',' ');
     document.getElementById('badge-sessions').textContent = nSessions + ' sessions';

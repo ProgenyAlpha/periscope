@@ -71,6 +71,8 @@ func main() {
 		cmdServe()
 	case "status":
 		cmdStatus()
+	case "doctor":
+		cmdDoctor()
 	case "sync":
 		cmdSync()
 	case "uninstall":
@@ -96,6 +98,7 @@ Usage:
   periscope init          Set up plugins, database, and hooks
   periscope serve         Start the dashboard server
   periscope status        Check if server is running
+  periscope doctor        Diagnose the telemetry pipeline (exits non-zero on failure)
   periscope sync          Update built-in plugins, preserving your edits
   periscope hook stop     Process transcript (Stop hook)
   periscope hook display  Output telemetry context (UserPromptSubmit hook)

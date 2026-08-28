@@ -558,9 +558,11 @@ func TestCompactLimitHistory_RollsBackOnDeleteFailure(t *testing.T) {
 	}
 	before := countRows(t, db, "limit_history")
 
-	// Refuse to delete one of the rows compaction wants gone.
+	// Refuse every delete. Naming one id coupled this test to whichever rows
+	// the compaction policy happens to keep, and the hourly bucket boundaries
+	// move with the wall clock — so a fixed id was a latent flake.
 	mustExec(t, db, `CREATE TRIGGER block_delete BEFORE DELETE ON limit_history
-		WHEN OLD.id = 100 BEGIN SELECT RAISE(ABORT, 'blocked'); END`)
+		BEGIN SELECT RAISE(ABORT, 'blocked'); END`)
 
 	err := CompactLimitHistory(db, dataDir)
 	if err == nil {
