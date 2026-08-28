@@ -934,6 +934,30 @@ const Periscope = {
       return;
     }
 
+    // A second registerWidget for an id already on the grid is a HOT RELOAD:
+    // _handleReload re-fetches the file when the plugins directory changes
+    // under a running dashboard, which `periscope sync` and every upgrade do.
+    // Without this the old tile stays and a second one is added — _widgets is
+    // a Map so it still reports 14, but the DOM holds 15, _update renders into
+    // whichever querySelector reaches first (the stale copy), and _saveLayout
+    // then persists the phantom tile into config:layout.
+    //
+    // The replacement is pinned to the old tile's current geometry rather than
+    // autoPositioned, so a reload does not shuffle the user's grid.
+    const stale = this._grid.getGridItems().find(item => {
+      const c = item.querySelector('.grid-stack-item-content');
+      return c && c.dataset.widget === config.id;
+    });
+    if (stale) {
+      const node = stale.gridstackNode;
+      if (node) {
+        opts.x = node.x; opts.y = node.y;
+        opts.w = node.w; opts.h = node.h;
+        opts.autoPosition = false;
+      }
+      this._grid.removeWidget(stale, true);
+    }
+
     // Add widget to Gridstack
     const outerEl = this._grid.addWidget(opts);
     const contentEl = outerEl.querySelector('.grid-stack-item-content');

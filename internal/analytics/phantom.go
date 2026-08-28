@@ -146,6 +146,45 @@ func sumRecentSessionCost(db *sql.DB, cutoff string) (float64, error) {
 	return total, rows.Err()
 }
 
+// stampLayouts is every separator the ts columns have carried, mirroring
+// store/history.go's parseHistoryTS. It has to be duplicated rather than
+// imported: store already depends on this package for CalcPhantomUsage.
+//
+// Both queries below already normalise the separator in SQL —
+// `replace(ts, ' ', 'T')` — so a space-separated row is inside the window by
+// deliberate choice. Parsing only the 'T' forms afterwards selected such a row
+// and then threw it away without a word, which for loadActiveMinutes inverts
+// the answer: a minute the CLI demonstrably ran in does not count as CLI
+// activity, so the rate-limit growth across it is attributed to phantom
+// (non-CLI) usage and reported as spend on a client the user never opened.
+//
+// history.ts and limit_history.ts are declared TEXT, so they keep whatever
+// separator was written. Today's writers emit only "2006-01-02T15:04:05Z", so
+// this bites imported, hand-repaired or pre-stampLayout rows rather than
+// anything a current install produces — but the SQL and the parser disagreeing
+// about which rows exist is not a difference of opinion worth keeping.
+var stampLayouts = []string{
+	"2006-01-02T15:04:05Z",
+	time.RFC3339,
+	time.RFC3339Nano,
+	"2006-01-02T15:04:05",
+	"2006-01-02 15:04:05",
+	"2006-01-02 15:04:05Z07:00",
+}
+
+// parseStamp reads a ts column value in any layout the table has ever held.
+func parseStamp(s string) (time.Time, bool) {
+	if s == "" {
+		return time.Time{}, false
+	}
+	for _, layout := range stampLayouts {
+		if t, err := time.Parse(layout, s); err == nil {
+			return t, true
+		}
+	}
+	return time.Time{}, false
+}
+
 type limitSnapshot struct {
 	ts        time.Time
 	pctWeekly float64
@@ -166,12 +205,9 @@ func loadLimitSnapshots(db *sql.DB, cutoff string) ([]limitSnapshot, error) {
 		if err := rows.Scan(&tsStr, &dataStr); err != nil {
 			return nil, err
 		}
-		t, err := time.Parse(time.RFC3339Nano, tsStr)
-		if err != nil {
-			t, err = time.Parse(time.RFC3339, tsStr)
-			if err != nil {
-				continue
-			}
+		t, ok := parseStamp(tsStr)
+		if !ok {
+			continue
 		}
 		var d map[string]any
 		if json.Unmarshal([]byte(dataStr), &d) != nil {
@@ -201,9 +237,7 @@ func loadActiveMinutes(db *sql.DB, cutoff string) (map[string]bool, error) {
 		if err := rows.Scan(&ts); err != nil {
 			return nil, err
 		}
-		if t, err := time.Parse("2006-01-02T15:04:05Z", ts); err == nil {
-			active[t.Truncate(time.Minute).Format(time.RFC3339)] = true
-		} else if t, err := time.Parse(time.RFC3339, ts); err == nil {
+		if t, ok := parseStamp(ts); ok {
 			active[t.UTC().Truncate(time.Minute).Format(time.RFC3339)] = true
 		}
 	}

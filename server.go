@@ -828,7 +828,7 @@ func handleData(app *App, w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Annotate the most recently captured live effort from any active session.
-	annotateLiveEffort(data)
+	annotateLiveEffort(app.HomeDir, data)
 
 	// Side effect: refresh profile if stale
 	go refreshProfileIfStale(app)
@@ -1134,7 +1134,12 @@ func handlePlugins(app *App, w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, []string{})
 			return
 		}
-		var names []string
+		// Initialised, not nil: an existing-but-empty directory would otherwise
+		// encode as `null`, and runtime.html's _loadAllWidgets calls .filter()
+		// on this body directly — a TypeError there is swallowed by its catch
+		// and the dashboard boots with no widgets at all. The readdir-failure
+		// branch above already answers []; these two must agree.
+		names := []string{}
 		for _, e := range entries {
 			if !e.IsDir() {
 				names = append(names, e.Name())
@@ -1301,18 +1306,23 @@ var (
 )
 
 // annotateLiveEffort sets data.LiveEffort to the most recently captured
-// effort level from ~/.periscope/effort/<sid>.json (written by cmdStatusline
+// effort level from <homeDir>/effort/<sid>.json (written by cmdStatusline
 // on every Claude Code statusline render). Newest mtime wins.
 //
 // Called from BOTH the GET /api/data handler and the watcher's broadcast
 // path so the dashboard sees a consistent value whether it loaded fresh or
 // is taking a websocket push.
-func annotateLiveEffort(data *store.DashboardData) {
-	home, err := os.UserHomeDir()
-	if err != nil {
+//
+// homeDir is app.HomeDir, not os.UserHomeDir(). Resolving the process home
+// here meant this one field of the payload came from a different installation
+// than every other field: an App pointed at another home still reported that
+// home's effort, and every test of the read path silently read the developer's
+// live ~/.periscope/effort instead of what it had seeded.
+func annotateLiveEffort(homeDir string, data *store.DashboardData) {
+	if homeDir == "" {
 		return
 	}
-	effortDir := filepath.Join(home, ".periscope", "effort")
+	effortDir := filepath.Join(homeDir, "effort")
 	entries, err := os.ReadDir(effortDir)
 	if err != nil {
 		return

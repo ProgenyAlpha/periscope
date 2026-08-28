@@ -1,10 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
 )
@@ -26,6 +30,12 @@ func hashBytes(data []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// errCorruptManifest marks a manifest file that exists but does not parse —
+// the residue of a crash mid-write. It is kept distinct from an I/O error so
+// syncFS can rebuild past it without also swallowing a genuinely unreadable
+// directory (EACCES, EIO), which the user does need to hear about.
+var errCorruptManifest = errors.New("plugin manifest is not valid JSON")
+
 func loadPluginManifest(path string) (pluginManifest, error) {
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
@@ -36,17 +46,46 @@ func loadPluginManifest(path string) (pluginManifest, error) {
 	}
 	m := pluginManifest{}
 	if err := json.Unmarshal(data, &m); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w (%s): %v", errCorruptManifest, path, err)
 	}
 	return m, nil
 }
 
+// savePluginManifest writes the manifest atomically: a temp file in the same
+// directory, then a rename over the target.
+//
+// A torn manifest is not a small loss. It is the only record of which files
+// periscope wrote, so without it every shipped file looks like one the user
+// might have edited, and sync turns conservative forever: widget and theme
+// updates quietly stop arriving. os.WriteFile truncates before it writes, so a
+// crash — or merely a concurrent reader — in that window was enough to cause
+// it. writeFileAtomic (sidecarwrite.go) already does the temp+fsync+rename
+// dance and preserves an existing file's mode, so this reuses it rather than
+// growing a second copy; the MkdirAll mirrors writeSettingsFile
+// (claudesettings.go), since a manifest whose parent does not exist yet must
+// not fail the sync that just created the plugin tree.
+//
+// The temp file writeFileAtomic creates is named "..periscope-manifest.json.tmpNNN".
+// It cannot be mistaken for a plugin: syncFS walks the *embedded* source tree,
+// not pluginDir, and the /plugins listing in server.go only reads the
+// themes/, widgets/, ... subdirectories, never the plugin root where this
+// lives. The name is dot-prefixed and does not end in .json regardless.
+//
+// An unchanged manifest is not rewritten at all. Re-serializing identical
+// bytes buys nothing and only widens the window in which a crash could damage
+// the file, and `periscope sync` on an up-to-date install is the common case.
 func savePluginManifest(path string, m pluginManifest) error {
 	data, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0644)
+	if cur, err := os.ReadFile(path); err == nil && bytes.Equal(cur, data) {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return fmt.Errorf("mkdir %s: %w", filepath.Dir(path), err)
+	}
+	return writeFileAtomic(path, data, 0644)
 }
 
 // syncPlugins updates periscope-owned files in pluginDir from the embedded
@@ -60,6 +99,19 @@ func syncPlugins(pluginDir string) (syncResult, error) {
 func syncFS(pluginDir string, source fs.FS, root string) (syncResult, error) {
 	manifestPath := filepath.Join(pluginDir, pluginManifestName)
 	manifest, err := loadPluginManifest(manifestPath)
+	if errors.Is(err, errCorruptManifest) {
+		// Refusing to sync would be the worse failure. The manifest is
+		// unparseable on every subsequent run too, so `periscope sync` and
+		// `periscope init` would abort here forever and the user would never
+		// receive another update — with nothing but a JSON error to explain
+		// it. Start from empty and let the walk below rebuild: every file
+		// still matching what we ship is re-adopted and tracked again, and
+		// anything that diverges is preserved exactly as it would be on a
+		// first-ever sync. Nothing is overwritten on the strength of a
+		// manifest we could not read.
+		slog.Warn("plugin manifest unreadable, rebuilding it", "path", manifestPath, "err", err)
+		manifest, err = pluginManifest{}, nil
+	}
 	if err != nil {
 		return syncResult{}, err
 	}

@@ -34,7 +34,7 @@ func installEnv(t *testing.T) *App {
 func TestInstall_CreatesTelemetryDataDir(t *testing.T) {
 	app := installEnv(t)
 
-	if err := install(app); err != nil {
+	if err := install(app, installOptions{}); err != nil {
 		t.Fatalf("install: %v", err)
 	}
 
@@ -68,7 +68,7 @@ func TestInstall_ReportsConfigWriteFailure(t *testing.T) {
 	}
 	t.Cleanup(func() { os.Chmod(app.HomeDir, 0755) })
 
-	if err := install(app); err == nil {
+	if err := install(app, installOptions{}); err == nil {
 		t.Fatal("install reported success although config.toml could not be written")
 	}
 }

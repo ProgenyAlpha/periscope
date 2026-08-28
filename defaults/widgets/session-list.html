@@ -156,9 +156,17 @@ Periscope.registerWidget({
       else if (sm && sm.summary) summary = sm.summary.length > 60 ? sm.summary.substring(0,57) + '...' : sm.summary;
       else if (sm && sm.firstPrompt) { let fp = sm.firstPrompt.replace(/<[^>]+>/g, '').trim(); if (fp.length > 55) fp = fp.substring(0,52) + '...'; summary = fp; }
       else if (s.data?.firstPrompt) { let fp = s.data.firstPrompt.replace(/<[^>]+>/g, '').trim(); if (fp.length > 55) fp = fp.substring(0,52) + '...'; summary = fp; }
-      // Duration from history
+      // Duration from history.
+      //
+      // history rows carry the SHORT session id: the Stop hook writes
+      // sid = payload.SessionID[:8] (hooks.go), while a sidecar's id is the
+      // full UUID. A strict === could therefore never match, so this block was
+      // dead and no session ever showed a duration. The prefix comparison is
+      // the same one runtime.html uses to line sessionMeta up with a sidecar.
       let duration = '';
-      const hist = (data.history || []).filter(h => h.sid === s.id);
+      const shortId = s.id.substring(0, 8);
+      const hist = (data.history || []).filter(h =>
+        h.sid && (h.sid === s.id || h.sid === shortId || s.id.startsWith(h.sid)));
       if (hist.length >= 2) {
         const first = new Date(hist[0].ts), last = new Date(hist[hist.length-1].ts);
         const mins = Math.round((last - first) / 60000);
@@ -213,6 +221,12 @@ function _slRender(el) {
   const fmtK = Periscope.fmtK || (n => n >= 1e6 ? (n/1e6).toFixed(1)+'M' : n >= 1e3 ? (n/1e3).toFixed(1)+'K' : n.toString());
   const fmtCost = Periscope.fmtCost || (v => v >= 10 ? '$'+v.toFixed(1) : '$'+v.toFixed(2));
   const fmtPlain = n => n >= 1e6 ? (n/1e6).toFixed(1)+'M' : n >= 1e3 ? (n/1e3).toFixed(1)+'K' : n.toLocaleString();
+  // cacheHitRate returns an unrounded percentage on purpose — the sort on this
+  // column and the >= 80 class both want the full precision. fmtCacheRate is
+  // the display half of that pair (runtime.html, right below cacheHitRate, and
+  // used correctly by cost-overview). Rendering the raw float instead put
+  // "98.85057471264368%" in a table cell and overflowed the column.
+  const fmtCache = pct => (typeof fmtCacheRate === 'function' ? fmtCacheRate(pct) : String(Math.round(pct))) + '%';
   const fmtAgo = ts => {
     if (!ts) return '--';
     const sec = Math.floor((Date.now() - ts) / 1000);
@@ -261,7 +275,7 @@ function _slRender(el) {
       <td class="${costClass}">${r.c ? fmtCost(r.cost) : '<span class="null-val">--</span>'}</td>
       <td>${r.c ? r.turns : '<span class="null-val">--</span>'}</td>
       <td>${r.c ? fmtK(r.totalTok) : '<span class="null-val">--</span>'}</td>
-      <td class="${cacheClass}">${r.c ? r.cacheHit + '%' : '<span class="null-val">--</span>'}</td>
+      <td class="${cacheClass}">${r.c ? fmtCache(r.cacheHit) : '<span class="null-val">--</span>'}</td>
       <td class="col-model model-val">${Object.keys(r.modelsUsed).length > 0 ? Object.entries(r.modelsUsed).map(([m,n]) => m + ':' + n).join(' ') : (r.modelShort || '<span class="null-val">--</span>')}${r.effort ? ' <span class="effort-tag effort-' + r.effort + '">' + r.effort[0].toUpperCase() + '</span>' : ''}</td>
     </tr>`;
 

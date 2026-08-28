@@ -58,7 +58,11 @@ Periscope.registerWidget({
     var entries = Object.entries(models).sort(function(a, b) { return b[1].tokens - a[1].tokens; });
 
     if (entries.length === 0) {
-      grid.innerHTML = '';
+      // Not innerHTML = '': that leaves a titled blank box on a fresh install
+      // with nothing to say why. The .empty style below the widget's rules was
+      // written for this and was never used; every sibling widget
+      // (tool-usage, last-turn, agent-tracker) says what it is waiting for.
+      grid.innerHTML = '<div class="empty">No model data yet</div>';
       return;
     }
 

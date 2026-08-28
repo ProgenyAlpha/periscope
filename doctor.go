@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -156,9 +157,144 @@ func (e doctorEnv) healthURL() string {
 	return fmt.Sprintf("http://%s:%d/api/health", e.Config.Server.Host, e.Config.Server.Port)
 }
 
+// doctorStatusPath is where a --notify run records its verdict. It is the only
+// file doctor ever writes, and it is written outside the read-only default so
+// that `periscope doctor` on its own keeps the guarantee in this file's header.
+func (e doctorEnv) doctorStatusPath() string {
+	return filepath.Join(e.HomeDir, "doctor-status.json")
+}
+
+// ── Machine-readable report ─────────────────────────────────────────────────
+
+// doctorSchemaVersion versions the --json envelope. Anything that parses this
+// output — a cron wrapper, a CI step, a monitoring probe — should refuse a
+// version it does not know rather than guess at renamed fields. Bump it only
+// for a breaking change; adding a field is not one.
+const doctorSchemaVersion = 1
+
+type doctorReport struct {
+	Schema   int                 `json:"schema"`
+	Tool     string              `json:"tool"`
+	Version  string              `json:"version"`
+	Command  string              `json:"command"`
+	Time     string              `json:"time"`
+	Status   string              `json:"status"`    // healthy | unhealthy
+	ExitCode int                 `json:"exit_code"` // matches the process exit code
+	Summary  doctorReportSummary `json:"summary"`
+	Checks   []doctorReportCheck `json:"checks"`
+}
+
+type doctorReportSummary struct {
+	Total int `json:"total"`
+	OK    int `json:"ok"`
+	Warn  int `json:"warn"`
+	Fail  int `json:"fail"`
+}
+
+type doctorReportCheck struct {
+	Name   string `json:"name"`
+	Status string `json:"status"` // ok | warn | fail
+	Detail string `json:"detail"`
+	// Remediation is empty only when Status is "ok". A machine-readable finding
+	// with no fix attached moves the investigation somewhere else, which is
+	// exactly what the human report already refuses to do.
+	Remediation string `json:"remediation"`
+}
+
+func jsonCheckStatus(s checkStatus) string {
+	switch s {
+	case ckOK:
+		return "ok"
+	case ckWarn:
+		return "warn"
+	default:
+		return "fail"
+	}
+}
+
+func newDoctorReport(now time.Time, results []checkResult) doctorReport {
+	rep := doctorReport{
+		Schema:  doctorSchemaVersion,
+		Tool:    "periscope",
+		Version: Version,
+		Command: "doctor",
+		Time:    now.UTC().Format(time.RFC3339),
+		Checks:  make([]doctorReportCheck, 0, len(results)),
+	}
+	for _, r := range results {
+		switch r.Status {
+		case ckOK:
+			rep.Summary.OK++
+		case ckWarn:
+			rep.Summary.Warn++
+		default:
+			rep.Summary.Fail++
+		}
+		rep.Checks = append(rep.Checks, doctorReportCheck{
+			Name:        r.Name,
+			Status:      jsonCheckStatus(r.Status),
+			Detail:      r.Detail,
+			Remediation: r.Remedy,
+		})
+	}
+	rep.Summary.Total = len(results)
+	rep.ExitCode = doctorExitCode(results)
+	rep.Status = "healthy"
+	if rep.ExitCode != 0 {
+		rep.Status = "unhealthy"
+	}
+	return rep
+}
+
 // ── Command ─────────────────────────────────────────────────────────────────
 
-func cmdDoctor() {
+// doctorFlags are the output modes. They change nothing about which checks run
+// or what they conclude — only who is expected to read the answer.
+type doctorFlags struct {
+	json   bool // stable machine-readable envelope on stdout, nothing else
+	quiet  bool // say nothing at all when everything is fine
+	notify bool // record the run, and escalate a failure to a human
+}
+
+func parseDoctorFlags(args []string) (doctorFlags, error) {
+	var f doctorFlags
+	for _, a := range args {
+		switch a {
+		case "--json":
+			f.json = true
+		case "--quiet", "-q":
+			f.quiet = true
+		case "--notify":
+			f.notify = true
+		default:
+			return f, fmt.Errorf("unknown argument %q\n\nUsage: periscope doctor [--json] [--quiet] [--notify]", a)
+		}
+	}
+	return f, nil
+}
+
+// doctorWantsQuietLogs reports whether this doctor invocation is being read by
+// a machine rather than a person.
+//
+// It exists for one reason: the default slog handler writes to stderr, so every
+// run emits at least an INFO line there. Under cron that line is an email — one
+// per run, forever, saying nothing. A mailbox that gets an hourly "everything
+// is fine" grows a filter rule within a week, and the filter rule is what
+// swallows the one message that mattered. So a --quiet or --json run keeps
+// stderr for warnings and above, which is exactly what the escalation ladder in
+// notify.go writes there.
+func doctorWantsQuietLogs(args []string) bool {
+	f, err := parseDoctorFlags(args)
+	return err == nil && (f.quiet || f.json)
+}
+
+func cmdDoctor(args []string) {
+	flags, err := parseDoctorFlags(args)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
+
 	app, err := newApp()
 	if err != nil {
 		slog.Error("doctor failed", "err", err)
@@ -175,22 +311,77 @@ func cmdDoctor() {
 		probeHealth: httpProbeHealth,
 	}
 
-	iBanner()
-	fmt.Printf("  %sDiagnostics%s  %s\n\n", cBold, cReset, env.HomeDir)
-
 	results := runDoctorChecks(env)
-	printDoctorResults(results)
+	rep, code := emitDoctor(os.Stdout, env, results, flags)
 
-	iDivider()
-	summary := doctorSummary(results)
-	code := doctorExitCode(results)
-	if code == 0 {
-		fmt.Printf("\n  %s%sHEALTHY%s  %s\n\n", cBold, cGreen, cReset, summary)
-	} else {
-		fmt.Printf("\n  %s%sUNHEALTHY%s  %s\n\n", cBold, cRed, cReset, summary)
+	if flags.notify {
+		channels := notifyDoctorRun(liveDoctorNotifier(env), rep)
+		slog.Info("doctor notification", "channels", channels, "status", rep.Status)
 	}
-	slog.Info("doctor complete", "summary", summary, "exit", code)
+
+	slog.Info("doctor complete", "summary", doctorSummary(results), "exit", code)
 	os.Exit(code)
+}
+
+// emitDoctor renders one run and returns the report and the process exit code.
+// Every output mode goes through here so the exit code cannot drift away from
+// what was printed: a scheduled run that prints a failure and exits 0 is worse
+// than no scheduled run at all.
+func emitDoctor(w io.Writer, env doctorEnv, results []checkResult, f doctorFlags) (doctorReport, int) {
+	rep := newDoctorReport(env.Now, results)
+	switch {
+	case f.quiet && rep.ExitCode == 0:
+		// Cron's contract: no output means nothing to look at.
+	case f.json:
+		writeDoctorJSON(w, rep)
+	case f.quiet:
+		writeDoctorQuiet(w, results, rep)
+	default:
+		writeDoctorHuman(w, env, results, rep)
+	}
+	return rep, rep.ExitCode
+}
+
+func writeDoctorJSON(w io.Writer, rep doctorReport) {
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(rep); err != nil {
+		// stdout is a pipe that went away; there is nowhere left to report it.
+		slog.Error("could not encode doctor report", "err", err)
+	}
+}
+
+// writeDoctorHuman is the report `periscope doctor` has always printed. Its
+// bytes are pinned by a golden test: adding an output mode must not move the
+// output the humans already read.
+func writeDoctorHuman(w io.Writer, env doctorEnv, results []checkResult, rep doctorReport) {
+	fIBanner(w)
+	fmt.Fprintf(w, "  %sDiagnostics%s  %s\n\n", cBold, cReset, env.HomeDir)
+	printDoctorResults(w, results)
+	fIDivider(w)
+	summary := doctorSummary(results)
+	if rep.ExitCode == 0 {
+		fmt.Fprintf(w, "\n  %s%sHEALTHY%s  %s\n\n", cBold, cGreen, cReset, summary)
+	} else {
+		fmt.Fprintf(w, "\n  %s%sUNHEALTHY%s  %s\n\n", cBold, cRed, cReset, summary)
+	}
+}
+
+// writeDoctorQuiet prints only what is wrong, with no banner and no passing
+// lines — the shape you want in a terminal that already told you something
+// broke, and in a cron mail you are meant to read.
+func writeDoctorQuiet(w io.Writer, results []checkResult, rep doctorReport) {
+	fmt.Fprintf(w, "periscope doctor: %s — %s\n", strings.ToUpper(rep.Status), doctorSummary(results))
+	for _, r := range results {
+		if r.Status == ckOK {
+			continue
+		}
+		fmt.Fprintf(w, "  [%s] %s: %s\n", r.Status, r.Name, r.Detail)
+		if r.Remedy != "" {
+			fmt.Fprintf(w, "         → %s\n", r.Remedy)
+		}
+	}
 }
 
 // runDoctorChecks runs every check in chain order: registration, then the file
@@ -240,7 +431,7 @@ func plural(n int, word string) string {
 	return fmt.Sprintf("%d %ss", n, word)
 }
 
-func printDoctorResults(results []checkResult) {
+func printDoctorResults(w io.Writer, results []checkResult) {
 	width := 0
 	for _, r := range results {
 		if len(r.Name) > width {
@@ -257,9 +448,9 @@ func printDoctorResults(results []checkResult) {
 		default:
 			tag = cRed + "[XX]" + cReset
 		}
-		fmt.Printf("  %s  %-*s  %s\n", tag, width, r.Name, r.Detail)
+		fmt.Fprintf(w, "  %s  %-*s  %s\n", tag, width, r.Name, r.Detail)
 		if r.Status != ckOK && r.Remedy != "" {
-			fmt.Printf("        %*s  %s→ %s%s\n", width, "", cDim, r.Remedy, cReset)
+			fmt.Fprintf(w, "        %*s  %s→ %s%s\n", width, "", cDim, r.Remedy, cReset)
 		}
 	}
 }

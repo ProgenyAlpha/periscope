@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -32,17 +33,26 @@ func iStep(n, total int, msg string) {
 	fmt.Printf("\n  %s[%d/%d]%s %s%s%s\n", cCyan, n, total, cReset, cBold, msg, cReset)
 }
 
-func iBanner() {
-	fmt.Println()
-	fmt.Printf("  %s╔═══════════════════════════════════════════╗%s\n", cDim, cReset)
-	fmt.Printf("  %s║%s  %sP E R I S C O P E%s                       %s║%s\n", cDim, cReset, cBold, cReset, cDim, cReset)
-	fmt.Printf("  %s║%s  Claude Code Telemetry Dashboard          %s║%s\n", cDim, cReset, cDim, cReset)
-	fmt.Printf("  %s╚═══════════════════════════════════════════╝%s\n", cDim, cReset)
-	fmt.Println()
+// The banner and divider exist in a writer-taking form so `doctor` can render
+// its whole report into a buffer for tests without duplicating the strings.
+// Duplicating them is how a "human output is unchanged" test starts passing
+// against a copy of the printer instead of the printer.
+
+func iBanner() { fIBanner(os.Stdout) }
+
+func fIBanner(w io.Writer) {
+	fmt.Fprintln(w)
+	fmt.Fprintf(w, "  %s╔═══════════════════════════════════════════╗%s\n", cDim, cReset)
+	fmt.Fprintf(w, "  %s║%s  %sP E R I S C O P E%s                       %s║%s\n", cDim, cReset, cBold, cReset, cDim, cReset)
+	fmt.Fprintf(w, "  %s║%s  Claude Code Telemetry Dashboard          %s║%s\n", cDim, cReset, cDim, cReset)
+	fmt.Fprintf(w, "  %s╚═══════════════════════════════════════════╝%s\n", cDim, cReset)
+	fmt.Fprintln(w)
 }
 
-func iDivider() {
-	fmt.Printf("\n  %s───────────────────────────────────────────────%s\n", cDim, cReset)
+func iDivider() { fIDivider(os.Stdout) }
+
+func fIDivider(w io.Writer) {
+	fmt.Fprintf(w, "\n  %s───────────────────────────────────────────────%s\n", cDim, cReset)
 }
 
 func iPrompt(question string) bool {
@@ -73,7 +83,92 @@ func printSyncSummary(r syncResult) {
 
 // ── Install ─────────────────────────────────────────────────────────────────
 
-func install(app *App) error {
+// installOptions carries the decisions `init` is allowed to make beyond its
+// defaults. It exists for exactly one of them today: whether to install the
+// recurring health check.
+type installOptions struct {
+	Schedule   bool   // --schedule
+	NoSchedule bool   // --no-schedule, and it beats --schedule
+	Interval   string // --interval
+
+	// ConfirmSchedule is set only when init is attached to a terminal, and is
+	// the ONLY path by which a schedule gets installed without an explicit
+	// flag. Nil means non-interactive, which means no.
+	ConfirmSchedule func() bool
+
+	// Scheduler is the hook that reaches the machine's real systemd or
+	// crontab. Only `periscope init` sets it. It is nil in `serve`'s first-run
+	// install and nil in every test, so no code path other than an explicit
+	// `periscope init` can read or write the scheduling state of this machine.
+	Scheduler func(installOptions)
+}
+
+// initOptions builds the options for one `periscope init` invocation. It is the
+// single place where flags, the terminal, and the scheduler hook come together,
+// so the "a plain init schedules nothing" guarantee is testable without running
+// an install.
+func initOptions(args []string, interactive bool) (installOptions, error) {
+	opts, err := parseInitFlags(args)
+	if err != nil {
+		return opts, err
+	}
+	opts.Scheduler = offerSchedule
+	// Only ask when there is a human on the other end. Gating on the terminal
+	// rather than on the flags is what keeps install.sh from hanging forever
+	// on a question nobody can see.
+	if !opts.Schedule && !opts.NoSchedule && interactive {
+		opts.ConfirmSchedule = promptSchedule
+	}
+	return opts, nil
+}
+
+// scheduleDecision answers "does this init install a recurring health check?".
+//
+// The default is NO, and the default is load-bearing: `periscope init` is run
+// by install.sh and again by `periscope serve` on first run. Neither may add a
+// systemd timer or a crontab line to a machine as a side effect of starting a
+// dashboard — a scheduled job the user did not ask for and cannot see is its
+// own kind of silent failure.
+func scheduleDecision(opts installOptions) bool {
+	if opts.NoSchedule {
+		return false
+	}
+	if opts.Schedule {
+		return true
+	}
+	if opts.ConfirmSchedule == nil {
+		return false
+	}
+	return opts.ConfirmSchedule()
+}
+
+func parseInitFlags(args []string) (installOptions, error) {
+	var opts installOptions
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--schedule":
+			opts.Schedule = true
+		case "--no-schedule":
+			opts.NoSchedule = true
+		case "--interval":
+			if i+1 >= len(args) {
+				return opts, fmt.Errorf("--interval needs a value (%s)", supportedIntervals())
+			}
+			opts.Interval = args[i+1]
+			i++
+		default:
+			return opts, fmt.Errorf("unknown argument %q\n\nUsage: periscope init [--schedule] [--no-schedule] [--interval %s]", args[i], defaultScheduleInterval)
+		}
+	}
+	if opts.Interval != "" {
+		if _, _, err := normalizeInterval(opts.Interval); err != nil {
+			return opts, err
+		}
+	}
+	return opts, nil
+}
+
+func install(app *App, opts installOptions) error {
 	// Detect if this is a first-time install or re-init
 	_, existsErr := os.Stat(app.PluginDir)
 	isReinstall := existsErr == nil
@@ -84,9 +179,9 @@ func install(app *App) error {
 		fmt.Printf("  %sRe-initializing existing installation%s\n", cDim, cReset)
 	}
 
-	totalSteps := 5
+	totalSteps := 6
 	if runtime.GOOS == "windows" {
-		totalSteps = 6
+		totalSteps = 7
 	}
 
 	// ── Step 1: Directories ──
@@ -187,9 +282,22 @@ level = "info"
 		iOK("OAuth token verified — rate limit tracking active")
 	}
 
-	// ── Step 6: Autostart (Windows only) ──
+	// ── Step 6: Recurring health check ──
+	//
+	// doctor catches the outage that motivated it, but only when something
+	// runs it. This is where that something gets installed — and it is opt-in,
+	// because `serve` calls install() too and must never schedule anything.
+	iStep(6, totalSteps, "Recurring health check")
+	if opts.Scheduler != nil {
+		opts.Scheduler(opts)
+	} else {
+		iInfo("Not scheduled (the conservative default)")
+		iInfo("Add one with `periscope schedule install`")
+	}
+
+	// ── Step 7: Autostart (Windows only) ──
 	if runtime.GOOS == "windows" {
-		iStep(6, totalSteps, "Background service")
+		iStep(7, totalSteps, "Background service")
 		slog.Info("setting up Windows autostart")
 		if err := offerAutostart(app); err != nil {
 			slog.Warn("autostart setup error", "err", err)
@@ -215,6 +323,68 @@ level = "info"
 	iDivider()
 	fmt.Println()
 	return nil
+}
+
+// offerSchedule is the init-time face of `periscope schedule install`. It
+// prints what it would do before it asks, and it does nothing at all unless the
+// answer is an explicit yes.
+func offerSchedule(opts installOptions) {
+	interval := opts.Interval
+	if interval == "" {
+		interval = defaultScheduleInterval
+	}
+	env := liveScheduleEnv(interval)
+
+	// Already scheduled: never ask again, never add a second one, and refresh
+	// the unit so its ExecStart follows a binary that moved since last time.
+	if installed, detail, err := scheduleStatus(env); err == nil && installed {
+		res, ierr := installSchedule(env)
+		if ierr != nil {
+			iWarn(fmt.Sprintf("Health check already installed but could not be refreshed: %v", ierr))
+			return
+		}
+		slog.Info("health check already scheduled", "action", res.Action, "detail", detail)
+		iOK("Health check already scheduled — " + detail)
+		return
+	}
+
+	if !scheduleDecision(opts) {
+		slog.Info("recurring health check not installed", "reason", "not requested")
+		iInfo("Not scheduled (the conservative default)")
+		iInfo("Add one later with `periscope schedule install`")
+		return
+	}
+
+	res, err := installSchedule(env)
+	if err != nil {
+		slog.Warn("could not schedule the health check", "err", err)
+		iWarn(fmt.Sprintf("Could not schedule the health check: %v", err))
+		return
+	}
+	slog.Info("health check scheduled", "backend", res.Backend, "action", res.Action, "detail", res.Detail)
+	iOK(fmt.Sprintf("Health check %s (%s)", res.Action, res.Backend))
+	iInfo(res.Detail)
+}
+
+// promptSchedule is the interactive branch. It defaults to NO — iPrompt
+// defaults to yes, which is right for "start at login" and wrong for anything
+// that writes a unit file to a machine.
+func promptSchedule() bool {
+	fmt.Println()
+	fmt.Printf("  %speriscope doctor checks that telemetry is actually flowing.%s\n", cDim, cReset)
+	fmt.Printf("  %sNothing runs it on its own, which is how a five-day outage%s\n", cDim, cReset)
+	fmt.Printf("  %sstayed invisible: the server was up the whole time.%s\n", cDim, cReset)
+	fmt.Println()
+	fmt.Printf("  %sA %s check would run:%s\n", cDim, defaultScheduleInterval, cReset)
+	fmt.Printf("    %s%s%s\n", cDim, scheduleCommand(liveScheduleEnv(defaultScheduleInterval)), cReset)
+	fmt.Printf("  %sand notify you only when something is broken.%s\n", cDim, cReset)
+	fmt.Println()
+
+	fmt.Printf("  Install a recurring health check? %s[y/N]%s ", cDim, cReset)
+	var answer string
+	fmt.Scanln(&answer)
+	answer = strings.TrimSpace(strings.ToLower(answer))
+	return answer == "y" || answer == "yes"
 }
 
 func offerAutostart(app *App) error {
@@ -416,6 +586,21 @@ func uninstall(app *App) error {
 		iOK("Stopped running server")
 	} else {
 		iInfo("Server not running")
+	}
+
+	// Remove the recurring health check. This runs before the home directory
+	// is deleted and unconditionally, on every platform: a systemd timer left
+	// behind after an uninstall keeps firing a binary that is gone, and its
+	// failures then look exactly like the telemetry failures it was watching
+	// for. removeSchedule sweeps systemd and cron both.
+	if removed, err := removeSchedule(liveScheduleEnv(defaultScheduleInterval)); err != nil {
+		slog.Warn("could not fully remove the scheduled health check", "err", err)
+		iWarn(fmt.Sprintf("Scheduled health check: %v", err))
+	} else if len(removed) > 0 {
+		slog.Info("scheduled health check removed", "removed", removed)
+		iOK("Removed scheduled health check: " + strings.Join(removed, ", "))
+	} else {
+		iInfo("No scheduled health check found")
 	}
 
 	// Remove scheduled task

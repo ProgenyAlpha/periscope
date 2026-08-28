@@ -475,7 +475,17 @@ Periscope.registerWidget({
             max: windowEnd,
             ticks: {
               color: textDim,
-              font: { family: monoFont, size: 10 }
+              font: { family: monoFont, size: 10 },
+              // A pinned min/max on a time scale makes Chart.js emit one tick
+              // per natural time step across the window, which at the 5h range
+              // is ~60 five-minute labels. They rotate to fit, collide into an
+              // unreadable band and eat roughly a third of the widget's height.
+              // Cap the count and keep them horizontal: an axis nobody can read
+              // is worse than a sparser one.
+              autoSkip: true,
+              maxTicksLimit: 8,
+              maxRotation: 0,
+              minRotation: 0
             },
             grid: { color: gridColor }
           },

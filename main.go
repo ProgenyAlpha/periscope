@@ -17,6 +17,7 @@ import (
 	"github.com/ProgenyAlpha/periscope/internal/anthropic"
 	"github.com/ProgenyAlpha/periscope/internal/store"
 	"github.com/fsnotify/fsnotify"
+	"golang.org/x/term"
 )
 
 // Version is set at build time via -ldflags.
@@ -62,17 +63,26 @@ func main() {
 		os.Exit(1)
 	}
 
+	// A scheduled `doctor --json`/`--quiet` run is read by cron, a timer, or a
+	// monitor. Raise the floor on stderr before anything logs, so a healthy run
+	// is genuinely silent and the only thing that ever arrives is a problem.
+	if os.Args[1] == "doctor" && doctorWantsQuietLogs(os.Args[2:]) {
+		slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	}
+
 	slog.Info("periscope invoked", "version", Version, "command", os.Args[1])
 
 	switch os.Args[1] {
 	case "init":
-		cmdInit()
+		cmdInit(os.Args[2:])
 	case "serve":
 		cmdServe()
 	case "status":
 		cmdStatus()
 	case "doctor":
-		cmdDoctor()
+		cmdDoctor(os.Args[2:])
+	case "schedule":
+		cmdSchedule(os.Args[2:])
 	case "sync":
 		cmdSync()
 	case "uninstall":
@@ -96,9 +106,17 @@ func printUsage() {
 
 Usage:
   periscope init          Set up plugins, database, and hooks
+                          --schedule       also install the recurring health check
+                          --no-schedule    never ask about it
+                          --interval 1h    how often the health check runs
   periscope serve         Start the dashboard server
   periscope status        Check if server is running
   periscope doctor        Diagnose the telemetry pipeline (exits non-zero on failure)
+                          --json     stable machine-readable report on stdout
+                          --quiet    print nothing when everything is healthy
+                          --notify   record the run and alert a human if it failed
+  periscope schedule      Install/remove the recurring health check
+                          install | remove | status | show
   periscope sync          Update built-in plugins, preserving your edits
   periscope hook stop     Process transcript (Stop hook)
   periscope hook display  Output telemetry context (UserPromptSubmit hook)
@@ -151,13 +169,19 @@ func newApp() (*App, error) {
 	return app, nil
 }
 
-func cmdInit() {
+func cmdInit(args []string) {
+	opts, err := initOptions(args, term.IsTerminal(int(os.Stdin.Fd())))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
+
 	app, err := newApp()
 	if err != nil {
 		slog.Error("init failed", "err", err)
 		os.Exit(1)
 	}
-	if err := install(app); err != nil {
+	if err := install(app, opts); err != nil {
 		slog.Error("install failed", "err", err)
 		os.Exit(1)
 	}
@@ -192,7 +216,9 @@ func cmdServe() {
 	if _, err := os.Stat(app.PluginDir); os.IsNotExist(err) {
 		slog.Info("first run detected, running init")
 		fmt.Println("First run detected — running init...")
-		if err := install(app); err != nil {
+		// installOptions{} deliberately: starting a dashboard must never add a
+		// timer or a crontab line to the machine as a side effect.
+		if err := install(app, installOptions{}); err != nil {
 			slog.Error("install failed", "err", err)
 			os.Exit(1)
 		}
