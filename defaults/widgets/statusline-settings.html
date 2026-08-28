@@ -109,10 +109,11 @@ Periscope.registerWidget({
     'reset':      {l:'reset',   d:'rst:2h14m',      ck:'cyan',  t:'Nearest rate limit reset',             dr:2},
     'proj':       {l:'proj',    d:'pj:12%',         ck:'green', t:'Projected 5hr usage at burn rate',     dr:2},
     'cache':      {l:'cache',   d:'87%',            ck:'green', t:'Prompt cache hit rate',                dr:2},
-    'context':    {l:'ctx',     d:'\u2588\u2588\u2588\u2588\u2588\u2588\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591 45%',ck:'green',t:'Context window usage',dr:2}
+    'context':    {l:'ctx',     d:'\u2588\u2588\u2588\u2588\u2588\u2588\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591 45%',ck:'green',t:'Context window usage',dr:2},
+    'dash':       {l:'dash',    d:'\u2197 dash',ck:'blue',t:'Clickable link to this dashboard',dr:2}
   },
 
-  _dOrder:['dir','git','model','effort','fast','turns','cost','burn','tools','vim','rate-5hr','rate-weekly','rate-scoped','reset','proj','cache','context'],
+  _dOrder:['dir','git','model','effort','fast','turns','cost','burn','tools','vim','rate-5hr','rate-weekly','rate-scoped','reset','proj','cache','context','dash'],
   _st:null,_ds:null,_jd:false,
 
   _c:function(i){return this._a256[i]||'#888'},

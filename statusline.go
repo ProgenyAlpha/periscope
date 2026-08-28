@@ -136,9 +136,10 @@ type StatuslineSegCfg struct {
 }
 
 type StatuslineOptions struct {
-	ContextBarWidth  int `json:"contextBarWidth"`
-	CompactThreshold int `json:"compactThreshold"`
-	MinWidth         int `json:"minWidth"`
+	ContextBarWidth  int    `json:"contextBarWidth"`
+	CompactThreshold int    `json:"compactThreshold"`
+	DashboardURL     string `json:"dashboardUrl,omitempty"`
+	MinWidth         int    `json:"minWidth"`
 }
 
 // --- Segment ---
@@ -847,6 +848,19 @@ func segContext(input *StatuslineInput, opts StatuslineOptions, theme *TerminalT
 	}
 }
 
+// segDash renders a clickable link to the dashboard. The label is deliberately
+// tiny — the value is the click target, not the text — and an unknown URL
+// yields no segment rather than a link that goes nowhere.
+func segDash(url string, theme *TerminalTheme) segment {
+	if url == "" {
+		return segment{empty: true}
+	}
+	return segment{
+		text:  osc8(url, " ↗ dash"),
+		color: theme.Blue,
+	}
+}
+
 func segVim(input *StatuslineInput, theme *TerminalTheme) segment {
 	if input.VimMode == nil || input.VimMode.Mode == "" {
 		return segment{empty: true}
@@ -913,6 +927,8 @@ func getSegment(name string, input *StatuslineInput, sc slSidecar, rates slRates
 		return segTools(sc, theme)
 	case "context":
 		return segContext(input, opts, theme)
+	case "dash":
+		return segDash(opts.DashboardURL, theme)
 	case "vim":
 		return segVim(input, theme)
 	case "burn":
@@ -1037,6 +1053,22 @@ func renderMinimal(segs []segment, theme *TerminalTheme) string {
 
 var ansiEscRe = regexp.MustCompile(`\x1b\[[0-9;]*m`)
 
+// OSC 8 hyperlinks: ESC ] 8 ; params ; URI ST, where ST is BEL or ESC \.
+// These render as zero glyphs, so they must be stripped before measuring
+// width — otherwise a link's URL counts as visible columns and the
+// truncation loop drops segments that would have fit.
+var osc8Re = regexp.MustCompile(`\x1b\]8;[^;]*;[^\x07\x1b]*(?:\x07|\x1b\\)`)
+
+// osc8 wraps label in a terminal hyperlink pointing at uri. Terminals that
+// don't support OSC 8 ignore the sequence and print the label unchanged, so
+// this is safe to emit unconditionally.
+func osc8(uri, label string) string {
+	if uri == "" {
+		return label
+	}
+	return "\x1b]8;;" + uri + "\x1b\\" + label + "\x1b]8;;\x1b\\"
+}
+
 func getTerminalWidth() int {
 	if cols := os.Getenv("COLUMNS"); cols != "" {
 		if n, err := strconv.Atoi(cols); err == nil && n > 0 {
@@ -1055,7 +1087,8 @@ func getTerminalWidth() int {
 }
 
 func visibleLen(s string) int {
-	stripped := ansiEscRe.ReplaceAllString(s, "")
+	stripped := osc8Re.ReplaceAllString(s, "")
+	stripped = ansiEscRe.ReplaceAllString(stripped, "")
 	// Count runes (display characters), not bytes — Unicode icons/bars are multi-byte
 	return len([]rune(stripped))
 }
@@ -1135,6 +1168,9 @@ func cmdStatusline() {
 	if cfg.Options.MinWidth == 0 {
 		cfg.Options.MinWidth = 60
 	}
+	if cfg.Options.DashboardURL == "" {
+		cfg.Options.DashboardURL = resolveDashboardURL(periscopeDir)
+	}
 
 	// Load theme
 	theme := loadTerminalTheme(pluginDir, cfg.Theme)
@@ -1147,12 +1183,12 @@ func cmdStatusline() {
 	// Default row assignments: 1=top (work), 2=bottom (rates)
 	defaultRow := map[string]int{
 		"dir": 1, "git": 1, "model": 1, "effort": 1, "fast": 1, "turns": 1, "cost": 1, "burn": 1, "tools": 1, "vim": 1,
-		"rate-5hr": 2, "rate-weekly": 2, "rate-scoped": 2, "reset": 2, "proj": 2, "cache": 2, "context": 2,
+		"rate-5hr": 2, "rate-weekly": 2, "rate-scoped": 2, "reset": 2, "proj": 2, "cache": 2, "context": 2, "dash": 2,
 	}
 
 	// Segment order — use config order if set, else default
 	defaultOrder := []string{"dir", "git", "model", "effort", "fast", "turns", "cost", "burn", "tools", "vim",
-		"rate-5hr", "rate-weekly", "rate-scoped", "reset", "proj", "cache", "context"}
+		"rate-5hr", "rate-weekly", "rate-scoped", "reset", "proj", "cache", "context", "dash"}
 	segOrder := defaultOrder
 	if len(cfg.Order) > 0 {
 		seen := map[string]bool{}
@@ -1285,4 +1321,23 @@ func cmdStatusline() {
 	} else {
 		fmt.Print(line2)
 	}
+}
+
+// resolveDashboardURL derives the dashboard address from the server config, so
+// the statusline link follows a host/port change without separate wiring.
+// Returns "" when no config exists — better no link than one that 404s.
+func resolveDashboardURL(periscopeDir string) string {
+	data, err := os.ReadFile(filepath.Join(periscopeDir, "config.toml"))
+	if err != nil {
+		return ""
+	}
+	var cfg AppConfig
+	if _, err := toml.Decode(string(data), &cfg); err != nil {
+		return ""
+	}
+	port := cfg.Server.Port
+	if port == 0 {
+		port = 8384
+	}
+	return fmt.Sprintf("http://%s:%d", probeHost(cfg.Server.Host), port)
 }

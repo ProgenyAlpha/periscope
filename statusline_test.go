@@ -397,3 +397,65 @@ func TestStateDirDefaultWhenUnset(t *testing.T) {
 		t.Errorf("stateDir() = %q, want default %q", got, want)
 	}
 }
+
+// An OSC 8 hyperlink is zero-width: the URL is control data, not glyphs.
+// visibleLen only stripped SGR colour codes, so a link would have counted its
+// whole URL toward the width and wrecked the truncation loop.
+func TestVisibleLenIgnoresHyperlinks(t *testing.T) {
+	plain := " dash"
+	linked := osc8("http://100.115.109.120:8384", plain)
+
+	if got, want := visibleLen(linked), visibleLen(plain); got != want {
+		t.Errorf("visibleLen(linked) = %d, want %d (the URL must not count as width)", got, want)
+	}
+	if !strings.Contains(linked, "http://100.115.109.120:8384") {
+		t.Errorf("hyperlink lost its target: %q", linked)
+	}
+	// Colour codes must still be stripped.
+	if got := visibleLen("\x1b[31mabc\x1b[0m"); got != 3 {
+		t.Errorf("visibleLen with colour = %d, want 3", got)
+	}
+}
+
+func TestSegDashLinksToTheConfiguredDashboard(t *testing.T) {
+	theme := loadTerminalTheme("", "catppuccin-mocha")
+
+	seg := segDash("http://box:9999", theme)
+	if seg.empty {
+		t.Fatal("dash segment is empty, want a link")
+	}
+	if !strings.Contains(seg.text, "http://box:9999") {
+		t.Errorf("segment does not carry the configured URL: %q", seg.text)
+	}
+	if visibleLen(seg.text) > 8 {
+		t.Errorf("dash segment renders %d columns, want a compact label", visibleLen(seg.text))
+	}
+	// No URL configured: the segment disappears rather than linking nowhere.
+	if !segDash("", theme).empty {
+		t.Error("dash segment should be empty when no dashboard URL is known")
+	}
+}
+
+func TestResolveDashboardURL(t *testing.T) {
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(cfg, []byte("[server]\nhost = \"100.115.109.120\"\nport = 8384\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := resolveDashboardURL(dir), "http://100.115.109.120:8384"; got != want {
+		t.Errorf("resolveDashboardURL = %q, want %q", got, want)
+	}
+
+	// A wildcard bind is not a reachable address; fall back to localhost.
+	if err := os.WriteFile(cfg, []byte("[server]\nhost = \"0.0.0.0\"\nport = 9000\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := resolveDashboardURL(dir), "http://localhost:9000"; got != want {
+		t.Errorf("wildcard bind = %q, want %q", got, want)
+	}
+
+	// No config at all: no link rather than a wrong one.
+	if got := resolveDashboardURL(t.TempDir()); got != "" {
+		t.Errorf("missing config = %q, want empty", got)
+	}
+}
