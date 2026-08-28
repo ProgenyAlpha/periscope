@@ -3,8 +3,10 @@ package store
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -12,16 +14,30 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ProgenyAlpha/periscope/internal/analytics"
 	"github.com/ProgenyAlpha/periscope/internal/forecast"
+	"github.com/ProgenyAlpha/periscope/internal/logutil"
 
 	_ "modernc.org/sqlite"
 )
 
 // currentSchemaVersion is the latest migration version.
-const currentSchemaVersion = 3
+const currentSchemaVersion = 4
+
+// stampLayout is the one timestamp format periscope stores.
+//
+// SQLite renders CURRENT_TIMESTAMP with a space ("2026-01-01 00:00:00") while
+// every insert in this file writes RFC3339 with a T. ' ' sorts before 'T', so a
+// row that fell back to a column default would sort and filter wrongly against
+// the rest. Every write goes through this layout, and the reads that order or
+// filter on a timestamp normalise the separator so legacy rows still compare
+// correctly.
+const stampLayout = "2006-01-02T15:04:05Z"
+
+func nowStamp() string { return time.Now().UTC().Format(stampLayout) }
 
 // migrations is an ordered list of schema changes. Each entry runs once,
 // keyed by its index+1 as the version number.
@@ -69,23 +85,206 @@ var migrations = []string{
 CREATE UNIQUE INDEX IF NOT EXISTS idx_history_ts_data ON history(ts, data);
 DELETE FROM limit_history WHERE id NOT IN (SELECT MIN(id) FROM limit_history GROUP BY ts);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_limit_history_ts_unique ON limit_history(ts);`,
-	// v4, v5, ... append here
+	// v4: sidecar import guard.  Records the (mtime, size) the sessions row for
+	// each sidecar was built from, so an unchanged file is not re-read and
+	// re-written into the WAL on every poll cycle and every /api/data request.
+	// Purely additive — no existing row is touched, and an empty guard table
+	// simply means the first pass after upgrade re-imports everything once.
+	`CREATE TABLE IF NOT EXISTS sidecar_import (
+		id       TEXT PRIMARY KEY,
+		mtime_ns INTEGER NOT NULL,
+		size     INTEGER NOT NULL
+	);`,
+	// v5, v6, ... append here
 }
+
+const (
+	// walSizeLimit caps the on-disk WAL. SQLite's auto-checkpoint restarts the
+	// WAL but never shrinks the file, so without journal_size_limit the largest
+	// WAL the process ever needed becomes a permanent floor (6.6 MB here, for a
+	// 13 MB database). With the limit set, each checkpoint truncates back down.
+	walSizeLimit = 4 << 20 // 4 MiB
+
+	// walCheckpointThreshold is the size at which the maintenance pass forces a
+	// TRUNCATE checkpoint. It sits well above the 1000-page (~4 MB)
+	// auto-checkpoint threshold so the forced pass only runs when the automatic
+	// one is not keeping up — checkpointing more eagerly than that would fight
+	// normal operation for the writer lock.
+	walCheckpointThreshold = 8 << 20 // 8 MiB
+)
 
 // OpenDB opens and migrates the SQLite database.
 func OpenDB(path string) (*sql.DB, error) {
-	db, err := sql.Open("sqlite", path+"?_pragma=journal_mode(wal)&_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)")
+	// Create the file ourselves so it is 0600 from the first byte.  sql.Open is
+	// lazy and never touches the filesystem, so chmod-ing straight after it
+	// failed with ENOENT on every first run and SQLite went on to create the
+	// file at 0644 — a database that holds the VAPID private key.
+	if f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0600); err == nil {
+		f.Close()
+	} else {
+		slog.Warn("db pre-create failed", "path", path, "err", err)
+	}
+
+	dsn := path + "?" + strings.Join([]string{
+		"_pragma=journal_mode(wal)",
+		"_pragma=foreign_keys(1)",
+		"_pragma=busy_timeout(5000)",
+		// NORMAL is the documented pairing for WAL: durability is still
+		// crash-safe, only a power loss can cost the most recent commits, and
+		// it removes an fsync from every single write.
+		"_pragma=synchronous(normal)",
+		fmt.Sprintf("_pragma=journal_size_limit(%d)", walSizeLimit),
+	}, "&")
+
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, err
 	}
-	if err := os.Chmod(path, 0600); err != nil {
-		slog.Warn("db chmod failed", "err", err)
-	}
+
+	// SQLite allows exactly one writer.  Three goroutines write through this
+	// handle (the HTTP handler, the fsnotify flush and the poll ticker); with an
+	// unbounded pool they collided, and a SQLITE_BUSY past the 5s busy_timeout
+	// surfaced as a warning while the write was silently dropped.  One
+	// connection makes the collision structurally impossible instead of merely
+	// unlikely, at the cost of serialising reads — which are all small,
+	// in-process scans of a 13 MB database.
+	//
+	// Every read path in this package must therefore finish (or close) its
+	// cursor before issuing another statement; holding one open while writing
+	// would now deadlock rather than quietly open a second read snapshot.
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	// Never recycle: a fresh connection would come up without the pragmas above.
+	db.SetConnMaxLifetime(0)
+	db.SetConnMaxIdleTime(0)
+
 	if err := migrate(db); err != nil {
 		db.Close()
 		return nil, err
 	}
+
+	// Now that SQLite has materialised the database and its sidecars, tighten
+	// the permissions — this also repairs a database created by an older build.
+	for _, p := range []string{path, path + "-wal", path + "-shm"} {
+		if _, err := os.Stat(p); err != nil {
+			continue
+		}
+		if err := os.Chmod(p, 0600); err != nil {
+			slog.Warn("db chmod failed", "path", p, "err", err)
+		}
+	}
+
 	return db, nil
+}
+
+// CheckpointWAL forces a full checkpoint and truncates the WAL back to zero.
+//
+// Auto-checkpoints restart the WAL in place, so the file keeps whatever size it
+// once needed. TRUNCATE is the only mode that gives the space back.
+func CheckpointWAL(db *sql.DB) error {
+	var busy, logFrames, checkpointed int
+	err := db.QueryRow("PRAGMA wal_checkpoint(TRUNCATE)").Scan(&busy, &logFrames, &checkpointed)
+	if err != nil {
+		return fmt.Errorf("wal_checkpoint(TRUNCATE): %w", err)
+	}
+	if busy != 0 {
+		return fmt.Errorf("wal_checkpoint(TRUNCATE): blocked by a concurrent reader")
+	}
+	return nil
+}
+
+// CheckpointWALIfLarge truncates the WAL only when it has grown past
+// walCheckpointThreshold. Reports whether a checkpoint was run.
+func CheckpointWALIfLarge(db *sql.DB, dbPath string) (bool, error) {
+	fi, err := os.Stat(dbPath + "-wal")
+	if err != nil {
+		return false, nil // no WAL yet, nothing to do
+	}
+	if fi.Size() < walCheckpointThreshold {
+		return false, nil
+	}
+	if err := CheckpointWAL(db); err != nil {
+		return false, err
+	}
+	slog.Info("wal checkpointed", "wasBytes", fi.Size())
+	return true, nil
+}
+
+// HistoryRetention is how far back the history table is kept.
+//
+// history grew forever: SnapshotSidecarsToHistory appends a row per changed
+// session per poll cycle and nothing ever deleted from it, which is what pushed
+// the dashboard payload to a 5.5 MB maximum.
+//
+// A year is deliberately conservative rather than tight. The dashboard widgets
+// offer an "all" range that plots the whole table, so a short window would
+// silently amputate charts a user can actually see; a year bounds the growth
+// without touching any history a current install holds. Reducing the payload
+// further belongs in the API (serving a windowed slice), not in a delete.
+const HistoryRetention = 365 * 24 * time.Hour
+
+// CompactHistory deletes history rows older than retention and reports how many
+// were removed.
+//
+// The separator is normalised on read so a legacy row written by the
+// CURRENT_TIMESTAMP default ("2026-01-01 00:00:00") is compared correctly
+// against the RFC3339 stamps everything else writes.
+func CompactHistory(db *sql.DB, retention time.Duration) (int64, error) {
+	if retention <= 0 {
+		return 0, fmt.Errorf("compact history: retention must be positive")
+	}
+	cutoff := time.Now().UTC().Add(-retention).Format("2006-01-02T15:04:05")
+	res, err := db.Exec(
+		"DELETE FROM history WHERE replace(substr(ts, 1, 19), ' ', 'T') < ?", cutoff)
+	if err != nil {
+		return 0, fmt.Errorf("compact history: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("compact history: rows affected: %w", err)
+	}
+	if n > 0 {
+		slog.Info("history compacted", "deleted", n, "retentionDays", int(retention.Hours()/24))
+	}
+	return n, nil
+}
+
+// MaintenanceInterval is how often StartMaintenance wakes up.
+const MaintenanceInterval = 15 * time.Minute
+
+// StartMaintenance runs periodic database housekeeping until ctx is cancelled:
+// a size-gated WAL truncate every pass, and history retention plus limit
+// compaction once a day. It returns immediately; the work runs in a goroutine.
+func StartMaintenance(ctx context.Context, db *sql.DB, dbPath, dataDir string) {
+	go func() {
+		ticker := time.NewTicker(MaintenanceInterval)
+		defer ticker.Stop()
+		const passesPerDay = int(24 * time.Hour / MaintenanceInterval)
+		pass := 0
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+			pass++
+			if _, err := CheckpointWALIfLarge(db, dbPath); err != nil {
+				slog.Warn("maintenance: wal checkpoint failed", "err", err)
+			}
+			if pass%passesPerDay != 0 {
+				continue
+			}
+			if _, err := CompactHistory(db, HistoryRetention); err != nil {
+				slog.Error("maintenance: history compaction failed", "err", err)
+			}
+			if err := CompactLimitHistory(db, dataDir); err != nil {
+				slog.Error("maintenance: limit history compaction failed", "err", err)
+			}
+			if err := CheckpointWAL(db); err != nil {
+				slog.Warn("maintenance: post-compaction checkpoint failed", "err", err)
+			}
+		}
+	}()
 }
 
 func migrate(db *sql.DB) error {
@@ -96,15 +295,19 @@ func migrate(db *sql.DB) error {
 		return fmt.Errorf("create schema_version table: %w", err)
 	}
 
-	// Read current version
+	// Read current version.  schema_version has no primary key, so treating a
+	// scan failure as "no rows" inserted a second version-0 row and re-ran every
+	// migration from scratch — only a genuine ErrNoRows may bootstrap.
 	var version int
 	err := db.QueryRow("SELECT version FROM schema_version LIMIT 1").Scan(&version)
-	if err != nil {
-		// No row yet — insert initial
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
 		if _, err := db.Exec("INSERT INTO schema_version(version) VALUES(0)"); err != nil {
 			return fmt.Errorf("init schema_version: %w", err)
 		}
 		version = 0
+	case err != nil:
+		return fmt.Errorf("read schema_version: %w", err)
 	}
 
 	// Run pending migrations — each DDL + version bump in one transaction
@@ -144,16 +347,39 @@ var SidecarExclude = map[string]bool{
 func KVGet(db *sql.DB, key string) json.RawMessage {
 	var value string
 	err := db.QueryRow("SELECT value FROM kv WHERE key = ?", key).Scan(&value)
-	if err != nil || value == "" {
+	if err != nil {
+		if !errors.Is(err, sql.ErrNoRows) {
+			slog.Warn("KVGet failed", "key", key, "err", err)
+		}
+		return nil
+	}
+	// A truncated cache file stored verbatim would break the encode of the
+	// whole dashboard payload; nil renders as JSON null instead.
+	if value == "" || !json.Valid([]byte(value)) {
+		if value != "" {
+			slog.Warn("kv value is not valid JSON, omitting from payload", "key", key, "bytes", len(value))
+		}
 		return nil
 	}
 	return json.RawMessage(value)
 }
 
+// KVSet stores value under key, skipping the write when nothing changed.
+//
+// The cache keys are rewritten on every poll cycle and every /api/data request
+// with byte-identical payloads; each rewrite dirtied a page into the WAL for no
+// reason.  CURRENT_TIMESTAMP is replaced by an explicit RFC3339 stamp so the
+// column never mixes separators (see stampLayout).
 func KVSet(db *sql.DB, key, value string) {
-	_, err := db.Exec(`INSERT OR REPLACE INTO kv(key, value, updated_at) VALUES(?, ?, CURRENT_TIMESTAMP)`,
-		key, value)
-	if err != nil {
+	var existing string
+	switch err := db.QueryRow("SELECT value FROM kv WHERE key = ?", key).Scan(&existing); {
+	case err == nil && existing == value:
+		return
+	case err != nil && !errors.Is(err, sql.ErrNoRows):
+		slog.Warn("KVSet: could not read existing value", "key", key, "err", err)
+	}
+	if _, err := db.Exec(`INSERT OR REPLACE INTO kv(key, value, updated_at) VALUES(?, ?, ?)`,
+		key, value, nowStamp()); err != nil {
 		slog.Error("KVSet failed", "key", key, "err", err)
 	}
 }
@@ -315,15 +541,24 @@ func enrichMemberFromSidecar(db *sql.DB, m *TeamMember) {
 
 // --- Import Logic ---
 
+// ImportFileData refreshes every on-disk source into the database.
+//
+// Each source is attempted regardless of what the ones before it did, and every
+// failure is reported in the returned error. Bailing out on the first failure
+// meant a spell of truncated sidecars also stopped the usage history, the
+// rate-limit history and the session metadata from being imported — one broken
+// writer taking down four unrelated ones.
 func ImportFileData(db *sql.DB, dataDir, claudeDir string) error {
-	if err := ImportSidecars(db, dataDir); err != nil {
-		return fmt.Errorf("sidecars: %w", err)
+	var errs []error
+
+	if _, err := ImportSidecars(db, dataDir); err != nil {
+		errs = append(errs, fmt.Errorf("sidecars: %w", err))
 	}
 	if err := ImportJSONL(db, filepath.Join(dataDir, "usage-history.jsonl"), "history"); err != nil {
-		return fmt.Errorf("history: %w", err)
+		errs = append(errs, fmt.Errorf("history: %w", err))
 	}
 	if err := ImportJSONL(db, filepath.Join(dataDir, "limit-history.jsonl"), "limit_history"); err != nil {
-		return fmt.Errorf("limit history: %w", err)
+		errs = append(errs, fmt.Errorf("limit history: %w", err))
 	}
 	importKVFile(db, filepath.Join(dataDir, "usage-config.json"), "config:usage")
 	importKVFile(db, filepath.Join(dataDir, "usage-api-cache.json"), "cache:usage-api")
@@ -334,42 +569,230 @@ func ImportFileData(db *sql.DB, dataDir, claudeDir string) error {
 
 	importSessionMeta(db, claudeDir)
 	importTeamConfigs(db, claudeDir)
-	return nil
+	return errors.Join(errs...)
+}
+
+// SidecarStats summarises one ImportSidecars pass. The counts are what tell an
+// empty data directory apart from one where every single file failed.
+type SidecarStats struct {
+	Total     int // candidate sidecar files seen
+	Imported  int // rows written
+	Unchanged int // skipped: file has not changed since the last import
+	Invalid   int // skipped: content was not valid JSON
+	Failed    int // could not be read or written
+}
+
+// sessionIDRe is the allowlist for sidecar filenames.
+//
+// The old code was a denylist of four hardcoded names, so any other *.json that
+// happened to sit in the data directory became a sessions row keyed on its
+// filename and had its cumulative.cost summed into the phantom-usage baseline.
+// A sidecar is named after a session, and a session id is a UUID.
+var sessionIDRe = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+
+// importLatch collapses conditions that repeat at full poll cadence into one
+// log line per transition. A missing data directory used to emit one ERROR per
+// cycle — 6,671 copies of a single fact in one log file.
+var importLatch logutil.Latch
+
+// latchHeartbeat is how many suppressed repeats pass before a persistent
+// condition is re-stated, so an outage is quiet but never invisible.
+const latchHeartbeat = 500
+
+// logLatched emits msg on the transition into a condition and once every
+// latchHeartbeat repeats thereafter.
+func logLatched(key, cause, msg string, args ...any) {
+	first, n := importLatch.Fail(key, cause)
+	switch {
+	case first:
+		slog.Error(msg, args...)
+	case n%latchHeartbeat == 0:
+		slog.Error(msg+" (still failing)", append(args, "suppressedRepeats", n)...)
+	}
+}
+
+// clearLatched reports the recovery of a previously latched condition.
+func clearLatched(key, msg string, args ...any) {
+	if recovered, suppressed := importLatch.OK(key); recovered {
+		slog.Info(msg, append(args, "suppressedRepeats", suppressed)...)
+	}
+}
+
+type sidecarGuard struct {
+	mtimeNS int64
+	size    int64
+}
+
+// loadSidecarGuard reads the (mtime, size) each sessions row was built from.
+// The join makes the guard self-correcting: a guard row whose sessions row went
+// away does not suppress the re-import.
+func loadSidecarGuard(db *sql.DB) (map[string]sidecarGuard, error) {
+	rows, err := db.Query(`SELECT si.id, si.mtime_ns, si.size
+		FROM sidecar_import si JOIN sessions s ON s.id = si.id`)
+	if err != nil {
+		return nil, fmt.Errorf("read sidecar guard: %w", err)
+	}
+	defer rows.Close()
+	guard := make(map[string]sidecarGuard)
+	for rows.Next() {
+		var id string
+		var g sidecarGuard
+		if err := rows.Scan(&id, &g.mtimeNS, &g.size); err != nil {
+			return nil, fmt.Errorf("scan sidecar guard: %w", err)
+		}
+		guard[id] = g
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read sidecar guard: %w", err)
+	}
+	return guard, nil
+}
+
+// pendingSidecar is one validated sidecar waiting to be written.
+type pendingSidecar struct {
+	sid     string
+	data    string
+	stamp   string // mtime in stampLayout, stored as sessions.updated_at
+	mtimeNS int64
+	size    int64
+	stable  bool // the file did not change under us while we read it
 }
 
 // ImportSidecars imports session sidecar JSON files from the data directory.
-func ImportSidecars(db *sql.DB, dataDir string) error {
+//
+// It returns per-pass counts and a real error: an empty directory, a directory
+// where nothing changed, and a directory where every file failed used to be
+// indistinguishable — all three logged "count=0" at Info and returned nil,
+// which is how a five-day data outage stayed invisible.
+func ImportSidecars(db *sql.DB, dataDir string) (SidecarStats, error) {
+	var st SidecarStats
+
 	entries, err := os.ReadDir(dataDir)
 	if err != nil {
-		slog.Error("sidecars read dir failed", "err", err)
-		return err
+		logLatched("sidecars:readdir", err.Error(), "sidecars read dir failed", "dir", dataDir, "err", err)
+		return st, fmt.Errorf("read sidecar dir %s: %w", dataDir, err)
 	}
-	imported := 0
+	clearLatched("sidecars:readdir", "sidecars read dir recovered", "dir", dataDir)
+
+	guard, err := loadSidecarGuard(db)
+	if err != nil {
+		return st, err
+	}
+
+	var writes []pendingSidecar
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") || SidecarExclude[e.Name()] {
 			continue
 		}
 		sid := strings.TrimSuffix(e.Name(), ".json")
-		fpath := filepath.Join(dataDir, e.Name())
-		info, err := os.Stat(fpath)
-		if err != nil {
+		if !sessionIDRe.MatchString(sid) {
+			slog.Debug("sidecar skipped: filename is not a session id", "file", e.Name())
 			continue
 		}
+		st.Total++
+
+		fpath := filepath.Join(dataDir, e.Name())
+		before, err := os.Stat(fpath)
+		if err != nil {
+			st.Failed++
+			slog.Warn("sidecar stat failed", "file", e.Name(), "err", err)
+			continue
+		}
+		if g, ok := guard[sid]; ok && g.mtimeNS == before.ModTime().UnixNano() && g.size == before.Size() {
+			st.Unchanged++
+			continue
+		}
+
 		data, err := os.ReadFile(fpath)
 		if err != nil {
+			st.Failed++
 			slog.Warn("sidecar read failed", "file", e.Name(), "err", err)
 			continue
 		}
+
+		// Re-stat after the read. If the file moved under us the bytes we hold
+		// may be a half-written mix, so keep the older stamp and do not record a
+		// guard entry — the next pass re-reads it rather than trusting this one.
+		after, statErr := os.Stat(fpath)
+		stable := statErr == nil &&
+			after.ModTime().Equal(before.ModTime()) &&
+			after.Size() == before.Size()
+
 		data = StripBOM(data)
-		modTime := info.ModTime().UTC().Format("2006-01-02T15:04:05Z")
-		if _, err := db.Exec(`INSERT OR REPLACE INTO sessions(id, data, updated_at) VALUES(?, ?, ?)`,
-			sid, string(data), modTime); err != nil {
-			slog.Warn("sidecar insert failed", "sid", sid, "err", err)
-		} else {
-			imported++
+		if !json.Valid(data) {
+			// A truncated sidecar stored verbatim surfaces later as
+			// json.RawMessage("") and breaks the encode of the entire dashboard
+			// payload — after the 200 has already gone out, and for every
+			// websocket client at once. It never reaches the table.
+			st.Invalid++
+			slog.Warn("sidecar skipped: not valid JSON", "file", e.Name(), "bytes", len(data))
+			continue
+		}
+
+		writes = append(writes, pendingSidecar{
+			sid:     sid,
+			data:    string(data),
+			stamp:   before.ModTime().UTC().Format(stampLayout),
+			mtimeNS: before.ModTime().UnixNano(),
+			size:    before.Size(),
+			stable:  stable,
+		})
+	}
+
+	if len(writes) > 0 {
+		if err := writeSidecars(db, writes, &st); err != nil {
+			return st, err
 		}
 	}
-	slog.Info("sidecars imported", "count", imported)
+
+	switch {
+	case st.Total == 0:
+		slog.Debug("sidecars: no sidecar files present", "dir", dataDir)
+	case st.Imported == 0 && st.Unchanged == 0:
+		err := fmt.Errorf("all %d sidecars failed to import (%d unreadable, %d invalid)",
+			st.Total, st.Failed, st.Invalid)
+		logLatched("sidecars:total-failure", err.Error(), "sidecar import produced nothing",
+			"dir", dataDir, "total", st.Total, "failed", st.Failed, "invalid", st.Invalid)
+		return st, err
+	case st.Imported > 0 || st.Failed > 0 || st.Invalid > 0:
+		slog.Info("sidecars imported", "total", st.Total, "imported", st.Imported,
+			"unchanged", st.Unchanged, "invalid", st.Invalid, "failed", st.Failed)
+	default:
+		slog.Debug("sidecars unchanged", "total", st.Total)
+	}
+	clearLatched("sidecars:total-failure", "sidecar import recovered", "dir", dataDir)
+	return st, nil
+}
+
+// writeSidecars commits one batch of validated sidecars. Batching keeps a poll
+// cycle to a single transaction instead of one WAL-dirtying write per file.
+func writeSidecars(db *sql.DB, writes []pendingSidecar, st *SidecarStats) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("sidecar tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	for _, w := range writes {
+		if _, err := tx.Exec(`INSERT OR REPLACE INTO sessions(id, data, updated_at) VALUES(?, ?, ?)`,
+			w.sid, w.data, w.stamp); err != nil {
+			return fmt.Errorf("sidecar insert %s: %w", w.sid, err)
+		}
+		st.Imported++
+		if w.stable {
+			if _, err := tx.Exec(`INSERT OR REPLACE INTO sidecar_import(id, mtime_ns, size) VALUES(?, ?, ?)`,
+				w.sid, w.mtimeNS, w.size); err != nil {
+				return fmt.Errorf("sidecar guard update %s: %w", w.sid, err)
+			}
+		} else if _, err := tx.Exec(`DELETE FROM sidecar_import WHERE id = ?`, w.sid); err != nil {
+			return fmt.Errorf("sidecar guard clear %s: %w", w.sid, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		st.Imported = 0
+		return fmt.Errorf("sidecar commit: %w", err)
+	}
 	return nil
 }
 
@@ -406,6 +829,8 @@ func ImportJSONL(db *sql.DB, path, table string) error {
 	}
 	defer stmt.Close()
 
+	var inserted, malformed, undated, failed int
+	var firstErr error
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
 		if line == "" {
@@ -413,15 +838,48 @@ func ImportJSONL(db *sql.DB, path, table string) error {
 		}
 		var obj map[string]any
 		if err := json.Unmarshal([]byte(line), &obj); err != nil {
+			malformed++
 			continue
 		}
 		ts, _ := obj["ts"].(string)
 		if ts == "" {
-			ts = time.Now().UTC().Format(time.RFC3339)
+			// Substituting time.Now() here made the line unique against the
+			// (ts, data) index on every single import, so one undated line was
+			// re-inserted forever.  Both tables are pure time series — every
+			// consumer orders, filters or plots by ts — so a point with no
+			// timestamp is dropped and counted rather than given a fake one.
+			undated++
+			continue
 		}
-		stmt.Exec(ts, line)
+		res, err := stmt.Exec(ts, line)
+		if err != nil {
+			failed++
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		if n, err := res.RowsAffected(); err == nil && n > 0 {
+			inserted++
+		}
 	}
-	return tx.Commit()
+
+	if failed > 0 {
+		return fmt.Errorf("%s: %d line(s) failed to insert: %w", table, failed, firstErr)
+	}
+	if undated > 0 {
+		slog.Warn("jsonl lines skipped: no ts field", "table", table, "path", path, "count", undated)
+	}
+	if malformed > 0 {
+		slog.Warn("jsonl lines skipped: malformed", "table", table, "path", path, "count", malformed)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("%s: commit: %w", table, err)
+	}
+	if inserted > 0 {
+		slog.Debug("jsonl imported", "table", table, "inserted", inserted)
+	}
+	return nil
 }
 
 func importKVFile(db *sql.DB, path, key string) {
@@ -545,6 +1003,25 @@ func importSessionMeta(db *sql.DB, claudeDir string) {
 	}
 }
 
+// summaryCache remembers the last summary scanned out of each session JSONL,
+// keyed by path and validated against (mtime, size).
+//
+// scanSessionJSONLSummaries ran on every /api/data request and every watcher
+// flush, line-scanning every .jsonl in every project directory each time. The
+// transcripts are append-only and almost always unchanged between two polls a
+// second apart, so the guard turns that whole-corpus re-read into one stat per
+// file.
+var (
+	summaryCacheMu sync.Mutex
+	summaryCache   = map[string]summaryCacheEntry{}
+)
+
+type summaryCacheEntry struct {
+	mtimeNS int64
+	size    int64
+	summary string
+}
+
 func scanSessionJSONLSummaries(claudeDir string) map[string]string {
 	result := make(map[string]string)
 	projectsDir := filepath.Join(claudeDir, "projects")
@@ -552,6 +1029,15 @@ func scanSessionJSONLSummaries(claudeDir string) map[string]string {
 	if err != nil {
 		return result
 	}
+
+	summaryCacheMu.Lock()
+	prev := summaryCache
+	summaryCacheMu.Unlock()
+
+	// Rebuilt from what is on disk this pass, so entries for deleted
+	// transcripts do not accumulate.
+	next := make(map[string]summaryCacheEntry, len(prev))
+
 	for _, proj := range projEntries {
 		if !proj.IsDir() {
 			continue
@@ -570,11 +1056,28 @@ func scanSessionJSONLSummaries(claudeDir string) map[string]string {
 				continue
 			}
 			fpath := filepath.Join(projPath, f.Name())
-			if summary := scanFileForSummary(fpath); summary != "" {
-				result[sid] = summary
+			info, err := f.Info()
+			if err != nil {
+				continue
+			}
+			entry, cached := prev[fpath]
+			if !cached || entry.mtimeNS != info.ModTime().UnixNano() || entry.size != info.Size() {
+				entry = summaryCacheEntry{
+					mtimeNS: info.ModTime().UnixNano(),
+					size:    info.Size(),
+					summary: scanFileForSummary(fpath),
+				}
+			}
+			next[fpath] = entry
+			if entry.summary != "" {
+				result[sid] = entry.summary
 			}
 		}
 	}
+
+	summaryCacheMu.Lock()
+	summaryCache = next
+	summaryCacheMu.Unlock()
 	return result
 }
 
@@ -608,21 +1111,90 @@ func scanFileForSummary(path string) string {
 
 // --- Snapshot Helpers ---
 
-func SnapshotSidecarsToHistory(db *sql.DB, lastSessionSnapshot map[string]float64) {
-	rows, err := db.Query("SELECT id, data FROM sessions")
+// snapshotCostLookback is how many recent history rows are consulted to rebuild
+// the per-session dedup key after a restart.
+const snapshotCostLookback = 5000
+
+// loadRecentSnapshotCosts rebuilds the last-known cost per short session id
+// from the history already in the table.
+//
+// The dedup key lived only in memory, so every restart re-emitted one duplicate
+// snapshot row per session. history rows carry the 8-character short id, which
+// is what the caller's map is keyed against here.
+func loadRecentSnapshotCosts(db *sql.DB) (map[string]float64, error) {
+	rows, err := db.Query(
+		"SELECT data FROM history ORDER BY id DESC LIMIT ?", snapshotCostLookback)
 	if err != nil {
-		return
+		return nil, fmt.Errorf("seed snapshot costs: %w", err)
 	}
 	defer rows.Close()
 
-	now := time.Now().UTC().Format("2006-01-02T15:04:05Z")
-	snapshotted := 0
-
+	costs := make(map[string]float64)
 	for rows.Next() {
-		var sid, raw string
-		if rows.Scan(&sid, &raw) != nil {
+		var raw string
+		if err := rows.Scan(&raw); err != nil {
+			return nil, fmt.Errorf("seed snapshot costs: %w", err)
+		}
+		var e struct {
+			Sid  string  `json:"sid"`
+			Cost float64 `json:"cost"`
+		}
+		if json.Unmarshal([]byte(raw), &e) != nil || e.Sid == "" {
 			continue
 		}
+		// Rows arrive newest first; the first sighting wins.
+		if _, seen := costs[e.Sid]; !seen {
+			costs[e.Sid] = e.Cost
+		}
+	}
+	return costs, rows.Err()
+}
+
+// SnapshotSidecarsToHistory appends a history point for every session whose
+// cumulative cost has moved since the last snapshot.
+//
+// The read is fully drained and the cursor closed before anything is written.
+// The previous version ran an INSERT from inside the rows.Next() loop, so a
+// second pooled connection appended WAL frames while the first connection's
+// read snapshot was still open — pinning the WAL against checkpointing, and
+// deadlocking outright once the pool is limited to a single connection.
+func SnapshotSidecarsToHistory(db *sql.DB, lastSessionSnapshot map[string]float64) error {
+	type sessionRow struct{ sid, raw string }
+
+	rows, err := db.Query("SELECT id, data FROM sessions")
+	if err != nil {
+		return fmt.Errorf("snapshot: read sessions: %w", err)
+	}
+	var sessions []sessionRow
+	for rows.Next() {
+		var r sessionRow
+		if err := rows.Scan(&r.sid, &r.raw); err != nil {
+			rows.Close()
+			return fmt.Errorf("snapshot: scan session: %w", err)
+		}
+		sessions = append(sessions, r)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("snapshot: read sessions: %w", err)
+	}
+	rows.Close()
+
+	// An empty map means this process has not snapshotted yet — rebuild the
+	// dedup key from history so a restart does not re-emit every session.
+	seed := map[string]float64{}
+	if len(lastSessionSnapshot) == 0 {
+		seed, err = loadRecentSnapshotCosts(db)
+		if err != nil {
+			slog.Warn("snapshot: could not seed dedup key from history", "err", err)
+			seed = map[string]float64{}
+		}
+	}
+
+	now := nowStamp()
+	var pending []string
+
+	for _, r := range sessions {
 		var sc struct {
 			Cumulative *struct {
 				Cost       float64 `json:"cost"`
@@ -635,21 +1207,26 @@ func SnapshotSidecarsToHistory(db *sql.DB, lastSessionSnapshot map[string]float6
 				ChatCalls  int     `json:"chat_calls"`
 			} `json:"cumulative"`
 		}
-		if json.Unmarshal([]byte(raw), &sc) != nil || sc.Cumulative == nil {
+		if json.Unmarshal([]byte(r.raw), &sc) != nil || sc.Cumulative == nil {
 			continue
 		}
 		c := sc.Cumulative
 		cost := math.Round(c.Cost*100) / 100
 
-		if prev, ok := lastSessionSnapshot[sid]; ok && prev == cost {
-			continue
-		}
-		lastSessionSnapshot[sid] = cost
-
-		shortSid := sid
+		shortSid := r.sid
 		if len(shortSid) > 8 {
 			shortSid = shortSid[:8]
 		}
+
+		if prev, ok := lastSessionSnapshot[r.sid]; ok && prev == cost {
+			continue
+		}
+		if prev, ok := seed[shortSid]; ok && prev == cost {
+			lastSessionSnapshot[r.sid] = cost
+			continue
+		}
+		lastSessionSnapshot[r.sid] = cost
+
 		entry := map[string]any{
 			"ts":    now,
 			"sid":   shortSid,
@@ -660,17 +1237,51 @@ func SnapshotSidecarsToHistory(db *sql.DB, lastSessionSnapshot map[string]float6
 			"cost":  cost,
 			"turns": c.AgentCalls + c.ToolCalls + c.ChatCalls,
 		}
-		data, _ := json.Marshal(entry)
-		if _, err := db.Exec("INSERT INTO history(ts, data) VALUES(?, ?)", now, string(data)); err == nil {
+		data, err := json.Marshal(entry)
+		if err != nil {
+			slog.Warn("snapshot: could not encode entry", "sid", shortSid, "err", err)
+			continue
+		}
+		pending = append(pending, string(data))
+	}
+
+	if len(pending) == 0 {
+		return nil
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("snapshot: begin: %w", err)
+	}
+	defer tx.Rollback()
+
+	// OR IGNORE, matching every other insert in this file: the unique (ts, data)
+	// index from migration v3 is the dedup of last resort, and a plain INSERT
+	// turned that into an error that the old code swallowed.
+	stmt, err := tx.Prepare("INSERT OR IGNORE INTO history(ts, data) VALUES(?, ?)")
+	if err != nil {
+		return fmt.Errorf("snapshot: prepare: %w", err)
+	}
+	defer stmt.Close()
+
+	snapshotted := 0
+	for _, data := range pending {
+		res, err := stmt.Exec(now, data)
+		if err != nil {
+			return fmt.Errorf("snapshot: insert: %w", err)
+		}
+		if n, err := res.RowsAffected(); err == nil && n > 0 {
 			snapshotted++
 		}
 	}
-	if err := rows.Err(); err != nil {
-		slog.Error("snapshot: rows error", "err", err)
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("snapshot: commit: %w", err)
 	}
+
 	if snapshotted > 0 {
 		slog.Info("sidecars snapshotted", "count", snapshotted)
 	}
+	return nil
 }
 
 // --- Dashboard Data ---
@@ -699,66 +1310,115 @@ type SidecarEntry struct {
 	UpdatedAt string          `json:"updated_at,omitempty"`
 }
 
+// scanLatch dedups the "row is not valid JSON" warnings, which would otherwise
+// repeat for the same poisoned row on every request.
+var scanLatch logutil.Latch
+
+// warnCorrupt logs a corrupt row once per (table, row) until it is fixed.
+func warnCorrupt(table, id string, n int) {
+	if first, _ := scanLatch.Fail("corrupt:"+table+":"+id, fmt.Sprint(n)); first {
+		slog.Warn("dropping row with invalid JSON from dashboard payload",
+			"table", table, "id", id, "bytes", n)
+	}
+}
+
+// querySidecars reads the sessions table.
+//
+// updated_at is normalised on read: a row that fell back to the
+// CURRENT_TIMESTAMP default renders with a space instead of a T, and ' ' sorts
+// before 'T', so unnormalised ordering would file such a row wrongly.
+func querySidecars(db *sql.DB) ([]SidecarEntry, error) {
+	rows, err := db.Query(`SELECT id, data, updated_at FROM sessions
+		ORDER BY replace(updated_at, ' ', 'T') DESC`)
+	if err != nil {
+		return nil, fmt.Errorf("sidecars query: %w", err)
+	}
+	defer rows.Close()
+
+	out := []SidecarEntry{}
+	for rows.Next() {
+		var id, data, updatedAt string
+		if err := rows.Scan(&id, &data, &updatedAt); err != nil {
+			return nil, fmt.Errorf("sidecars scan: %w", err)
+		}
+		// A single invalid row would otherwise reach json.RawMessage and break
+		// the encode of the whole payload — mid-body, after the 200 had gone
+		// out, and for every websocket client at once.
+		if !json.Valid([]byte(data)) {
+			warnCorrupt("sessions", id, len(data))
+			continue
+		}
+		out = append(out, SidecarEntry{
+			ID:        id,
+			Data:      json.RawMessage(data),
+			UpdatedAt: updatedAt,
+		})
+	}
+	return out, rows.Err()
+}
+
+// queryRawColumn reads one JSON column, dropping rows that would not encode.
+func queryRawColumn(db *sql.DB, table, query string) ([]json.RawMessage, error) {
+	rows, err := db.Query(query)
+	if err != nil {
+		return nil, fmt.Errorf("%s query: %w", table, err)
+	}
+	defer rows.Close()
+
+	out := []json.RawMessage{}
+	for rows.Next() {
+		var id int64
+		var data string
+		if err := rows.Scan(&id, &data); err != nil {
+			return nil, fmt.Errorf("%s scan: %w", table, err)
+		}
+		if !json.Valid([]byte(data)) {
+			warnCorrupt(table, fmt.Sprint(id), len(data))
+			continue
+		}
+		out = append(out, json.RawMessage(data))
+	}
+	return out, rows.Err()
+}
+
+// BuildDashboardData assembles the /api/data payload.
+//
+// Every query result is materialised and its cursor closed before the next
+// query runs — the old version deferred all three closes to function exit and
+// then called into CalcPhantomUsage, which opened three more, so a single
+// dashboard build held six read snapshots at once.
+//
+// A failed query is returned, not swallowed: the previous `if err == nil` with
+// no else rendered a locked database as HTTP 200 with empty arrays and no log
+// line at all.
 func BuildDashboardData(db *sql.DB, dataDir string) (*DashboardData, error) {
 	d := &DashboardData{
-		GeneratedAt: time.Now().Format(time.RFC3339),
-		Sessions:    []any{},
+		GeneratedAt:  time.Now().Format(time.RFC3339),
+		Sessions:     []any{},
+		Sidecars:     []SidecarEntry{},
+		History:      []json.RawMessage{},
+		LimitHistory: []json.RawMessage{},
 	}
 
-	// Sidecars
-	if rows, err := db.Query("SELECT id, data, updated_at FROM sessions ORDER BY updated_at DESC"); err == nil {
-		defer rows.Close()
-		for rows.Next() {
-			var id, data, updatedAt string
-			if rows.Scan(&id, &data, &updatedAt) == nil {
-				d.Sidecars = append(d.Sidecars, SidecarEntry{
-					ID:        id,
-					Data:      json.RawMessage(data),
-					UpdatedAt: updatedAt,
-				})
-			}
-		}
-		if err := rows.Err(); err != nil {
-			slog.Error("sidecars query error", "err", err)
-		}
+	sidecars, err := querySidecars(db)
+	if err != nil {
+		return nil, err
 	}
-	if d.Sidecars == nil {
-		d.Sidecars = []SidecarEntry{}
-	}
+	d.Sidecars = sidecars
 
-	// History
-	if rows, err := db.Query("SELECT data FROM history ORDER BY ts ASC"); err == nil {
-		defer rows.Close()
-		for rows.Next() {
-			var data string
-			if rows.Scan(&data) == nil {
-				d.History = append(d.History, json.RawMessage(data))
-			}
-		}
-		if err := rows.Err(); err != nil {
-			slog.Error("history query error", "err", err)
-		}
+	history, err := queryRawColumn(db, "history",
+		"SELECT id, data FROM history ORDER BY replace(ts, ' ', 'T') ASC")
+	if err != nil {
+		return nil, err
 	}
-	if d.History == nil {
-		d.History = []json.RawMessage{}
-	}
+	d.History = history
 
-	// Limit History
-	if rows, err := db.Query("SELECT ts, data FROM limit_history ORDER BY ts ASC"); err == nil {
-		defer rows.Close()
-		for rows.Next() {
-			var ts, data string
-			if rows.Scan(&ts, &data) == nil {
-				d.LimitHistory = append(d.LimitHistory, json.RawMessage(data))
-			}
-		}
-		if err := rows.Err(); err != nil {
-			slog.Error("limit_history query error", "err", err)
-		}
+	limitHistory, err := queryRawColumn(db, "limit_history",
+		"SELECT id, data FROM limit_history ORDER BY replace(ts, ' ', 'T') ASC")
+	if err != nil {
+		return nil, err
 	}
-	if d.LimitHistory == nil {
-		d.LimitHistory = []json.RawMessage{}
-	}
+	d.LimitHistory = limitHistory
 
 	// KV
 	d.UsageConfig = KVGet(db, "config:usage")
@@ -832,24 +1492,31 @@ func AppendLimitSnapshot(db *sql.DB, dataDir string, liveUsage json.RawMessage) 
 }
 
 // CompactLimitHistory applies tiered dedup: <24h keep all, 24h-7d keep 5min, 7d-30d keep 60min, 30d+ keep 4hr.
-func CompactLimitHistory(db *sql.DB, dataDir string) {
-	rows, err := db.Query("SELECT id, ts, data FROM limit_history ORDER BY ts ASC")
-	if err != nil {
-		return
-	}
-	defer rows.Close()
-
+//
+// The whole prune runs as one transaction with a rollback path. The old version
+// began a transaction with no `defer tx.Rollback()`, logged a failed delete and
+// fell straight through to Commit — committing a partial compaction — and the
+// commit-failure branch returned without rolling back either.
+func CompactLimitHistory(db *sql.DB, dataDir string) error {
 	type entry struct {
 		id   int64
 		ts   time.Time
 		data string
 	}
+
+	// Drain and close the cursor before any write: on a single-connection pool
+	// a write issued while this is open would deadlock.
+	rows, err := db.Query("SELECT id, ts, data FROM limit_history ORDER BY replace(ts, ' ', 'T') ASC")
+	if err != nil {
+		return fmt.Errorf("compact: read limit_history: %w", err)
+	}
 	var all []entry
 	for rows.Next() {
 		var e entry
 		var tsStr string
-		if rows.Scan(&e.id, &tsStr, &e.data) != nil {
-			continue
+		if err := rows.Scan(&e.id, &tsStr, &e.data); err != nil {
+			rows.Close()
+			return fmt.Errorf("compact: scan limit_history: %w", err)
 		}
 		if t, err := time.Parse(time.RFC3339, tsStr); err == nil {
 			e.ts = t
@@ -861,27 +1528,34 @@ func CompactLimitHistory(db *sql.DB, dataDir string) {
 		all = append(all, e)
 	}
 	if err := rows.Err(); err != nil {
-		slog.Error("compact: rows error", "err", err)
+		rows.Close()
+		return fmt.Errorf("compact: read limit_history: %w", err)
 	}
+	rows.Close()
 
 	if len(all) < 100 {
-		return
+		return nil
 	}
 
 	// Fix ts-less entries permanently
 	for _, e := range all {
-		if !strings.Contains(e.data[:min(len(e.data), 30)], `"ts"`) {
-			var m map[string]any
-			if json.Unmarshal([]byte(e.data), &m) == nil {
-				if _, ok := m["ts"]; !ok {
-					m["ts"] = e.ts.Format(time.RFC3339)
-					if patched, err := json.Marshal(m); err == nil {
-						if _, err := db.Exec("UPDATE limit_history SET data = ? WHERE id = ?", string(patched), e.id); err != nil {
-							slog.Warn("compact: ts patch failed", "id", e.id, "err", err)
-						}
-					}
-				}
-			}
+		if strings.Contains(e.data[:min(len(e.data), 30)], `"ts"`) {
+			continue
+		}
+		var m map[string]any
+		if json.Unmarshal([]byte(e.data), &m) != nil {
+			continue
+		}
+		if _, ok := m["ts"]; ok {
+			continue
+		}
+		m["ts"] = e.ts.Format(time.RFC3339)
+		patched, err := json.Marshal(m)
+		if err != nil {
+			continue
+		}
+		if _, err := db.Exec("UPDATE limit_history SET data = ? WHERE id = ?", string(patched), e.id); err != nil {
+			slog.Warn("compact: ts patch failed", "id", e.id, "err", err)
 		}
 	}
 
@@ -912,58 +1586,100 @@ func CompactLimitHistory(db *sql.DB, dataDir string) {
 
 	if len(deleteIDs) == 0 {
 		slog.Debug("compact: no entries pruned", "total", len(all))
-		return
+		return nil
 	}
 
-	tx, err := db.Begin()
-	if err != nil {
-		slog.Error("compact: transaction failed", "err", err)
-		return
-	}
-	for _, id := range deleteIDs {
-		if _, err := tx.Exec("DELETE FROM limit_history WHERE id = ?", id); err != nil {
-			slog.Warn("compact: delete failed", "id", id, "err", err)
-		}
-	}
-	if err := tx.Commit(); err != nil {
-		slog.Error("compact: commit failed", "err", err)
-		return
+	if err := deleteLimitHistory(db, deleteIDs); err != nil {
+		return err
 	}
 	slog.Info("compact: pruned entries", "pruned", len(deleteIDs), "total", len(all))
 
-	// Rewrite JSONL from surviving entries
-	surviving, err := db.Query("SELECT ts, data FROM limit_history ORDER BY ts ASC")
+	return rewriteLimitHistoryJSONL(db, dataDir)
+}
+
+// deleteLimitHistory removes the given ids in a single all-or-nothing
+// transaction, in chunks small enough for SQLite's parameter limit.
+func deleteLimitHistory(db *sql.DB, ids []int64) error {
+	tx, err := db.Begin()
 	if err != nil {
-		slog.Error("compact: surviving query failed", "err", err)
-		return
+		return fmt.Errorf("compact: begin: %w", err)
 	}
-	defer surviving.Close()
+	defer tx.Rollback()
+
+	const chunk = 500
+	for start := 0; start < len(ids); start += chunk {
+		end := min(start+chunk, len(ids))
+		batch := ids[start:end]
+		placeholders := strings.TrimSuffix(strings.Repeat("?,", len(batch)), ",")
+		args := make([]any, len(batch))
+		for i, id := range batch {
+			args[i] = id
+		}
+		if _, err := tx.Exec("DELETE FROM limit_history WHERE id IN ("+placeholders+")", args...); err != nil {
+			return fmt.Errorf("compact: delete: %w", err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("compact: commit: %w", err)
+	}
+	return nil
+}
+
+// rewriteLimitHistoryJSONL regenerates the on-disk JSONL from the surviving rows.
+func rewriteLimitHistoryJSONL(db *sql.DB, dataDir string) error {
+	rows, err := db.Query("SELECT ts, data FROM limit_history ORDER BY replace(ts, ' ', 'T') ASC")
+	if err != nil {
+		return fmt.Errorf("compact: surviving query: %w", err)
+	}
+	type row struct{ ts, data string }
+	var surviving []row
+	for rows.Next() {
+		var r row
+		if err := rows.Scan(&r.ts, &r.data); err != nil {
+			rows.Close()
+			return fmt.Errorf("compact: surviving scan: %w", err)
+		}
+		surviving = append(surviving, r)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("compact: surviving rows: %w", err)
+	}
+	rows.Close()
 
 	jsonlPath := filepath.Join(dataDir, "limit-history.jsonl")
 	f, err := os.Create(jsonlPath)
 	if err != nil {
-		slog.Error("compact: JSONL rewrite failed", "err", err)
-		return
+		return fmt.Errorf("compact: JSONL rewrite: %w", err)
 	}
-	defer f.Close()
-	for surviving.Next() {
-		var ts, data string
-		if surviving.Scan(&ts, &data) == nil {
-			if !strings.Contains(data[:min(len(data), 30)], `"ts"`) {
-				var m map[string]any
-				if json.Unmarshal([]byte(data), &m) == nil {
-					if _, ok := m["ts"]; !ok {
-						m["ts"] = ts
-						if patched, err := json.Marshal(m); err == nil {
-							data = string(patched)
-						}
+	closed := false
+	defer func() {
+		if !closed {
+			f.Close()
+		}
+	}()
+
+	for _, r := range surviving {
+		data := r.data
+		if !strings.Contains(data[:min(len(data), 30)], `"ts"`) {
+			var m map[string]any
+			if json.Unmarshal([]byte(data), &m) == nil {
+				if _, ok := m["ts"]; !ok {
+					m["ts"] = r.ts
+					if patched, err := json.Marshal(m); err == nil {
+						data = string(patched)
 					}
 				}
 			}
-			f.WriteString(data + "\n")
+		}
+		if _, err := f.WriteString(data + "\n"); err != nil {
+			return fmt.Errorf("compact: JSONL write: %w", err)
 		}
 	}
-	if err := surviving.Err(); err != nil {
-		slog.Error("compact: surviving rows error", "err", err)
+	closed = true
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("compact: JSONL close: %w", err)
 	}
+	return nil
 }

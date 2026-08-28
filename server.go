@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/subtle"
 	"encoding/json"
@@ -19,6 +20,7 @@ import (
 	"time"
 
 	"github.com/ProgenyAlpha/periscope/internal/anthropic"
+	"github.com/ProgenyAlpha/periscope/internal/logutil"
 	"github.com/ProgenyAlpha/periscope/internal/pricing"
 	"github.com/ProgenyAlpha/periscope/internal/store"
 	"github.com/gorilla/websocket"
@@ -511,19 +513,48 @@ func startServer(ctx context.Context, app *App) {
 				}
 			}
 
-			// Re-import new JSONL lines + sidecars written by hooks (always runs)
-			store.ImportJSONL(app.DB, filepath.Join(app.DataDir, "usage-history.jsonl"), "history")
-			store.ImportSidecars(app.DB, app.DataDir)
+			// Re-import new JSONL lines + sidecars written by hooks (always runs).
+			// These errors used to be discarded every cycle, which is how a
+			// five-day gap in the data went unnoticed. pollLatch keeps a
+			// persistent failure to one log line per transition instead of one
+			// per cycle.
+			if err := store.ImportJSONL(app.DB, filepath.Join(app.DataDir, "usage-history.jsonl"), "history"); err != nil {
+				logPollFailure("poll:import-jsonl", "usage history import failed", err)
+			} else {
+				logPollRecovery("poll:import-jsonl", "usage history import recovered")
+			}
+			if _, err := store.ImportSidecars(app.DB, app.DataDir); err != nil {
+				logPollFailure("poll:import-sidecars", "sidecar import failed", err)
+			} else {
+				logPollRecovery("poll:import-sidecars", "sidecar import recovered")
+			}
 
 			// Snapshot current sidecar states into history for continuous charting
 			lastSessionSnapshotMu.Lock()
-			store.SnapshotSidecarsToHistory(app.DB, lastSessionSnapshot)
+			err := store.SnapshotSidecarsToHistory(app.DB, lastSessionSnapshot)
 			lastSessionSnapshotMu.Unlock()
+			if err != nil {
+				logPollFailure("poll:snapshot", "sidecar snapshot failed", err)
+			} else {
+				logPollRecovery("poll:snapshot", "sidecar snapshot recovered")
+			}
 		}
 	}()
 
 	// Health watchdog: monitors DB health, sends push on degradation
 	go healthWatchdog(ctx, app)
+
+	// Periodic DB housekeeping: a size-gated WAL truncate (the WAL can only
+	// ratchet upward otherwise) plus daily history retention and limit-history
+	// compaction. Run one retention pass at startup so a long-running install
+	// does not have to wait a day for the first prune.
+	dbPath := filepath.Join(app.HomeDir, "periscope.db")
+	if n, err := store.CompactHistory(app.DB, store.HistoryRetention); err != nil {
+		slog.Error("startup history compaction failed", "err", err)
+	} else if n > 0 {
+		slog.Info("startup history compaction", "deleted", n)
+	}
+	store.StartMaintenance(ctx, app.DB, dbPath, app.DataDir)
 
 	addr := fmt.Sprintf("%s:%d", app.Config.Server.Host, app.Config.Server.Port)
 	setAllowedHosts(app.Config.Server.Host, app.Config.Server.Port, app.Config.Server.AllowedHosts...)
@@ -655,9 +686,19 @@ func handleData(app *App, w http.ResponseWriter, r *http.Request) {
 	// Side effect: refresh profile if stale
 	go refreshProfileIfStale(app)
 
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	if err := json.NewEncoder(w).Encode(data); err != nil {
+	// Encode into a buffer first. Streaming straight to the ResponseWriter meant
+	// a single unencodable row failed mid-body — after the 200 had already gone
+	// out — leaving the client with a truncated document and no way to tell.
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(data); err != nil {
 		slog.Error("data encode error", "err", err)
+		writeError(w, 500, "could not encode dashboard payload")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	if _, err := w.Write(buf.Bytes()); err != nil {
+		slog.Debug("data write error", "err", err)
 	}
 }
 
@@ -961,6 +1002,32 @@ var (
 	lastSessionSnapshot   = map[string]float64{}
 	lastSessionSnapshotMu sync.RWMutex
 )
+
+// pollLatch collapses a condition that repeats at full poll cadence into one
+// log line per transition. A missing data directory used to emit one WARN per
+// cycle here and one ERROR per cycle in the store — 2.26 MB of log for a single
+// unchanging fact.
+var pollLatch logutil.Latch
+
+// pollHeartbeat is how many suppressed repeats pass before a persistent
+// condition is re-stated, so a long outage stays quiet but never invisible.
+const pollHeartbeat = 500
+
+func logPollFailure(key, msg string, err error) {
+	first, n := pollLatch.Fail(key, err.Error())
+	switch {
+	case first:
+		slog.Warn(msg, "err", err)
+	case n%pollHeartbeat == 0:
+		slog.Warn(msg+" (still failing)", "suppressedRepeats", n, "err", err)
+	}
+}
+
+func logPollRecovery(key, msg string) {
+	if recovered, suppressed := pollLatch.OK(key); recovered {
+		slog.Info(msg, "suppressedRepeats", suppressed)
+	}
+}
 
 // adaptivePollInterval returns the next polling interval based on whether
 // utilization is climbing in the recent snapshot history.
@@ -1351,7 +1418,9 @@ func fetchAndCacheUsage(app *App) (json.RawMessage, error) {
 	// Cache to DB and file
 	store.KVSet(app.DB, "cache:usage-api", string(result))
 	if err := os.WriteFile(filepath.Join(app.DataDir, "usage-api-cache.json"), result, 0644); err != nil {
-		slog.Warn("usage cache write failed", "err", err)
+		logPollFailure("poll:usage-cache-write", "usage cache write failed", err)
+	} else {
+		logPollRecovery("poll:usage-cache-write", "usage cache write recovered")
 	}
 
 	return result, nil

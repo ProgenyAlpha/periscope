@@ -21,28 +21,11 @@ type PhantomData struct {
 // during CLI-active vs CLI-inactive periods over the last 7 days.
 func CalcPhantomUsage(db *sql.DB) *PhantomData {
 	sevenDaysCutoff := time.Now().Add(-7 * 24 * time.Hour).Format("2006-01-02T15:04:05Z")
-	var localTotal float64
-	rows, err := db.Query("SELECT data FROM sessions WHERE updated_at >= ?", sevenDaysCutoff)
+
+	localTotal, err := sumRecentSessionCost(db, sevenDaysCutoff)
 	if err != nil {
 		slog.Warn("phantom: sessions query failed", "err", err)
 		return &PhantomData{Source: "none", Confidence: "none"}
-	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var raw string
-		if rows.Scan(&raw) != nil {
-			continue
-		}
-		var sc struct {
-			Cumulative *struct {
-				Cost float64 `json:"cost"`
-			} `json:"cumulative"`
-		}
-		if json.Unmarshal([]byte(raw), &sc) != nil || sc.Cumulative == nil {
-			continue
-		}
-		localTotal += sc.Cumulative.Cost
 	}
 
 	if localTotal < 0.001 {
@@ -51,60 +34,23 @@ func CalcPhantomUsage(db *sql.DB) *PhantomData {
 
 	sevenDaysAgo := time.Now().Add(-7 * 24 * time.Hour).Format(time.RFC3339)
 
-	type snapshot struct {
-		ts        time.Time
-		pctWeekly float64
-	}
-	var snapshots []snapshot
-	lhRows, err := db.Query("SELECT ts, data FROM limit_history WHERE ts >= ? ORDER BY ts ASC", sevenDaysAgo)
+	snapshots, err := loadLimitSnapshots(db, sevenDaysAgo)
 	if err != nil {
+		slog.Warn("phantom: limit_history query failed", "err", err)
 		return &PhantomData{LocalSessionTotal: math.Round(localTotal*100) / 100, Source: "none", Confidence: "none"}
-	}
-	defer lhRows.Close()
-
-	for lhRows.Next() {
-		var tsStr, dataStr string
-		if lhRows.Scan(&tsStr, &dataStr) != nil {
-			continue
-		}
-		t, err := time.Parse(time.RFC3339Nano, tsStr)
-		if err != nil {
-			t, err = time.Parse(time.RFC3339, tsStr)
-			if err != nil {
-				continue
-			}
-		}
-		var d map[string]any
-		if json.Unmarshal([]byte(dataStr), &d) != nil {
-			continue
-		}
-		pctW, ok := d["pctWeekly"].(float64)
-		if !ok || pctW < 0 {
-			continue
-		}
-		snapshots = append(snapshots, snapshot{ts: t, pctWeekly: pctW})
 	}
 
 	if len(snapshots) < 2 {
 		return &PhantomData{LocalSessionTotal: math.Round(localTotal*100) / 100, Source: "none", Confidence: "none"}
 	}
 
-	// Build "active minutes" from history snapshots (last 7 days).
-	activeMinutes := map[string]bool{}
-	hRows, err := db.Query("SELECT ts FROM history WHERE ts >= ?", sevenDaysAgo)
-	if err == nil {
-		defer hRows.Close()
-		for hRows.Next() {
-			var ts string
-			if hRows.Scan(&ts) != nil {
-				continue
-			}
-			if t, err := time.Parse("2006-01-02T15:04:05Z", ts); err == nil {
-				activeMinutes[t.Truncate(time.Minute).Format(time.RFC3339)] = true
-			} else if t, err := time.Parse(time.RFC3339, ts); err == nil {
-				activeMinutes[t.UTC().Truncate(time.Minute).Format(time.RFC3339)] = true
-			}
-		}
+	activeMinutes, err := loadActiveMinutes(db, sevenDaysAgo)
+	if err != nil {
+		// Without the activity index every rate-limit delta would look like
+		// phantom usage, so report the local total and stop rather than invent
+		// a number from a truncated read.
+		slog.Warn("phantom: history query failed", "err", err)
+		return &PhantomData{LocalSessionTotal: math.Round(localTotal*100) / 100, Source: "none", Confidence: "none"}
 	}
 
 	// Walk consecutive snapshots. If pctWeekly grew and no CLI activity
@@ -159,4 +105,107 @@ func CalcPhantomUsage(db *sql.DB) *PhantomData {
 		Source:            "rate_delta",
 		Confidence:        "estimated",
 	}
+}
+
+// sumRecentSessionCost totals cumulative cost across sessions touched inside the
+// window.
+//
+// Each helper drains and closes its cursor before returning, so only one read
+// snapshot is ever open — CalcPhantomUsage used to keep three, on top of the
+// three its caller held. rows.Err() is checked in every loop: a truncated read
+// previously produced a silently understated cost that was then reported with
+// "estimated" confidence.
+//
+// The updated_at separator is normalised on read because a row that fell back
+// to the CURRENT_TIMESTAMP default renders with a space, and ' ' sorts before
+// 'T'.
+func sumRecentSessionCost(db *sql.DB, cutoff string) (float64, error) {
+	rows, err := db.Query(
+		"SELECT data FROM sessions WHERE replace(updated_at, ' ', 'T') >= ?", cutoff)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+
+	var total float64
+	for rows.Next() {
+		var raw string
+		if err := rows.Scan(&raw); err != nil {
+			return 0, err
+		}
+		var sc struct {
+			Cumulative *struct {
+				Cost float64 `json:"cost"`
+			} `json:"cumulative"`
+		}
+		if json.Unmarshal([]byte(raw), &sc) != nil || sc.Cumulative == nil {
+			continue
+		}
+		total += sc.Cumulative.Cost
+	}
+	return total, rows.Err()
+}
+
+type limitSnapshot struct {
+	ts        time.Time
+	pctWeekly float64
+}
+
+// loadLimitSnapshots reads the rate-limit series inside the window.
+func loadLimitSnapshots(db *sql.DB, cutoff string) ([]limitSnapshot, error) {
+	rows, err := db.Query(
+		"SELECT ts, data FROM limit_history WHERE replace(ts, ' ', 'T') >= ? ORDER BY replace(ts, ' ', 'T') ASC", cutoff)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []limitSnapshot
+	for rows.Next() {
+		var tsStr, dataStr string
+		if err := rows.Scan(&tsStr, &dataStr); err != nil {
+			return nil, err
+		}
+		t, err := time.Parse(time.RFC3339Nano, tsStr)
+		if err != nil {
+			t, err = time.Parse(time.RFC3339, tsStr)
+			if err != nil {
+				continue
+			}
+		}
+		var d map[string]any
+		if json.Unmarshal([]byte(dataStr), &d) != nil {
+			continue
+		}
+		pctW, ok := d["pctWeekly"].(float64)
+		if !ok || pctW < 0 {
+			continue
+		}
+		out = append(out, limitSnapshot{ts: t, pctWeekly: pctW})
+	}
+	return out, rows.Err()
+}
+
+// loadActiveMinutes indexes the minutes in which the CLI wrote a history point.
+func loadActiveMinutes(db *sql.DB, cutoff string) (map[string]bool, error) {
+	rows, err := db.Query(
+		"SELECT ts FROM history WHERE replace(ts, ' ', 'T') >= ?", cutoff)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	active := map[string]bool{}
+	for rows.Next() {
+		var ts string
+		if err := rows.Scan(&ts); err != nil {
+			return nil, err
+		}
+		if t, err := time.Parse("2006-01-02T15:04:05Z", ts); err == nil {
+			active[t.Truncate(time.Minute).Format(time.RFC3339)] = true
+		} else if t, err := time.Parse(time.RFC3339, ts); err == nil {
+			active[t.UTC().Truncate(time.Minute).Format(time.RFC3339)] = true
+		}
+	}
+	return active, rows.Err()
 }

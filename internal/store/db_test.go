@@ -120,11 +120,24 @@ func TestKV_MissingKey(t *testing.T) {
 
 func TestKV_Overwrite(t *testing.T) {
 	db := openTestDB(t)
-	KVSet(db, "key", "v1")
-	KVSet(db, "key", "v2")
+	// KVGet returns json.RawMessage and its values land directly in the
+	// dashboard payload, so it only hands back valid JSON — the values here are
+	// JSON strings rather than bare words for that reason.
+	KVSet(db, "key", `"v1"`)
+	KVSet(db, "key", `"v2"`)
 	got := KVGet(db, "key")
-	if string(got) != "v2" {
-		t.Fatalf("expected v2, got: %s", got)
+	if string(got) != `"v2"` {
+		t.Fatalf("expected \"v2\", got: %s", got)
+	}
+}
+
+func TestKV_InvalidJSONIsNotServed(t *testing.T) {
+	db := openTestDB(t)
+	// A truncated cache file that reached the table before validation existed
+	// must not break the encode of the whole dashboard payload.
+	mustExec(t, db, "INSERT INTO kv(key, value) VALUES('cache:profile', '{\"a\":')")
+	if got := KVGet(db, "cache:profile"); got != nil {
+		t.Fatalf("expected nil for invalid JSON, got: %s", got)
 	}
 }
 

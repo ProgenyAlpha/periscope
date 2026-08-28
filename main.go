@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -39,8 +38,9 @@ type App struct {
 }
 
 type AppConfig struct {
-	Server  ServerConfig `toml:"server"`
-	DataDir string       `toml:"data_dir"` // override claude data dir
+	Server  ServerConfig  `toml:"server"`
+	Logging LoggingConfig `toml:"logging"`
+	DataDir string        `toml:"data_dir"` // override claude data dir
 }
 
 type ServerConfig struct {
@@ -50,25 +50,10 @@ type ServerConfig struct {
 	Token        string   `toml:"token"`
 }
 
-func setupLogging(logPath string) {
-	// Rotate if log file exceeds 5MB
-	if stat, err := os.Stat(logPath); err == nil {
-		if stat.Size() > 5*1024*1024 {
-			os.Truncate(logPath, 0)
-		}
-	}
-
-	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-	if err != nil {
-		slog.Warn("cannot open log file", "path", logPath, "err", err)
-		return
-	}
-
-	multiWriter := io.MultiWriter(os.Stderr, logFile)
-	handler := slog.NewTextHandler(multiWriter, &slog.HandlerOptions{
-		Level: slog.LevelDebug,
-	})
-	slog.SetDefault(slog.New(handler))
+type LoggingConfig struct {
+	// Level is debug|info|warn|error. Empty (including config files written
+	// before this key existed) means info. PERISCOPE_LOG_LEVEL overrides it.
+	Level string `toml:"level"`
 }
 
 func main() {
@@ -193,8 +178,12 @@ func cmdServe() {
 
 	// Set up log file with rotation
 	logPath := filepath.Join(app.HomeDir, "periscope.log")
-	setupLogging(logPath)
-	slog.Info("logging initialized", "path", logPath)
+	logLevel := resolveLogLevel(app.Config.Logging.Level)
+	logWriter := setupLogging(logPath, logLevel)
+	if logWriter != nil {
+		defer logWriter.Close()
+	}
+	slog.Info("logging initialized", "path", logPath, "level", logLevel.String())
 
 	// Ensure initialized
 	if _, err := os.Stat(app.PluginDir); os.IsNotExist(err) {
@@ -237,6 +226,12 @@ func cmdServe() {
 	// Context for graceful shutdown
 	ctx, cancel := context.WithCancel(context.Background())
 	app.cancel = cancel
+
+	// Keep checking the log size for as long as we serve. Writes rotate on
+	// their own; this catches growth from anything else appending to the file.
+	if logWriter != nil {
+		go logWriter.watch(ctx, logRotateInterval)
+	}
 
 	// Catch OS signals
 	sigCh := make(chan os.Signal, 1)

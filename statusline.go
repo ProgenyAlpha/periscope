@@ -1062,17 +1062,6 @@ func visibleLen(s string) int {
 
 // --- Main Statusline Command ---
 
-// writeFileAtomic writes data to a temp file in path's directory, then
-// renames it into place — atomic on POSIX, so concurrent readers never see
-// a partial write.
-func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
-	tmp := fmt.Sprintf("%s.tmp.%d", path, os.Getpid())
-	if err := os.WriteFile(tmp, data, perm); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
-}
-
 func cmdStatusline() {
 	// Read JSON input from stdin
 	stdinData, err := io.ReadAll(os.Stdin)
@@ -1099,7 +1088,7 @@ func cmdStatusline() {
 				"level":     input.Effort.Level,
 				"updatedAt": time.Now().UTC().Format(time.RFC3339),
 			})
-			os.WriteFile(filepath.Join(dir, input.SessionID+".json"), payload, 0644)
+			writeFileAtomic(filepath.Join(dir, input.SessionID+".json"), payload, 0644)
 		}
 	}
 	// Write native rate-limit data from Claude Code into the polling cache,

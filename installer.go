@@ -141,6 +141,10 @@ func install(app *App) error {
 host = "localhost"
 port = %d
 
+[logging]
+# debug | info | warn | error  (override with PERISCOPE_LOG_LEVEL)
+level = "info"
+
 # Override Claude data directory (usually auto-detected)
 # data_dir = ""
 `, app.Config.Server.Port)
@@ -155,11 +159,11 @@ port = %d
 	// ── Step 4: Claude hooks ──
 	iStep(4, totalSteps, "Registering Claude hooks")
 	slog.Info("registering Claude hooks")
+	// registerHooks logs exactly what it wrote vs. what was already there;
+	// do not claim success here.
 	if err := registerHooks(app); err != nil {
-		slog.Warn("hook registration error", "err", err)
+		slog.Warn("hook registration failed", "err", err)
 		iWarn(fmt.Sprintf("Hook registration: %v", err))
-	} else {
-		slog.Info("hooks registered")
 	}
 
 	// ── Step 5: OAuth ──
@@ -297,12 +301,43 @@ nohup "%s" serve >/dev/null 2>&1 &
 	slog.Info("launcher script created", "path", launcherPath)
 	iOK(fmt.Sprintf("Created %s (auto-start on Claude session)", launcherName))
 
-	// Show hook commands for manual setup
-	iInfo("Claude hook commands (if not already configured):")
-	fmt.Printf("    %sSessionStart%s:       %s%s\n", cDim, cReset, launcherPath, cReset)
-	fmt.Printf("    %sStop%s:               %s hook stop\n", cDim, cReset, binary)
-	fmt.Printf("    %sUserPromptSubmit%s:   %s hook display\n", cDim, cReset, binary)
-	fmt.Printf("    %sStatusline%s:         %s statusline\n", cDim, cReset, binary)
+	// Merge the hooks into ~/.claude/settings.json. Without the Stop hook no
+	// sidecar files are ever written, so session ingestion silently dies —
+	// printing the commands and hoping the user pastes them is not enough.
+	settingsPath := filepath.Join(app.ClaudeDir, claudeSettingsName)
+	want := desiredClaudeSettings{
+		hooks: []claudeHookSpec{
+			{event: "SessionStart", command: launcherPath},
+			{event: "Stop", command: binary + " hook stop"},
+			{event: "UserPromptSubmit", command: binary + " hook display"},
+		},
+		statusLine: binary + " statusline",
+	}
+
+	res, err := mergeClaudeSettings(settingsPath, want)
+	if err != nil {
+		// Report what the user must add by hand, since we could not.
+		iWarn(fmt.Sprintf("Could not update %s: %v", settingsPath, err))
+		iInfo("Add these Claude hooks manually:")
+		for _, spec := range want.hooks {
+			fmt.Printf("    %s%s%s: %s\n", cDim, spec.event, cReset, spec.command)
+		}
+		fmt.Printf("    %sstatusLine%s: %s\n", cDim, cReset, want.statusLine)
+		return fmt.Errorf("update %s: %w", settingsPath, err)
+	}
+
+	if len(res.added) > 0 {
+		slog.Info("claude hooks written", "path", settingsPath, "added", res.added)
+		iOK(fmt.Sprintf("Registered in settings.json: %s", strings.Join(res.added, ", ")))
+	}
+	if len(res.existing) > 0 {
+		slog.Info("claude hooks already present", "path", settingsPath, "existing", res.existing)
+		iInfo(fmt.Sprintf("Already configured: %s", strings.Join(res.existing, ", ")))
+	}
+	for _, s := range res.skipped {
+		slog.Warn("claude setting owned by another tool, left alone", "path", settingsPath, "key", s)
+		iWarn(fmt.Sprintf("%s already points elsewhere — left it alone", s))
+	}
 
 	return nil
 }

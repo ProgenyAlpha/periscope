@@ -241,20 +241,18 @@ func generateSessionTitle(statePath string, project string, prompts []string) {
 		return
 	}
 
-	// Read-modify-write the sidecar
-	stateData, err := os.ReadFile(statePath)
-	if err != nil {
-		slog.Warn("title gen: cannot read sidecar", "err", err)
-		return
-	}
-	var state SidecarState
-	if json.Unmarshal(stateData, &state) != nil {
-		slog.Warn("title gen: cannot parse sidecar")
-		return
-	}
-	state.GeneratedTitle = title
-	data, _ := json.Marshal(state)
-	if err := os.WriteFile(statePath, data, 0644); err != nil {
+	// Read-modify-write the sidecar. This runs in the `periscope serve`
+	// process and races the Stop hook's own read-modify-write in the
+	// `periscope hook stop` CLI process, so it must go through the shared
+	// cross-process lock or one side's write is silently discarded.
+	if err := updateSidecarState(statePath, func(state *SidecarState, existed bool) error {
+		if !existed {
+			slog.Warn("title gen: sidecar missing or unparseable", "file", filepath.Base(statePath))
+			return errSidecarNoChange
+		}
+		state.GeneratedTitle = title
+		return nil
+	}); err != nil {
 		slog.Error("title gen: write sidecar failed", "err", err)
 		return
 	}
@@ -289,159 +287,173 @@ func hookStop() {
 		projectSlug = parentName
 	}
 
-	state := loadOrInitState(statePath)
+	// The Stop hook runs in the `periscope hook stop` CLI process while the
+	// server's titleBackfill goroutine mutates the same sidecar from a
+	// different process. Run the whole read -> parse -> mutate -> write cycle
+	// under the shared cross-process lock so neither side's update is lost,
+	// and let writeFileAtomic keep readers from ever seeing a partial file.
+	var state *SidecarState
+	aborted := false
+	writeErr := updateSidecarState(statePath, func(loaded *SidecarState, existed bool) error {
+		state = loaded
 
-	fi, err := os.Stat(payload.TranscriptPath)
-	if err != nil {
-		slog.Error("stop hook: cannot stat transcript", "path", payload.TranscriptPath, "err", err)
+		fi, err := os.Stat(payload.TranscriptPath)
+		if err != nil {
+			slog.Error("stop hook: cannot stat transcript", "path", payload.TranscriptPath, "err", err)
+			aborted = true
+			return errSidecarNoChange
+		}
+		if state.LastOffset > fi.Size() {
+			slog.Warn("stop hook: transcript compacted, resetting", "was", state.LastOffset, "now", fi.Size())
+			state.LastOffset = 0
+			state.Cumulative = newCumulative()
+		}
+
+		f, err := os.Open(payload.TranscriptPath)
+		if err != nil {
+			slog.Error("stop hook: cannot open transcript", "err", err)
+			aborted = true
+			return errSidecarNoChange
+		}
+		defer f.Close()
+
+		if _, err := f.Seek(state.LastOffset, io.SeekStart); err != nil {
+			slog.Warn("stop hook: seek failed, reading from start", "offset", state.LastOffset, "err", err)
+		}
+		scanner := bufio.NewScanner(f)
+		scanner.Buffer(make([]byte, 1024*1024), 10*1024*1024)
+
+		var entries []TranscriptEntry
+		for scanner.Scan() {
+			line := strings.TrimSpace(scanner.Text())
+			if line == "" {
+				continue
+			}
+			var entry TranscriptEntry
+			if json.Unmarshal([]byte(line), &entry) == nil {
+				entries = append(entries, entry)
+			}
+		}
+
+		newOffset, err := f.Seek(0, io.SeekCurrent)
+		if err != nil {
+			slog.Warn("stop hook: offset seek failed", "err", err)
+		}
+
+		slog.Info("stop hook: parsed entries", "count", len(entries))
+
+		turn := &LastTurn{Type: "chat"}
+
+		for _, entry := range entries {
+			if entry.Type != "assistant" || entry.Message == nil || entry.Message.Usage == nil {
+				continue
+			}
+
+			usage := entry.Message.Usage
+			model := entry.Message.Model
+			rates := pricing.GetRates(model)
+
+			cost, cacheWrite1h, cacheWrite5m := turnCost(usage, rates)
+
+			turnInfo := getTurnInfo(entry.Message.Content)
+
+			weighted := float64(usage.InputTokens)*pricing.TokenWeights.Input +
+				float64(usage.CacheReadInputTokens)*pricing.TokenWeights.CacheRead +
+				float64(usage.CacheCreationInputTokens)*pricing.TokenWeights.CacheWrite +
+				float64(usage.OutputTokens)*pricing.TokenWeights.Output
+
+			state.Cumulative.Input += usage.InputTokens
+			state.Cumulative.CacheRead += usage.CacheReadInputTokens
+			state.Cumulative.CacheWrite += usage.CacheCreationInputTokens
+			state.Cumulative.CacheWrite1h += cacheWrite1h
+			state.Cumulative.CacheWrite5m += cacheWrite5m
+			state.Cumulative.Output += usage.OutputTokens
+			state.Cumulative.Cost += cost
+
+			recordTurn(state.Cumulative, turnInfo, cost, weighted)
+
+			mShort := model
+			mShort = strings.TrimPrefix(mShort, "claude-")
+			if idx := strings.LastIndex(mShort, "-20"); idx > 0 && len(mShort)-idx <= 9 {
+				mShort = mShort[:idx]
+			}
+			if mShort != "" {
+				if state.Models == nil {
+					state.Models = map[string]int{}
+				}
+				state.Models[mShort]++
+			}
+
+			turn.Cost += cost
+			turn.Input += usage.InputTokens
+			turn.CacheRead += usage.CacheReadInputTokens
+			turn.CacheWrite += usage.CacheCreationInputTokens
+			turn.CacheWrite1h += cacheWrite1h
+			turn.CacheWrite5m += cacheWrite5m
+			turn.Output += usage.OutputTokens
+			turn.Tools = append(turn.Tools, turnInfo.tools...)
+			turn.Model = model
+			if turnInfo.turnType == "agent" {
+				turn.Type = "agent"
+			} else if turnInfo.turnType == "tool" && turn.Type != "agent" {
+				turn.Type = "tool"
+			}
+		}
+
+		state.LastOffset = newOffset
+		state.LastTurn = turn
+		if projectSlug != "" {
+			state.Project = projectSlug
+		}
+
+		if state.FirstPrompt == "" {
+			if raw := extractFirstPrompt(payload.TranscriptPath); raw != "" {
+				state.FirstPrompt = store.CleanFirstPrompt(raw)
+			}
+		}
+
+		// Effort level resolution order (most-current first):
+		//   1. ~/.periscope/effort/<session_id>.json — live value persisted by
+		//      cmdStatusline from Claude Code's statusline stdin payload
+		//   2. CLAUDE_CODE_EFFORT_LEVEL env var
+		//   3. ~/.claude/settings.json effortLevel (stale: gets cleared by the
+		//      slider UI per issue #30726)
+		state.EffortLevel = ""
+		effortPath := filepath.Join(home, ".periscope", "effort", payload.SessionID+".json")
+		if raw, err := os.ReadFile(effortPath); err == nil {
+			var live struct {
+				Level     string `json:"level"`
+				UpdatedAt string `json:"updatedAt"`
+			}
+			if json.Unmarshal(raw, &live) == nil && live.Level != "" {
+				state.EffortLevel = live.Level
+			}
+		}
+		if state.EffortLevel == "" {
+			if envEffort := os.Getenv("CLAUDE_CODE_EFFORT_LEVEL"); envEffort != "" {
+				state.EffortLevel = envEffort
+			}
+		}
+		if state.EffortLevel == "" {
+			settingsPath := filepath.Join(home, ".claude", "settings.json")
+			if raw, err := os.ReadFile(settingsPath); err == nil {
+				var settings struct {
+					EffortLevel string `json:"effortLevel"`
+				}
+				if json.Unmarshal(raw, &settings) == nil && settings.EffortLevel != "" {
+					state.EffortLevel = settings.EffortLevel
+				}
+			}
+		}
+
+		state.TranscriptPath = payload.TranscriptPath
+		return nil
+	})
+	if aborted {
 		return
 	}
-	if state.LastOffset > fi.Size() {
-		slog.Warn("stop hook: transcript compacted, resetting", "was", state.LastOffset, "now", fi.Size())
-		state.LastOffset = 0
-		state.Cumulative = newCumulative()
-	}
-
-	f, err := os.Open(payload.TranscriptPath)
-	if err != nil {
-		slog.Error("stop hook: cannot open transcript", "err", err)
-		return
-	}
-	defer f.Close()
-
-	if _, err := f.Seek(state.LastOffset, io.SeekStart); err != nil {
-		slog.Warn("stop hook: seek failed, reading from start", "offset", state.LastOffset, "err", err)
-	}
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 1024*1024), 10*1024*1024)
-
-	var entries []TranscriptEntry
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
-			continue
-		}
-		var entry TranscriptEntry
-		if json.Unmarshal([]byte(line), &entry) == nil {
-			entries = append(entries, entry)
-		}
-	}
-
-	newOffset, err := f.Seek(0, io.SeekCurrent)
-	if err != nil {
-		slog.Warn("stop hook: offset seek failed", "err", err)
-	}
-
-	slog.Info("stop hook: parsed entries", "count", len(entries))
-
-	turn := &LastTurn{Type: "chat"}
-
-	for _, entry := range entries {
-		if entry.Type != "assistant" || entry.Message == nil || entry.Message.Usage == nil {
-			continue
-		}
-
-		usage := entry.Message.Usage
-		model := entry.Message.Model
-		rates := pricing.GetRates(model)
-
-		cost, cacheWrite1h, cacheWrite5m := turnCost(usage, rates)
-
-		turnInfo := getTurnInfo(entry.Message.Content)
-
-		weighted := float64(usage.InputTokens)*pricing.TokenWeights.Input +
-			float64(usage.CacheReadInputTokens)*pricing.TokenWeights.CacheRead +
-			float64(usage.CacheCreationInputTokens)*pricing.TokenWeights.CacheWrite +
-			float64(usage.OutputTokens)*pricing.TokenWeights.Output
-
-		state.Cumulative.Input += usage.InputTokens
-		state.Cumulative.CacheRead += usage.CacheReadInputTokens
-		state.Cumulative.CacheWrite += usage.CacheCreationInputTokens
-		state.Cumulative.CacheWrite1h += cacheWrite1h
-		state.Cumulative.CacheWrite5m += cacheWrite5m
-		state.Cumulative.Output += usage.OutputTokens
-		state.Cumulative.Cost += cost
-
-		recordTurn(state.Cumulative, turnInfo, cost, weighted)
-
-		mShort := model
-		mShort = strings.TrimPrefix(mShort, "claude-")
-		if idx := strings.LastIndex(mShort, "-20"); idx > 0 && len(mShort)-idx <= 9 {
-			mShort = mShort[:idx]
-		}
-		if mShort != "" {
-			if state.Models == nil {
-				state.Models = map[string]int{}
-			}
-			state.Models[mShort]++
-		}
-
-		turn.Cost += cost
-		turn.Input += usage.InputTokens
-		turn.CacheRead += usage.CacheReadInputTokens
-		turn.CacheWrite += usage.CacheCreationInputTokens
-		turn.CacheWrite1h += cacheWrite1h
-		turn.CacheWrite5m += cacheWrite5m
-		turn.Output += usage.OutputTokens
-		turn.Tools = append(turn.Tools, turnInfo.tools...)
-		turn.Model = model
-		if turnInfo.turnType == "agent" {
-			turn.Type = "agent"
-		} else if turnInfo.turnType == "tool" && turn.Type != "agent" {
-			turn.Type = "tool"
-		}
-	}
-
-	state.LastOffset = newOffset
-	state.LastTurn = turn
-	if projectSlug != "" {
-		state.Project = projectSlug
-	}
-
-	if state.FirstPrompt == "" {
-		if raw := extractFirstPrompt(payload.TranscriptPath); raw != "" {
-			state.FirstPrompt = store.CleanFirstPrompt(raw)
-		}
-	}
-
-	// Effort level resolution order (most-current first):
-	//   1. ~/.periscope/effort/<session_id>.json — live value persisted by
-	//      cmdStatusline from Claude Code's statusline stdin payload
-	//   2. CLAUDE_CODE_EFFORT_LEVEL env var
-	//   3. ~/.claude/settings.json effortLevel (stale: gets cleared by the
-	//      slider UI per issue #30726)
-	state.EffortLevel = ""
-	effortPath := filepath.Join(home, ".periscope", "effort", payload.SessionID+".json")
-	if raw, err := os.ReadFile(effortPath); err == nil {
-		var live struct {
-			Level     string `json:"level"`
-			UpdatedAt string `json:"updatedAt"`
-		}
-		if json.Unmarshal(raw, &live) == nil && live.Level != "" {
-			state.EffortLevel = live.Level
-		}
-	}
-	if state.EffortLevel == "" {
-		if envEffort := os.Getenv("CLAUDE_CODE_EFFORT_LEVEL"); envEffort != "" {
-			state.EffortLevel = envEffort
-		}
-	}
-	if state.EffortLevel == "" {
-		settingsPath := filepath.Join(home, ".claude", "settings.json")
-		if raw, err := os.ReadFile(settingsPath); err == nil {
-			var settings struct {
-				EffortLevel string `json:"effortLevel"`
-			}
-			if json.Unmarshal(raw, &settings) == nil && settings.EffortLevel != "" {
-				state.EffortLevel = settings.EffortLevel
-			}
-		}
-	}
-
-	state.TranscriptPath = payload.TranscriptPath
-	data, _ := json.Marshal(state)
-	if err := os.WriteFile(statePath, data, 0644); err != nil {
-		slog.Error("stop hook: write sidecar failed", "path", statePath, "err", err)
+	if writeErr != nil {
+		slog.Error("stop hook: write sidecar failed", "path", statePath, "err", writeErr)
 	} else {
 		totalCalls := state.Cumulative.AgentCalls + state.Cumulative.ToolCalls + state.Cumulative.ChatCalls
 		slog.Info("stop hook: sidecar saved", "cost", state.Cumulative.Cost, "calls", totalCalls)
@@ -798,6 +810,15 @@ func readHookPayload() *HookPayload {
 }
 
 func loadOrInitState(path string) *SidecarState {
+	state, _ := loadSidecarState(path)
+	return state
+}
+
+// loadSidecarState reads and parses the sidecar. The bool reports whether a
+// sidecar was actually there and parsed — callers that must not resurrect a
+// deleted session (title generation) need to tell that apart from a fresh
+// zero-valued state.
+func loadSidecarState(path string) (*SidecarState, bool) {
 	if data, err := os.ReadFile(path); err == nil {
 		data = stripBOM(data)
 		var state SidecarState
@@ -808,13 +829,13 @@ func loadOrInitState(path string) *SidecarState {
 			if state.Cumulative.Tools == nil {
 				state.Cumulative.Tools = map[string]*ToolStat{}
 			}
-			return &state
+			return &state, true
 		}
 	}
 	return &SidecarState{
 		Cumulative: newCumulative(),
 		LastTurn:   &LastTurn{Type: "chat"},
-	}
+	}, false
 }
 
 func newCumulative() *Cumulative {
