@@ -875,7 +875,16 @@ func handleConfig(app *App, w http.ResponseWriter, r *http.Request) {
 		body = indented
 	}
 
+	// os.WriteFile does not create parent directories, and ~/.claude/statusline
+	// does not exist on a fresh install — the write failed with ENOENT and every
+	// toggle made in the settings widget was discarded, leaving the statusline on
+	// its compiled defaults.
 	configPath := filepath.Join(app.ClaudeDir, "statusline", "statusline-config.json")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0755); err != nil {
+		slog.Error("config dir error", "err", err)
+		writeError(w, 500, err.Error())
+		return
+	}
 	if err := os.WriteFile(configPath, body, 0644); err != nil {
 		slog.Error("config write error", "err", err)
 		writeError(w, 500, err.Error())
