@@ -94,6 +94,12 @@ func install(app *App) error {
 	slog.Info("creating directory structure")
 	dirs := []string{
 		app.HomeDir,
+		// Every telemetry writer targets this directory: the polling loop's
+		// usage and profile caches, the LiteLLM pricing cache, the
+		// limit-history JSONL the statusline forecast reads, and the file
+		// watcher. init never created it, so until the first Stop hook
+		// happened to mkdir it they all failed with ENOENT into a log line.
+		app.DataDir,
 		app.PluginDir,
 		filepath.Join(app.PluginDir, "themes"),
 		filepath.Join(app.PluginDir, "widgets"),
@@ -148,7 +154,9 @@ level = "info"
 # Override Claude data directory (usually auto-detected)
 # data_dir = ""
 `, app.Config.Server.Port)
-		os.WriteFile(configPath, []byte(defaultConfig), 0644)
+		if err := os.WriteFile(configPath, []byte(defaultConfig), 0644); err != nil {
+			return fmt.Errorf("write %s: %w", configPath, err)
+		}
 		slog.Info("config file created", "path", configPath)
 		iOK(fmt.Sprintf("Created config.toml (port %d)", app.Config.Server.Port))
 	} else {

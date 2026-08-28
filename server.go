@@ -885,14 +885,24 @@ func handleConfig(app *App, w http.ResponseWriter, r *http.Request) {
 		writeError(w, 500, err.Error())
 		return
 	}
-	if err := os.WriteFile(configPath, body, 0644); err != nil {
+	// statusline.go reads this file from a separate process on every render,
+	// so it is swapped in with a rename rather than truncated in place — a
+	// reader that caught the old truncate-then-write saw an empty document and
+	// silently fell back to compiled defaults for that frame.
+	if err := writeFileAtomic(configPath, body, 0644); err != nil {
 		slog.Error("config write error", "err", err)
 		writeError(w, 500, err.Error())
 		return
 	}
 
-	// Update DB
-	store.KVSet(app.DB, "config:statusline", string(body))
+	// Update DB. The statusline reads the file but the dashboard renders from
+	// this row, so a failure here leaves the two disagreeing — exactly the
+	// silent divergence that hid the discarded saves.
+	if err := store.KVSetErr(app.DB, "config:statusline", string(body)); err != nil {
+		slog.Error("config db write error", "err", err)
+		writeError(w, 500, "saved to disk but the dashboard copy could not be updated: "+err.Error())
+		return
+	}
 	slog.Info("config saved")
 
 	writeJSON(w, map[string]bool{"ok": true})
@@ -923,20 +933,25 @@ func handleStatuslineToggle(app *App, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Read current settings
-	data, err := os.ReadFile(settingsPath)
+	// Read current settings. A missing settings.json is not an error: on a
+	// fresh install ~/.claude/settings.json does not exist yet, and the toggle
+	// used to answer 500 forever rather than create it.
+	data, mode, err := readSettingsFile(settingsPath)
 	if err != nil {
 		slog.Error("statusline settings read error", "err", err)
 		writeError(w, 500, "cannot read settings.json: "+err.Error())
 		return
 	}
 
-	// Use ordered map to preserve key order
-	var settings map[string]json.RawMessage
-	if err := json.Unmarshal(data, &settings); err != nil {
-		slog.Error("statusline settings parse error", "err", err)
-		writeError(w, 500, "cannot parse settings.json: "+err.Error())
-		return
+	settings := map[string]json.RawMessage{}
+	if len(bytes.TrimSpace(data)) > 0 {
+		if err := json.Unmarshal(data, &settings); err != nil {
+			// Never replace a settings.json we cannot parse: it holds every
+			// hook periscope registered.
+			slog.Error("statusline settings parse error", "err", err)
+			writeError(w, 500, "cannot parse settings.json: "+err.Error())
+			return
+		}
 	}
 
 	// Parse request body for desired state
@@ -971,8 +986,10 @@ func handleStatuslineToggle(app *App, w http.ResponseWriter, r *http.Request) {
 		slog.Info("statusline disabled")
 	}
 
-	out, _ := json.MarshalIndent(settings, "", "  ")
-	if err := os.WriteFile(settingsPath, out, 0644); err != nil {
+	// writeSettingsFile creates the directory, preserves the file's mode and
+	// swaps the new copy in with a rename — a plain os.WriteFile truncated the
+	// user's settings.json in place, so a failure mid-write destroyed it.
+	if err := writeSettingsFile(settingsPath, settings, mode); err != nil {
 		slog.Error("statusline write error", "err", err)
 		writeError(w, 500, "cannot write settings.json: "+err.Error())
 		return
@@ -1061,9 +1078,13 @@ func handleLayout(app *App, w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		val := strings.TrimSpace(string(body))
+		// config:layout is stored nowhere but this row, so a failed write that
+		// still answered 200 lost the user's dashboard arrangement on reload.
 		if val == "null" || val == "" {
 			if _, err := app.DB.Exec("DELETE FROM kv WHERE key = ?", "config:layout"); err != nil {
 				slog.Error("layout delete failed", "err", err)
+				writeError(w, 500, "could not clear layout: "+err.Error())
+				return
 			}
 			slog.Info("layout cleared")
 		} else {
@@ -1073,7 +1094,11 @@ func handleLayout(app *App, w http.ResponseWriter, r *http.Request) {
 				writeError(w, 400, "invalid JSON")
 				return
 			}
-			store.KVSet(app.DB, "config:layout", val)
+			if err := store.KVSetErr(app.DB, "config:layout", val); err != nil {
+				slog.Error("layout save failed", "err", err)
+				writeError(w, 500, "could not save layout: "+err.Error())
+				return
+			}
 			slog.Info("layout saved")
 		}
 		writeJSON(w, map[string]bool{"ok": true})
@@ -1571,7 +1596,7 @@ func fetchAndCacheUsage(app *App) (json.RawMessage, error) {
 
 	// Cache to DB and file
 	store.KVSet(app.DB, "cache:usage-api", string(result))
-	if err := os.WriteFile(filepath.Join(app.DataDir, "usage-api-cache.json"), result, 0644); err != nil {
+	if err := writeDataCache(app.DataDir, "usage-api-cache.json", result, 0644); err != nil {
 		logPollFailure("poll:usage-cache-write", "usage cache write failed", err)
 	} else {
 		logPollRecovery("poll:usage-cache-write", "usage cache write recovered")
@@ -1646,7 +1671,7 @@ func fetchAndCacheProfile(app *App) {
 
 	result, _ := json.Marshal(profile)
 	store.KVSet(app.DB, "cache:profile", string(result))
-	if err := os.WriteFile(filepath.Join(app.DataDir, "profile-cache.json"), result, 0600); err != nil {
+	if err := writeDataCache(app.DataDir, "profile-cache.json", result, 0600); err != nil {
 		slog.Warn("profile cache write failed", "err", err)
 	}
 }
@@ -1962,6 +1987,22 @@ func writeMaybeGzip(w http.ResponseWriter, r *http.Request, body []byte) {
 }
 
 // --- Helpers ---
+
+// writeDataCache writes one of the polling caches under dir.
+//
+// Two hazards it exists to close. dir is ~/.claude/hooks/cost-state, which
+// `periscope init` did not create and which only comes into being the first
+// time a Stop hook fires — so a bare os.WriteFile failed with ENOENT on a
+// fresh install and the cache never appeared. And these files are read by
+// *other processes* (the statusline and the display hook both open
+// usage-api-cache.json), so a truncate-then-write can hand a reader a
+// half-written document; writeFileAtomic renames a complete file into place.
+func writeDataCache(dir, name string, data []byte, perm os.FileMode) error {
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("mkdir %s: %w", dir, err)
+	}
+	return writeFileAtomic(filepath.Join(dir, name), data, perm)
+}
 
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")

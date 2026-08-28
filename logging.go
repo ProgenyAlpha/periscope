@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -95,6 +96,15 @@ func newRotatingWriter(path string, maxSize int64) (*rotatingWriter, error) {
 }
 
 func (w *rotatingWriter) openLocked() error {
+	// cmdServe sets logging up before the first-run install(), so on a fresh
+	// machine ~/.periscope does not exist yet. O_CREATE does not create parent
+	// directories: the open failed, the process fell back to stderr for its
+	// whole lifetime, and periscope.log stayed empty.
+	if dir := filepath.Dir(w.path); dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return fmt.Errorf("create log directory %s: %w", dir, err)
+		}
+	}
 	f, err := os.OpenFile(w.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
 		return fmt.Errorf("open log file %s: %w", w.path, err)

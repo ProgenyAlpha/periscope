@@ -251,8 +251,16 @@ func TestSetupLoggingFallsBackWhenFileUnusable(t *testing.T) {
 	orig := slog.Default()
 	t.Cleanup(func() { slog.SetDefault(orig) })
 
-	// A path whose parent does not exist cannot be opened.
-	bad := filepath.Join(t.TempDir(), "missing", "periscope.log")
+	// A merely missing parent directory is no longer unusable — openLocked
+	// creates it, because cmdServe sets logging up before the first-run
+	// install() and ~/.periscope does not exist yet on a fresh machine. Use a
+	// path whose parent is a regular file, which no mkdir can rescue.
+	root := t.TempDir()
+	notADir := filepath.Join(root, "notadir")
+	if err := os.WriteFile(notADir, []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	bad := filepath.Join(notADir, "periscope.log")
 	if w := setupLogging(bad, slog.LevelInfo); w != nil {
 		w.Close()
 		t.Fatal("expected no writer when the log file cannot be opened")

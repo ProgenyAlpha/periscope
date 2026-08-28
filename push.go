@@ -36,6 +36,16 @@ func ensureVAPIDKeys(db *sql.DB) (pub, priv string, err error) {
 	return pub, priv, nil
 }
 
+// shortEndpoint truncates a push endpoint for logging. Slicing [:40] outright
+// panicked the whole request goroutine: /api/push/subscribe stores any
+// non-empty endpoint, so a one-character one reached this log line.
+func shortEndpoint(endpoint string) string {
+	if len(endpoint) > 40 {
+		return endpoint[:40]
+	}
+	return endpoint
+}
+
 // sendPushNotification sends a push notification to all subscribers.
 func sendPushNotification(db *sql.DB, title, body string) error {
 	pub, priv, err := ensureVAPIDKeys(db)
@@ -71,14 +81,16 @@ func sendPushNotification(db *sql.DB, title, body string) error {
 			HTTPClient:      &http.Client{Timeout: 10 * time.Second},
 		})
 		if err != nil {
-			slog.Warn("push send failed", "endpoint", sub.Endpoint[:40], "err", err)
+			slog.Warn("push send failed", "endpoint", shortEndpoint(sub.Endpoint), "err", err)
 			failed++
 			continue
 		}
 		resp.Body.Close()
 		if resp.StatusCode == http.StatusGone {
-			store.PushUnsubscribe(db, sub.Endpoint)
-			slog.Info("pruned stale push endpoint", "endpoint", sub.Endpoint[:40])
+			if err := store.PushUnsubscribe(db, sub.Endpoint); err != nil {
+				slog.Error("could not prune stale push endpoint", "endpoint", shortEndpoint(sub.Endpoint), "err", err)
+			}
+			slog.Info("pruned stale push endpoint", "endpoint", shortEndpoint(sub.Endpoint))
 			failed++
 		} else {
 			sent++

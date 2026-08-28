@@ -373,17 +373,27 @@ func KVGet(db *sql.DB, key string) json.RawMessage {
 // reason.  CURRENT_TIMESTAMP is replaced by an explicit RFC3339 stamp so the
 // column never mixes separators (see stampLayout).
 func KVSet(db *sql.DB, key, value string) {
+	if err := KVSetErr(db, key, value); err != nil {
+		slog.Error("KVSet failed", "key", key, "err", err)
+	}
+}
+
+// KVSetErr is KVSet for callers that can act on a failure. A handler that
+// persists only into kv (the dashboard layout is stored nowhere else) must not
+// answer 200 when the row never landed.
+func KVSetErr(db *sql.DB, key, value string) error {
 	var existing string
 	switch err := db.QueryRow("SELECT value FROM kv WHERE key = ?", key).Scan(&existing); {
 	case err == nil && existing == value:
-		return
+		return nil
 	case err != nil && !errors.Is(err, sql.ErrNoRows):
 		slog.Warn("KVSet: could not read existing value", "key", key, "err", err)
 	}
 	if _, err := db.Exec(`INSERT OR REPLACE INTO kv(key, value, updated_at) VALUES(?, ?, ?)`,
 		key, value, nowStamp()); err != nil {
-		slog.Error("KVSet failed", "key", key, "err", err)
+		return err
 	}
+	return nil
 }
 
 // --- Push Subscription Helpers ---
@@ -1509,12 +1519,30 @@ func AppendLimitSnapshot(db *sql.DB, dataDir string, liveUsage json.RawMessage) 
 	}
 	slog.Info("limit snapshot written", "pct5hr", current["pct5hr"], "pctWeekly", current["pctWeekly"])
 
+	// The JSONL mirror is what internal/forecast reads and what ImportFileData
+	// replays into a fresh DB. dataDir may not exist yet, and the open failure
+	// used to be discarded without so much as a log line.
+	if err := appendLimitHistoryLine(dataDir, dataWithTS); err != nil {
+		slog.Error("limit snapshot JSONL append failed", "dir", dataDir, "err", err)
+	}
+}
+
+// appendLimitHistoryLine appends one snapshot to limit-history.jsonl, creating
+// the data directory if it is missing.
+func appendLimitHistoryLine(dataDir string, line []byte) error {
+	if err := os.MkdirAll(dataDir, 0755); err != nil {
+		return fmt.Errorf("mkdir %s: %w", dataDir, err)
+	}
 	f, err := os.OpenFile(filepath.Join(dataDir, "limit-history.jsonl"),
 		os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err == nil {
-		f.Write(append(dataWithTS, '\n'))
-		f.Close()
+	if err != nil {
+		return err
 	}
+	if _, err := f.Write(append(line, '\n')); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
 }
 
 // Tiered rollup thresholds for limit_history.
@@ -1813,18 +1841,12 @@ func rewriteLimitHistoryJSONL(db *sql.DB, dataDir string) error {
 	}
 	rows.Close()
 
-	jsonlPath := filepath.Join(dataDir, "limit-history.jsonl")
-	f, err := os.Create(jsonlPath)
-	if err != nil {
-		return fmt.Errorf("compact: JSONL rewrite: %w", err)
-	}
-	closed := false
-	defer func() {
-		if !closed {
-			f.Close()
-		}
-	}()
-
+	// Build the whole file before touching the live one. os.Create truncated
+	// limit-history.jsonl in place, and `periscope serve` runs this at startup
+	// while the statusline process is reading the same file — so a reader
+	// could see an empty or half-written history, and a failure part-way
+	// through destroyed it outright.
+	var buf bytes.Buffer
 	for _, r := range surviving {
 		data := r.data
 		if !strings.Contains(data[:min(len(data), 30)], `"ts"`) {
@@ -1838,13 +1860,63 @@ func rewriteLimitHistoryJSONL(db *sql.DB, dataDir string) error {
 				}
 			}
 		}
-		if _, err := f.WriteString(data + "\n"); err != nil {
-			return fmt.Errorf("compact: JSONL write: %w", err)
+		buf.WriteString(data)
+		buf.WriteByte('\n')
+	}
+
+	if err := writeFileAtomic(filepath.Join(dataDir, "limit-history.jsonl"), buf.Bytes()); err != nil {
+		return fmt.Errorf("compact: JSONL rewrite: %w", err)
+	}
+	return nil
+}
+
+// writeFileAtomic writes data to a uniquely named temp file in path's
+// directory, fsyncs it and renames it into place, so a concurrent reader sees
+// either the old file or the new one and never a partial one. It creates the
+// directory if it is missing and preserves an existing file's mode.
+//
+// This mirrors writeFileAtomic in the root package, which internal/store
+// cannot import. The temp name keeps its leading dot and does not end in
+// .json or .jsonl, so the directory scans that build the dashboard payload
+// skip it.
+func writeFileAtomic(path string, data []byte) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("mkdir %s: %w", dir, err)
+	}
+	perm := os.FileMode(0644)
+	if fi, err := os.Stat(path); err == nil && fi.Mode().IsRegular() {
+		perm = fi.Mode().Perm()
+	}
+
+	f, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	defer func() {
+		if tmp != "" {
+			os.Remove(tmp)
 		}
+	}()
+
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return err
 	}
-	closed = true
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return err
+	}
 	if err := f.Close(); err != nil {
-		return fmt.Errorf("compact: JSONL close: %w", err)
+		return err
 	}
+	if err := os.Chmod(tmp, perm); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return err
+	}
+	tmp = ""
 	return nil
 }

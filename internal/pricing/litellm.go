@@ -2,7 +2,9 @@ package pricing
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -73,11 +75,61 @@ func FetchLiteLLMPricing(dataDir string) (json.RawMessage, error) {
 	}
 
 	data, _ := json.Marshal(result)
-	cache := map[string]any{"fetched_at": time.Now().Unix(), "data": result}
-	cacheData, _ := json.Marshal(cache)
-	os.WriteFile(cachePath, cacheData, 0644) // non-fatal: data still returned
+	// Non-fatal: the caller still gets the freshly fetched data. But it was
+	// silently non-functional too — dataDir may not exist on a fresh install,
+	// so the cache never landed and every call re-fetched from GitHub.
+	if err := writePricingCache(dataDir, result); err != nil {
+		slog.Warn("pricing cache write failed", "dir", dataDir, "err", err)
+	}
 
 	return data, nil
+}
+
+// writePricingCache stores the 24h model-rate cache. It creates the data
+// directory if it is missing and swaps the file in with a rename, because the
+// statusline reads it (LoadOverlay) from a different process.
+func writePricingCache(dataDir string, models map[string]any) error {
+	if err := os.MkdirAll(dataDir, 0755); err != nil {
+		return fmt.Errorf("mkdir %s: %w", dataDir, err)
+	}
+	cacheData, err := json.Marshal(map[string]any{
+		"fetched_at": time.Now().Unix(),
+		"data":       models,
+	})
+	if err != nil {
+		return err
+	}
+
+	path := filepath.Join(dataDir, "litellm-pricing-cache.json")
+	f, err := os.CreateTemp(dataDir, ".litellm-pricing-cache.tmp")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	defer func() {
+		if tmp != "" {
+			os.Remove(tmp)
+		}
+	}()
+	if _, err := f.Write(cacheData); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmp, 0644); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return err
+	}
+	tmp = ""
+	return nil
 }
 
 // LoadOverlay reads the LiteLLM pricing cache file from dataDir and returns
