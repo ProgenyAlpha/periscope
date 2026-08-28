@@ -427,7 +427,7 @@ func TestSegDashLinksToTheConfiguredDashboard(t *testing.T) {
 	if !strings.Contains(seg.text, "http://box:9999") {
 		t.Errorf("segment does not carry the configured URL: %q", seg.text)
 	}
-	if visibleLen(seg.text) > 8 {
+	if visibleLen(seg.text) > 13 {
 		t.Errorf("dash segment renders %d columns, want a compact label", visibleLen(seg.text))
 	}
 	// No URL configured: the segment disappears rather than linking nowhere.
