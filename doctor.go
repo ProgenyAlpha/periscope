@@ -16,6 +16,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ProgenyAlpha/periscope/internal/store"
+
 	_ "modernc.org/sqlite"
 )
 
@@ -87,12 +89,13 @@ const (
 
 	// diskWarnPercent catches a large disk that is nonetheless nearly full.
 	diskWarnPercent = 5
-
-	// expectedSchemaVersion tracks currentSchemaVersion in
-	// internal/store/db.go, which is unexported. If a migration is added there,
-	// bump this too.
-	expectedSchemaVersion = 4
 )
+
+// expectedSchemaVersion is the migration version this binary expects. It reads
+// the value out of internal/store rather than duplicating the literal, so
+// adding a migration can no longer leave doctor silently checking against a
+// stale number.
+var expectedSchemaVersion = store.CurrentSchemaVersion()
 
 // Check names. Constants so the printer, the tests and the summary cannot drift.
 const (

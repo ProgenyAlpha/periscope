@@ -148,24 +148,21 @@ Periscope.registerWidget({
     el.querySelector('#ab-total').textContent = fmtN(total);
     el.querySelector('#ab-api-sub').textContent = 'A:' + agents + ' T:' + tools + ' C:' + chats;
 
-    // Peak hour
-    let peakHour = '--';
-    if (data.history && data.history.length > 0) {
-      const hourBuckets = new Array(24).fill(0);
-      for (const h of data.history) hourBuckets[new Date(h.ts).getHours()]++;
-      const maxIdx = hourBuckets.indexOf(Math.max(...hourBuckets));
-      peakHour = String(maxIdx).padStart(2,'0') + ':00';
-    }
-    el.querySelector('#ab-peak').textContent = peakHour;
-
-    // 24-hour heatmap from ALL history (lifetime hourly density)
-    const hours = new Array(24).fill(0);
+    // 24-hour heatmap and peak hour from ALL history (lifetime hourly density).
+    //
+    // Both come from historyHourCounts, which prefers the server's exact
+    // per-hour totals over counting rows in data.history: the array is
+    // downsampled beyond the recent window, so a row count there would measure
+    // session-hours rather than snapshots. See runtime.html.
+    const hours = historyHourCounts(data);
     const currentHour = new Date().getHours();
 
-    (data.history || []).forEach(entry => {
-      if (!entry.ts) return;
-      hours[new Date(entry.ts).getHours()]++;
-    });
+    let peakHour = '--';
+    const peakMax = Math.max(...hours);
+    if (peakMax > 0) {
+      peakHour = String(hours.indexOf(peakMax)).padStart(2,'0') + ':00';
+    }
+    el.querySelector('#ab-peak').textContent = peakHour;
 
     const peak = Math.max(...hours, 1);
     const colors = Periscope.getColors ? Periscope.getColors() : {};

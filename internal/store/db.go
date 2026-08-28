@@ -1303,7 +1303,13 @@ type DashboardData struct {
 	PhantomUsage     *analytics.PhantomData `json:"phantomUsage,omitempty"`
 	Teams            json.RawMessage        `json:"teams,omitempty"`
 	LiveEffort       string                 `json:"live_effort,omitempty"`
-	BurnRatePerHour  float64                `json:"burnRatePerHour,omitempty"`
+
+	// HistoryHourly is the exact per-hour row count of the FULL history table.
+	// It is only populated when History has been thinned, because an untouched
+	// History already contains every row it summarises — which keeps the
+	// default response byte-identical to what it always was.
+	HistoryHourly   *HistoryHourly `json:"historyHourly,omitempty"`
+	BurnRatePerHour float64        `json:"burnRatePerHour,omitempty"`
 }
 
 type SidecarEntry struct {
@@ -1361,7 +1367,13 @@ func querySidecars(db *sql.DB) ([]SidecarEntry, error) {
 
 // queryRawColumn reads one JSON column, dropping rows that would not encode.
 func queryRawColumn(db *sql.DB, table, query string) ([]json.RawMessage, error) {
-	rows, err := db.Query(query)
+	return queryRawColumnArgs(db, table, query)
+}
+
+// queryRawColumnArgs is queryRawColumn with bind parameters, used by the
+// windowed history reads in history.go.
+func queryRawColumnArgs(db *sql.DB, table, query string, args ...any) ([]json.RawMessage, error) {
+	rows, err := db.Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("%s query: %w", table, err)
 	}
@@ -1394,6 +1406,14 @@ func queryRawColumn(db *sql.DB, table, query string) ([]json.RawMessage, error) 
 // no else rendered a locked database as HTTP 200 with empty arrays and no log
 // line at all.
 func BuildDashboardData(db *sql.DB, dataDir string) (*DashboardData, error) {
+	return BuildDashboardDataQuery(db, dataDir, HistoryQuery{})
+}
+
+// BuildDashboardDataQuery is BuildDashboardData with control over which history
+// rows the payload carries. The zero HistoryQuery reproduces BuildDashboardData
+// exactly, which is what keeps every pre-existing caller and every pre-existing
+// dashboard client on the response they already know.
+func BuildDashboardDataQuery(db *sql.DB, dataDir string, hq HistoryQuery) (*DashboardData, error) {
 	d := &DashboardData{
 		GeneratedAt:  time.Now().Format(time.RFC3339),
 		Sessions:     []any{},
@@ -1408,12 +1428,16 @@ func BuildDashboardData(db *sql.DB, dataDir string) (*DashboardData, error) {
 	}
 	d.Sidecars = sidecars
 
-	history, err := queryRawColumn(db, "history",
-		"SELECT id, data FROM history ORDER BY replace(ts, ' ', 'T') ASC")
+	// The rows are read once and thinned in memory so the exact hour-of-day
+	// histogram can be taken from the full set before anything is dropped.
+	rawHistory, err := QueryHistory(db, HistoryQuery{From: hq.From, To: hq.To, Mode: modeForRead(hq.Mode)})
 	if err != nil {
 		return nil, err
 	}
-	d.History = history
+	d.History = hq.apply(rawHistory)
+	if hq.Mode == HistoryRollup {
+		d.HistoryHourly = HistoryHourlyCounts(rawHistory)
+	}
 
 	limitHistory, err := queryRawColumn(db, "limit_history",
 		"SELECT id, data FROM limit_history ORDER BY replace(ts, ' ', 'T') ASC")

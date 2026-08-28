@@ -83,7 +83,7 @@ func watchLoop(app *App, watcher *fsnotify.Watcher) {
 			data, err := store.BuildDashboardData(app.DB, app.DataDir)
 			if err == nil {
 				annotateLiveEffort(data)
-				app.Hub.broadcastJSON("data", data)
+				broadcastDashboardData(app, data)
 				slog.Debug("broadcasted updated data to ws clients")
 			} else {
 				slog.Error("failed to build dashboard data", "err", err)

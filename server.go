@@ -39,9 +39,17 @@ import (
 //
 // rawLen is kept alongside because the prepared message does not expose the
 // uncompressed size, and the broadcast log line reports it.
+//
+// rollupMsg is the same message with the history array downsampled, prepared
+// once for every client that asked for it at /ws?history=rollup. It is nil for
+// every message type except "data", and nil even for "data" when no connected
+// client wants the smaller shape — a legacy client is always served msg, so a
+// dashboard written before this existed sees byte-identical frames.
 type wsBroadcast struct {
-	msg    *websocket.PreparedMessage
-	rawLen int
+	msg       *websocket.PreparedMessage
+	rollupMsg *websocket.PreparedMessage
+	rawLen    int
+	rollupLen int
 }
 
 type Hub struct {
@@ -57,6 +65,9 @@ type Client struct {
 	conn     *websocket.Conn
 	send     chan wsBroadcast
 	closeOne sync.Once
+	// rollupHistory is set from /ws?history=rollup. Absent or unrecognised
+	// means false, i.e. the shape every existing client already expects.
+	rollupHistory bool
 }
 
 func (c *Client) closeSend() {
@@ -94,8 +105,13 @@ func (h *Hub) run() {
 			h.mu.Lock()
 			clientCount := len(h.clients)
 			for client := range h.clients {
+				out := message
+				if client.rollupHistory && message.rollupMsg != nil {
+					out.msg = message.rollupMsg
+					out.rawLen = message.rollupLen
+				}
 				select {
-				case client.send <- message:
+				case client.send <- out:
 				default:
 					client.closeSend()
 					delete(h.clients, client)
@@ -108,22 +124,89 @@ func (h *Hub) run() {
 }
 
 func (h *Hub) broadcastJSON(msgType string, payload any) {
-	msg := map[string]any{"type": msgType, "payload": payload}
-	data, err := json.Marshal(msg)
-	if err != nil {
-		slog.Error("hub marshal failed", "type", msgType, "err", err)
-		return
-	}
-	prepared, err := websocket.NewPreparedMessage(websocket.TextMessage, data)
-	if err != nil {
-		slog.Error("hub prepare failed", "type", msgType, "err", err)
+	prepared, n, ok := prepareWSFrame(msgType, payload)
+	if !ok {
 		return
 	}
 	h.mu.RLock()
 	clientCount := len(h.clients)
 	h.mu.RUnlock()
-	slog.Debug("hub broadcasting", "type", msgType, "clients", clientCount, "bytes", len(data))
-	h.broadcast <- wsBroadcast{msg: prepared, rawLen: len(data)}
+	slog.Debug("hub broadcasting", "type", msgType, "clients", clientCount, "bytes", n)
+	h.broadcast <- wsBroadcast{msg: prepared, rawLen: n}
+}
+
+// broadcastDashboardData pushes one snapshot to every websocket client, giving
+// each the history shape it asked for at connect time.
+//
+// The rolled-up variant is derived from the array already in hand rather than
+// re-queried: the plan only needs each row's sid, ts and cost, all of which are
+// in the raw JSON, so this costs one pass over rows already in memory instead of
+// a second read of the whole table.
+func broadcastDashboardData(app *App, data *store.DashboardData) {
+	var rolled *store.DashboardData
+	if app.Hub.wantsRollup() {
+		cp := *data
+		// Take the histogram from the full array before thinning it, so the
+		// push path carries the same exact hour-of-day counts the poll does.
+		cp.HistoryHourly = store.HistoryHourlyCounts(data.History)
+		cp.History = store.RollupHistory(data.History, time.Now())
+		rolled = &cp
+	}
+	app.Hub.broadcastData(data, rolled)
+}
+
+// broadcastData pushes a dashboard snapshot, preparing the rolled-up variant
+// alongside the full one only when some client has asked for it.
+//
+// The two frames are prepared once each, not once per client: gorilla caches a
+// PreparedMessage's wire form per (isServer, compressed, level), and every
+// connection sets the same compression level, so this stays two deflate passes
+// per broadcast regardless of how many browsers are attached.
+func (h *Hub) broadcastData(full, rolled any) {
+	msg, raw, ok := prepareWSFrame("data", full)
+	if !ok {
+		return
+	}
+	b := wsBroadcast{msg: msg, rawLen: raw}
+	if rolled != nil {
+		if rmsg, rlen, ok := prepareWSFrame("data", rolled); ok {
+			b.rollupMsg, b.rollupLen = rmsg, rlen
+		}
+	}
+	h.mu.RLock()
+	clientCount := len(h.clients)
+	h.mu.RUnlock()
+	slog.Debug("hub broadcasting", "type", "data", "clients", clientCount,
+		"bytes", b.rawLen, "rollupBytes", b.rollupLen)
+	h.broadcast <- b
+}
+
+// wantsRollup reports whether any connected client asked for the downsampled
+// history. Used to skip building the variant when nobody would read it.
+func (h *Hub) wantsRollup() bool {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	for c := range h.clients {
+		if c.rollupHistory {
+			return true
+		}
+	}
+	return false
+}
+
+// prepareWSFrame marshals and deflate-prepares one hub envelope.
+func prepareWSFrame(msgType string, payload any) (*websocket.PreparedMessage, int, bool) {
+	data, err := json.Marshal(map[string]any{"type": msgType, "payload": payload})
+	if err != nil {
+		slog.Error("hub marshal failed", "type", msgType, "err", err)
+		return nil, 0, false
+	}
+	prepared, err := websocket.NewPreparedMessage(websocket.TextMessage, data)
+	if err != nil {
+		slog.Error("hub prepare failed", "type", msgType, "err", err)
+		return nil, 0, false
+	}
+	return prepared, len(data), true
 }
 
 func (h *Hub) clientCount() int {
@@ -265,7 +348,15 @@ func serveWS(app *App, w http.ResponseWriter, r *http.Request) {
 		slog.Warn("ws compression level rejected", "level", wsCompressionLevel, "err", err)
 	}
 
-	client := &Client{hub: app.Hub, conn: conn, send: make(chan wsBroadcast, 64)}
+	// An unrecognised value is deliberately NOT an error: a websocket is a
+	// long-lived connection and a typo in a query string is no reason to refuse
+	// it. Anything but "rollup" means the full, historical shape.
+	client := &Client{
+		hub:           app.Hub,
+		conn:          conn,
+		send:          make(chan wsBroadcast, 64),
+		rollupHistory: r.URL.Query().Get("history") == "rollup",
+	}
 	app.Hub.register <- client
 
 	// Writer goroutine
@@ -347,6 +438,11 @@ func buildMux(app *App) *http.ServeMux {
 	mux.HandleFunc("/api/data", func(w http.ResponseWriter, r *http.Request) {
 		slog.Debug("http request", "method", r.Method, "path", r.URL.Path)
 		handleData(app, w, r)
+	})
+
+	mux.HandleFunc("/api/history", func(w http.ResponseWriter, r *http.Request) {
+		slog.Debug("http request", "method", r.Method, "path", r.URL.Path)
+		handleHistory(app, w, r)
 	})
 
 	mux.HandleFunc("/api/config", func(w http.ResponseWriter, r *http.Request) {
@@ -715,7 +811,16 @@ func handleData(app *App, w http.ResponseWriter, r *http.Request) {
 		slog.Warn("data import error", "err", err)
 	}
 
-	data, err := store.BuildDashboardData(app.DB, app.DataDir)
+	// No query string means the zero HistoryQuery, which is byte-for-byte the
+	// payload /api/data has always produced. Clients opt in to a smaller one.
+	hq, err := historyQueryFromRequest(r.URL.Query())
+	if err != nil {
+		slog.Debug("data request rejected", "err", err)
+		writeError(w, 400, err.Error())
+		return
+	}
+
+	data, err := store.BuildDashboardDataQuery(app.DB, app.DataDir, hq)
 	if err != nil {
 		slog.Error("data build error", "err", err)
 		writeError(w, 500, err.Error())
@@ -1686,6 +1791,7 @@ func rateLimitMiddleware(next http.Handler) http.Handler {
 			strings.HasPrefix(r.URL.Path, "/static/") ||
 			r.URL.Path == "/manifest.json" || r.URL.Path == "/sw.js" ||
 			r.URL.Path == "/api/health" || r.URL.Path == "/api/data" ||
+			r.URL.Path == "/api/history" ||
 			r.URL.Path == "/api/layout" || r.URL.Path == "/api/config" {
 			next.ServeHTTP(w, r)
 			return

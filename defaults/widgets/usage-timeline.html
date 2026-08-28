@@ -103,6 +103,7 @@ Periscope.registerWidget({
   render(el, data) {
     var st = el._utState;
     if (!st) return;
+    var self = this;
 
     var history = data.history || [];
     var historyDeduped = data.historyDeduped || [];
@@ -207,12 +208,60 @@ Periscope.registerWidget({
       return weightedTokens(h.input, h.cr, h.cw, h.out);
     }
 
+    // --- Zoom to fetch ---
+    // data.history is rolled up beyond HISTORY_FULL_RES_MS: past that point it
+    // carries the first and last ORIGINAL snapshot of each session per hour,
+    // then per day. The raw rows are all still in SQLite. When the user pans
+    // back into that region, ask /api/history for exactly this window instead
+    // of drawing the thinned overview — a one-day zoom comes back at full
+    // resolution, a wider one comes back bucketed to about a chart's width of
+    // points, still built from original rows.
+    var srcHistory = history;
+    var srcDeduped = historyDeduped;
+    if (typeof historyIsFullResolution === 'function' &&
+        !historyIsFullResolution(windowStart.getTime()) &&
+        Periscope.fetchHistory) {
+      // The cache key is the range and the pan offset, NOT the window bounds.
+      // windowEnd is derived from Date.now(), so it moves every render; keying
+      // on it made the fetch callback's re-render compute a new key and fetch
+      // again, forever. range+offset is stable across renders and is exactly
+      // what the user changed.
+      var zoomKey = st.range + '|' + st.chartOffset;
+      // Snap the requested bounds to the minute for the same reason: the
+      // request URL (and Periscope.fetchHistory's own cache) must not change on
+      // every render. The pad keeps the window covered as `now` drifts forward
+      // between the fetch and later renders of the same key.
+      var pad = 60000;
+      var fetchFrom = Math.floor(windowStart.getTime() / pad) * pad - pad;
+      var fetchTo = Math.ceil(windowEnd.getTime() / pad) * pad + pad;
+      if (st.zoomKey === zoomKey && st.zoomRows) {
+        srcHistory = st.zoomRows;
+        srcDeduped = typeof deduplicateHistory === 'function'
+          ? deduplicateHistory(srcHistory) : srcHistory;
+      } else if (st.zoomPending !== zoomKey) {
+        st.zoomPending = zoomKey;
+        Periscope.fetchHistory(fetchFrom, fetchTo, historyBucketFor(fetchTo - fetchFrom))
+          .then(function(rows) {
+            if (st.zoomPending === zoomKey) st.zoomPending = null;
+            // A null or empty result means the request failed, was rejected, or
+            // the window is genuinely empty; keep drawing the rolled-up
+            // overview rather than blanking the chart.
+            if (!rows || !rows.length) return;
+            // The user may have moved on while this was in flight.
+            if (st.range + '|' + st.chartOffset !== zoomKey) return;
+            st.zoomKey = zoomKey;
+            st.zoomRows = rows;
+            self._rerender(el);
+          });
+      }
+    }
+
     // --- Filter data into window ---
-    var inWindow = history.filter(function(h) {
+    var inWindow = srcHistory.filter(function(h) {
       var t = new Date(h.ts).getTime();
       return t >= windowStart.getTime() && t <= windowEnd.getTime();
     });
-    var inWindowDeduped = historyDeduped.filter(function(h) {
+    var inWindowDeduped = srcDeduped.filter(function(h) {
       var t = new Date(h.ts).getTime();
       return t >= windowStart.getTime() && t <= windowEnd.getTime();
     });

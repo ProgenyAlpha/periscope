@@ -558,6 +558,74 @@ function isSubscription(data) {
 function costSuffix(data) { return isSubscription(data) ? ' equiv' : ''; }
 
 // --- History Utilities ---
+
+// The dashboard asks /api/data for `history=rollup` rather than the whole
+// table. The server ships the last DATA_URL_FULL_MS untouched and, beyond that,
+// keeps the first and last ORIGINAL snapshot of every (session, hour) out to 30
+// days and every (session, day) after that. Nothing is averaged and nothing is
+// deleted from SQLite — the raw rows are still there and Periscope.fetchHistory
+// pulls any window back at full resolution.
+//
+// This cut the live payload from 4.47 MB to 1.89 MB, of which `history` went
+// from 3.12 MB to 535 KB.
+const HISTORY_FULL_RES_MS = 7 * 24 * 3600 * 1000;
+const DATA_URL = '/api/data?history=rollup';
+
+// historyIsFullResolution reports whether a window lies entirely inside the
+// untouched tier, i.e. whether data.history already has every snapshot for it.
+function historyIsFullResolution(startMs) {
+  return startMs >= Date.now() - HISTORY_FULL_RES_MS;
+}
+
+// A window this narrow or narrower is always refetched at FULL resolution, no
+// bucket. This is the "look back at one specific high-usage day" case and it
+// must never be a downsample.
+const HISTORY_ZOOM_FULL_MS = 2 * 24 * 3600 * 1000;
+
+// Wider windows are bucketed to roughly this many points, which is about the
+// pixel width of a dashboard chart — more samples than this cannot be seen.
+const HISTORY_TARGET_POINTS = 400;
+
+// historyBucketFor picks the bucket for a zoom-to-fetch of the given span.
+// Empty means "no bucket", i.e. every original row in the window.
+function historyBucketFor(spanMs) {
+  if (spanMs <= HISTORY_ZOOM_FULL_MS) return '';
+  return Math.max(1, Math.round(spanMs / HISTORY_TARGET_POINTS / 60000)) + 'm';
+}
+
+// historyHourCounts returns the 24 hour-of-day bins for the lifetime heatmap.
+//
+// Counting rows out of data.history is not rollup-safe: beyond the untouched
+// tier the array carries two snapshots per session per hour (then per day), so
+// a row count there measures session-hours rather than snapshots and visibly
+// moves the peak. The server therefore ships `historyHourly` — the exact count
+// of every row in SQLite, bucketed into absolute hours — and this bins those
+// into the VIEWER's local hour-of-day. That is the same Date arithmetic the
+// widget used to do per row, once per hour instead, so DST and any timezone
+// come out exactly right.
+//
+// Falls back to counting rows when the field is absent, which is what a server
+// older than this change (or a full, unthinned response) sends.
+function historyHourCounts(data) {
+  const hours = new Array(24).fill(0);
+  const hh = data && data.historyHourly;
+  if (hh && hh.start && Array.isArray(hh.counts)) {
+    const t0 = new Date(hh.start).getTime();
+    if (!isNaN(t0)) {
+      for (let i = 0; i < hh.counts.length; i++) {
+        const n = hh.counts[i];
+        if (n) hours[new Date(t0 + i * 3600000).getHours()] += n;
+      }
+      return hours;
+    }
+  }
+  ((data && data.history) || []).forEach(entry => {
+    if (!entry.ts) return;
+    hours[new Date(entry.ts).getHours()]++;
+  });
+  return hours;
+}
+
 function deduplicateHistory(history) {
   if (!history || !history.length) return history || [];
   const bySid = {};
@@ -997,9 +1065,39 @@ const Periscope = {
   },
   async refreshData() {
     try {
-      const res = await fetch('/api/data');
+      const res = await fetch(DATA_URL);
       if (res.ok) { const d = await res.json(); this._update(d); }
     } catch(e) { console.error('Data refresh failed:', e); }
+  },
+
+  // Zoom-to-fetch: pull one window of history back at FULL resolution,
+  // straight from SQLite, bypassing the rollup entirely. Widgets call this when
+  // the user pans or zooms outside the untouched tier.
+  //
+  // Results are memoised per (from,to,bucket) for _historyCacheMs so panning
+  // back and forth over the same window does not re-hit the server.
+  _historyCache: {},
+  _historyCacheMs: 60000,
+  async fetchHistory(fromMs, toMs, bucket) {
+    const from = Math.floor(fromMs);
+    const to = Math.floor(toMs);
+    if (!(to > from)) return [];
+    const key = from + ':' + to + ':' + (bucket || '');
+    const hit = this._historyCache[key];
+    if (hit && Date.now() - hit.at < this._historyCacheMs) return hit.rows;
+    let url = `/api/history?from=${from}&to=${to}`;
+    if (bucket) url += `&bucket=${encodeURIComponent(bucket)}`;
+    try {
+      const resp = await fetch(url);
+      if (!resp.ok) { console.warn('history fetch', resp.status, await resp.text()); return null; }
+      const body = await resp.json();
+      const rows = body.history || [];
+      this._historyCache[key] = { at: Date.now(), rows };
+      return rows;
+    } catch (e) {
+      console.warn('history fetch failed', e);
+      return null;
+    }
   },
 
   _updatePending: null,
@@ -1202,7 +1300,10 @@ const Periscope = {
   // WebSocket
   _connectWS() {
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const ws = new WebSocket(`${proto}//${location.host}/ws`);
+    // Ask the push path for the same rolled-up shape the poll uses. A server
+    // that predates this ignores the parameter and sends the full array, which
+    // still renders — the widgets never assumed a resolution.
+    const ws = new WebSocket(`${proto}//${location.host}/ws?history=rollup`);
     ws.onopen = () => {
       this._wsRetry = 0;
       document.getElementById('signal-text').textContent = 'LIVE';
@@ -1300,7 +1401,7 @@ const Periscope = {
   _startPolling() {
     const poll = async () => {
       try {
-        const resp = await fetch('/api/data');
+        const resp = await fetch(DATA_URL);
         if (resp.ok) {
           const data = await resp.json();
           this._update(data);
@@ -1321,7 +1422,7 @@ const Periscope = {
 
     // Fetch initial data
     try {
-      const resp = await fetch('/api/data');
+      const resp = await fetch(DATA_URL);
       if (resp.ok) this._data = await resp.json();
     } catch(e) { /* will retry via polling */ }
 
