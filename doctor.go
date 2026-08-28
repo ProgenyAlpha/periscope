@@ -539,13 +539,18 @@ func checkClaudeStatusLine(env doctorEnv, view claudeSettingsView, want desiredC
 	if view.statusLine == "" {
 		return checkResult{checkStatusLine, ckWarn, "statusLine not set", reinit}
 	}
+	// Identity before the name heuristic: a periscope build that has been
+	// renamed (`psc`) is still this binary, and reporting the status line we
+	// registered ourselves as "owned by another tool" is a false alarm in the
+	// one tool whose job is to tell the truth.
 	target := hookTarget(view.statusLine)
-	if !looksLikePeriscope(target) {
+	resolved, err := resolveHookTarget(target)
+	isThisBinary := err == nil && sameBinary(resolved, env.Binary)
+	if !isThisBinary && !looksLikePeriscope(target) {
 		return checkResult{checkStatusLine, ckWarn,
 			fmt.Sprintf("statusLine is owned by another tool (%s) — periscope left it alone", target),
 			"Point statusLine at `" + want.statusLine + "` by hand if you want periscope's statusline."}
 	}
-	resolved, err := resolveHookTarget(target)
 	if err != nil {
 		return checkResult{checkStatusLine, ckWarn,
 			fmt.Sprintf("statusLine → %s does not exist", target), reinit}

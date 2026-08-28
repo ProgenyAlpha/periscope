@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -355,5 +356,361 @@ func TestRegisterHooks_WritesSettings(t *testing.T) {
 	}
 	if got := mustReadFile(t, settingsPath); string(got) != string(before) {
 		t.Errorf("re-running registerHooks changed settings.json:\n%s", got)
+	}
+}
+
+// A status line registered as a bare name on PATH is ours, not a stranger.
+// Regression: init reported "statusLine already points elsewhere" against its
+// own status line because it compared command strings literally.
+func TestSameCommandMatchesBareNameOnPath(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "periscope")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+
+	if !sameCommand("periscope statusline", bin+" statusline") {
+		t.Errorf("bare name on PATH not recognised as the same binary")
+	}
+	if sameCommand("periscope statusline", bin+" substatusline") {
+		t.Errorf("differing args must not match")
+	}
+	if sameCommand("some-other-tool statusline", bin+" statusline") {
+		t.Errorf("a genuinely foreign command must not match")
+	}
+}
+
+// The same identity comparison must apply to hooks, not just statusLine.
+func TestMergeRecognisesBareNameHook(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "periscope")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+
+	path := filepath.Join(dir, "settings.json")
+	seed := `{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"periscope hook stop"}]}]}}`
+	if err := os.WriteFile(path, []byte(seed), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := mergeClaudeSettings(path, desiredClaudeSettings{
+		hooks: []claudeHookSpec{{event: "Stop", command: bin + " hook stop"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.added) != 0 {
+		t.Errorf("added = %v, want none — the hook is already registered", res.added)
+	}
+	if len(res.existing) != 1 || res.existing[0] != "Stop" {
+		t.Errorf("existing = %v, want [Stop]", res.existing)
+	}
+}
+
+// ── Defect: `periscope init` appended a duplicate hook ───────────────────────
+//
+// Reproduction of the live failure: settings.json already registered the Stop
+// hook against the installed binary, and running a *different* periscope build
+// (`/tmp/x/psc init`) appended a second Stop group instead of updating the
+// first. Two Stop hooks means every turn writes the sidecar twice and cost
+// accounting is counted twice — and it fails silently.
+func TestMergeClaudeSettings_ReplacesStalePeriscopeHook(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+	seed := `{
+  "hooks": {
+    "Stop": [{"hooks": [{"type": "command", "command": "/home/progenyalpha/.local/bin/periscope hook stop"}]}]
+  }
+}`
+	if err := os.WriteFile(path, []byte(seed), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	want := desiredClaudeSettings{
+		hooks: []claudeHookSpec{{event: "Stop", command: "/tmp/x/psc hook stop"}},
+	}
+	res, err := mergeClaudeSettings(path, want)
+	if err != nil {
+		t.Fatalf("mergeClaudeSettings: %v", err)
+	}
+
+	if len(res.added) != 0 {
+		t.Errorf("added = %v, want none — a periscope Stop hook was already registered", res.added)
+	}
+	if len(res.updated) != 1 || res.updated[0] != "Stop" {
+		t.Errorf("updated = %v, want [Stop]", res.updated)
+	}
+
+	cmds := hooksFor(t, readSettings(t, path), "Stop")
+	if len(cmds) != 1 {
+		t.Fatalf("Stop = %v, want exactly 1 hook (the duplicate is the defect)", cmds)
+	}
+	if cmds[0] != "/tmp/x/psc hook stop" {
+		t.Errorf("Stop[0] = %q, want it repointed at /tmp/x/psc hook stop", cmds[0])
+	}
+}
+
+// Repairing the already-corrupted state: several periscope Stop hooks must
+// collapse to exactly one, and another tool's hook must survive in place.
+//
+// The renamed build (/tmp/x/psc) is recognised as ours because it is the binary
+// running init; the install-path one is recognised by name. Re-running init
+// from either of the two duplicated binaries therefore repairs the file.
+func TestMergeClaudeSettings_CollapsesDuplicatePeriscopeHooks(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+	seed := `{
+  "hooks": {
+    "Stop": [
+      {"hooks": [{"type": "command", "command": "/other/tool notify"}]},
+      {"hooks": [{"type": "command", "command": "/home/progenyalpha/.local/bin/periscope hook stop"}]},
+      {"hooks": [{"type": "command", "command": "/tmp/x/psc hook stop"}]}
+    ]
+  }
+}`
+	if err := os.WriteFile(path, []byte(seed), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := mergeClaudeSettings(path, desiredClaudeSettings{
+		hooks: []claudeHookSpec{{event: "Stop", command: "/tmp/x/psc hook stop"}},
+	})
+	if err != nil {
+		t.Fatalf("mergeClaudeSettings: %v", err)
+	}
+	if len(res.updated) != 1 || res.updated[0] != "Stop" {
+		t.Errorf("updated = %v, want [Stop]", res.updated)
+	}
+
+	cmds := hooksFor(t, readSettings(t, path), "Stop")
+	want := []string{"/other/tool notify", "/tmp/x/psc hook stop"}
+	if len(cmds) != len(want) {
+		t.Fatalf("Stop = %v, want %v", cmds, want)
+	}
+	for i := range want {
+		if cmds[i] != want[i] {
+			t.Errorf("Stop[%d] = %q, want %q", i, cmds[i], want[i])
+		}
+	}
+}
+
+// The same collapse, from a third binary: two entries that both *look* like
+// periscope are both ours no matter which binary is doing the installing.
+func TestMergeClaudeSettings_CollapsesDuplicatesFromAThirdBinary(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+	seed := `{
+  "hooks": {
+    "Stop": [
+      {"hooks": [
+        {"type": "command", "command": "/home/u/.local/bin/periscope hook stop"},
+        {"type": "command", "command": "/other/tool notify"}
+      ]},
+      {"hooks": [{"type": "command", "command": "/opt/periscope-dev/periscope hook stop"}]}
+    ]
+  }
+}`
+	if err := os.WriteFile(path, []byte(seed), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := mergeClaudeSettings(path, desiredClaudeSettings{
+		hooks: []claudeHookSpec{{event: "Stop", command: "/usr/local/bin/periscope hook stop"}},
+	}); err != nil {
+		t.Fatalf("mergeClaudeSettings: %v", err)
+	}
+
+	cmds := hooksFor(t, readSettings(t, path), "Stop")
+	want := []string{"/usr/local/bin/periscope hook stop", "/other/tool notify"}
+	if len(cmds) != len(want) {
+		t.Fatalf("Stop = %v, want %v", cmds, want)
+	}
+	for i := range want {
+		if cmds[i] != want[i] {
+			t.Errorf("Stop[%d] = %q, want %q", i, cmds[i], want[i])
+		}
+	}
+}
+
+// A foreign hook sharing a group with ours must be left byte-for-byte alone,
+// and the group's unknown fields (matcher, timeout, ...) must survive.
+func TestMergeClaudeSettings_UpdatePreservesForeignEntriesAndFields(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+	seed := `{
+  "hooks": {
+    "Stop": [
+      {"matcher": "*", "timeout": 30, "hooks": [
+        {"type": "command", "command": "/other/tool notify"},
+        {"type": "command", "command": "/old/periscope hook stop", "timeout": 5}
+      ]}
+    ]
+  }
+}`
+	if err := os.WriteFile(path, []byte(seed), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := mergeClaudeSettings(path, desiredClaudeSettings{
+		hooks: []claudeHookSpec{{event: "Stop", command: "/new/periscope hook stop"}},
+	}); err != nil {
+		t.Fatalf("mergeClaudeSettings: %v", err)
+	}
+
+	settings := readSettings(t, path)
+	cmds := hooksFor(t, settings, "Stop")
+	want := []string{"/other/tool notify", "/new/periscope hook stop"}
+	if len(cmds) != 2 || cmds[0] != want[0] || cmds[1] != want[1] {
+		t.Fatalf("Stop = %v, want %v", cmds, want)
+	}
+
+	groups := settings["hooks"].(map[string]any)["Stop"].([]any)
+	g := groups[0].(map[string]any)
+	if g["matcher"] != "*" {
+		t.Errorf("group matcher = %v, want * (unknown fields must survive)", g["matcher"])
+	}
+	if g["timeout"] != float64(30) {
+		t.Errorf("group timeout = %v, want 30", g["timeout"])
+	}
+	entry := g["hooks"].([]any)[1].(map[string]any)
+	if entry["timeout"] != float64(5) {
+		t.Errorf("rewritten entry lost its timeout: %v", entry)
+	}
+}
+
+// After repointing a stale hook, a second run must be a pure no-op.
+func TestMergeClaudeSettings_IdempotentAfterUpdate(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+	seed := `{"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "/old/periscope hook stop"}]}]}}`
+	if err := os.WriteFile(path, []byte(seed), 0644); err != nil {
+		t.Fatal(err)
+	}
+	want := desiredClaudeSettings{
+		hooks: []claudeHookSpec{{event: "Stop", command: "/new/periscope hook stop"}},
+	}
+
+	if _, err := mergeClaudeSettings(path, want); err != nil {
+		t.Fatalf("first merge: %v", err)
+	}
+	afterFirst := mustReadFile(t, path)
+
+	second, err := mergeClaudeSettings(path, want)
+	if err != nil {
+		t.Fatalf("second merge: %v", err)
+	}
+	if len(second.added) != 0 || len(second.updated) != 0 {
+		t.Errorf("second merge added=%v updated=%v, want both empty", second.added, second.updated)
+	}
+	if len(second.existing) != 1 || second.existing[0] != "Stop" {
+		t.Errorf("second merge existing = %v, want [Stop]", second.existing)
+	}
+	if second.changed() {
+		t.Errorf("second merge changed() = true, want false")
+	}
+	if got := mustReadFile(t, path); string(got) != string(afterFirst) {
+		t.Errorf("second merge rewrote the file:\nbefore: %s\nafter:  %s", afterFirst, got)
+	}
+}
+
+// The SessionStart entry is the launcher script, not the binary; a stale one
+// from a previous install location must be repointed, not duplicated.
+func TestMergeClaudeSettings_ReplacesStaleLauncherScript(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+	seed := `{"hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": "/old/home/.periscope/periscope-ensure.sh"}]}]}}`
+	if err := os.WriteFile(path, []byte(seed), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := mergeClaudeSettings(path, desiredClaudeSettings{
+		hooks: []claudeHookSpec{{event: "SessionStart", command: "/new/home/.periscope/periscope-ensure.sh"}},
+	})
+	if err != nil {
+		t.Fatalf("mergeClaudeSettings: %v", err)
+	}
+	if len(res.updated) != 1 || len(res.added) != 0 {
+		t.Errorf("updated=%v added=%v, want updated=[SessionStart] added=[]", res.updated, res.added)
+	}
+	cmds := hooksFor(t, readSettings(t, path), "SessionStart")
+	if len(cmds) != 1 || cmds[0] != "/new/home/.periscope/periscope-ensure.sh" {
+		t.Errorf("SessionStart = %v, want the single new launcher path", cmds)
+	}
+}
+
+// A statusLine pointing at a stale periscope binary is ours to repoint. A
+// statusLine owned by another tool still must never be touched (covered by
+// TestMergeClaudeSettings_ExistingStatusLinePreserved).
+func TestMergeClaudeSettings_RepointsStalePeriscopeStatusLine(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+	seed := `{"statusLine": {"type": "command", "command": "/old/periscope statusline", "padding": 0}}`
+	if err := os.WriteFile(path, []byte(seed), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := mergeClaudeSettings(path, desiredClaudeSettings{statusLine: "/new/periscope statusline"})
+	if err != nil {
+		t.Fatalf("mergeClaudeSettings: %v", err)
+	}
+	if len(res.skipped) != 0 {
+		t.Errorf("skipped = %v, want none — that status line is ours", res.skipped)
+	}
+	if len(res.updated) != 1 || res.updated[0] != "statusLine" {
+		t.Errorf("updated = %v, want [statusLine]", res.updated)
+	}
+
+	sl := readSettings(t, path)["statusLine"].(map[string]any)
+	if sl["command"] != "/new/periscope statusline" {
+		t.Errorf("statusLine command = %v, want /new/periscope statusline", sl["command"])
+	}
+	if sl["padding"] != float64(0) {
+		t.Errorf("statusLine lost its padding field: %v", sl)
+	}
+}
+
+// registerHooks is what `periscope init` actually runs: a second init from a
+// different binary path must repoint every entry, never append.
+func TestRegisterHooks_SecondBinaryDoesNotDuplicate(t *testing.T) {
+	home := t.TempDir()
+	claude := filepath.Join(home, ".claude")
+	if err := os.MkdirAll(claude, 0755); err != nil {
+		t.Fatal(err)
+	}
+	app := &App{
+		HomeDir:   filepath.Join(home, ".periscope"),
+		ClaudeDir: claude,
+		Config:    AppConfig{Server: ServerConfig{Host: "localhost", Port: 7788}},
+	}
+	if err := os.MkdirAll(app.HomeDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := registerHooks(app); err != nil {
+		t.Fatalf("registerHooks: %v", err)
+	}
+
+	// Simulate the hooks having been registered by a periscope binary that
+	// lives somewhere else, exactly as the live failure did.
+	settingsPath := filepath.Join(claude, claudeSettingsName)
+	raw := mustReadFile(t, settingsPath)
+	stale := strings.ReplaceAll(string(raw), periscopeBinary(), "/home/other/.local/bin/periscope")
+	if stale == string(raw) {
+		t.Fatalf("test setup did not rewrite the binary path in %s", settingsPath)
+	}
+	if err := os.WriteFile(settingsPath, []byte(stale), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := registerHooks(app); err != nil {
+		t.Fatalf("registerHooks (second binary): %v", err)
+	}
+	settings := readSettings(t, settingsPath)
+	for _, event := range []string{"SessionStart", "Stop", "UserPromptSubmit"} {
+		if cmds := hooksFor(t, settings, event); len(cmds) != 1 {
+			t.Errorf("%s = %v, want exactly 1 registered command", event, cmds)
+		}
 	}
 }

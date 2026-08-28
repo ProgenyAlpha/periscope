@@ -553,3 +553,42 @@ func TestRunDoctorChecks_HealthyMachineIsAllOK(t *testing.T) {
 		t.Fatalf("healthy machine must exit 0")
 	}
 }
+
+// A periscope binary that has been renamed (a build called `psc`, say) is still
+// this binary. Doctor used to reach for the name heuristic first and report the
+// status line it had just registered itself as "owned by another tool".
+func TestCheckClaudeStatusLine_RenamedBinaryIsNotAStranger(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "psc")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	env := doctorEnv{Binary: bin}
+	view := claudeSettingsView{exists: true, statusLine: bin + " statusline"}
+	want := desiredClaudeSettings{statusLine: bin + " statusline"}
+
+	got := checkClaudeStatusLine(env, view, want, "reinit")
+	if got.Status != ckOK {
+		t.Errorf("status = %v (%s), want ckOK — that status line is this very binary", got.Status, got.Detail)
+	}
+}
+
+// A genuinely foreign status line must still be reported and left alone.
+func TestCheckClaudeStatusLine_ForeignToolStillWarns(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "periscope")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	env := doctorEnv{Binary: bin}
+	view := claudeSettingsView{exists: true, statusLine: "/other/tool statusline"}
+	want := desiredClaudeSettings{statusLine: bin + " statusline"}
+
+	got := checkClaudeStatusLine(env, view, want, "reinit")
+	if got.Status != ckWarn {
+		t.Errorf("status = %v, want ckWarn for a foreign status line", got.Status)
+	}
+	if !strings.Contains(got.Detail, "owned by another tool") {
+		t.Errorf("detail = %q, want it to say the status line is owned by another tool", got.Detail)
+	}
+}

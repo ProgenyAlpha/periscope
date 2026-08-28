@@ -365,6 +365,10 @@ func registerHooks(app *App) error {
 		slog.Info("claude hooks written", "path", settingsPath, "added", res.added)
 		iOK(fmt.Sprintf("Registered in settings.json: %s", strings.Join(res.added, ", ")))
 	}
+	if len(res.updated) > 0 {
+		slog.Info("claude hooks repointed at this binary", "path", settingsPath, "updated", res.updated)
+		iOK(fmt.Sprintf("Updated in settings.json (repointed at this binary): %s", strings.Join(res.updated, ", ")))
+	}
 	if len(res.existing) > 0 {
 		slog.Info("claude hooks already present", "path", settingsPath, "existing", res.existing)
 		iInfo(fmt.Sprintf("Already configured: %s", strings.Join(res.existing, ", ")))

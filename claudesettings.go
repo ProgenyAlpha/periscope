@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // Merging Periscope's hooks into ~/.claude/settings.json.
@@ -40,11 +41,12 @@ type desiredClaudeSettings struct {
 type settingsMergeResult struct {
 	path     string
 	added    []string // newly written (e.g. "Stop", "statusLine")
+	updated  []string // a stale periscope entry repointed at this binary
 	existing []string // already pointed at our command
 	skipped  []string // present but owned by something else; left alone
 }
 
-func (r settingsMergeResult) changed() bool { return len(r.added) > 0 }
+func (r settingsMergeResult) changed() bool { return len(r.added)+len(r.updated) > 0 }
 
 // hookEntry is the leaf of the hook schema. Groups are kept as RawMessage so
 // that fields we don't know about (matcher, timeout, ...) survive a rewrite.
@@ -93,23 +95,31 @@ func mergeClaudeSettings(path string, want desiredClaudeSettings) (settingsMerge
 			}
 		}
 
-		if hookGroupsContain(groups, spec.command) {
-			res.existing = append(res.existing, spec.event)
-			continue
+		groups, outcome, err := reconcileHookGroups(groups, spec.command)
+		if err != nil {
+			return res, fmt.Errorf("rewrite hooks.%s in %s: %w", spec.event, path, err)
 		}
 
-		group, err := json.Marshal(hookGroup{Hooks: []hookEntry{{Type: "command", Command: spec.command}}})
-		if err != nil {
-			return res, fmt.Errorf("encode %s hook: %w", spec.event, err)
+		switch outcome {
+		case hookUnchanged:
+			res.existing = append(res.existing, spec.event)
+			continue
+		case hookRepointed:
+			res.updated = append(res.updated, spec.event)
+		case hookAbsent:
+			group, err := json.Marshal(hookGroup{Hooks: []hookEntry{{Type: "command", Command: spec.command}}})
+			if err != nil {
+				return res, fmt.Errorf("encode %s hook: %w", spec.event, err)
+			}
+			groups = append(groups, group)
+			res.added = append(res.added, spec.event)
 		}
-		groups = append(groups, group)
 
 		encoded, err := json.Marshal(groups)
 		if err != nil {
 			return res, fmt.Errorf("encode hooks.%s: %w", spec.event, err)
 		}
 		hooks[spec.event] = encoded
-		res.added = append(res.added, spec.event)
 	}
 
 	if len(hooks) > 0 {
@@ -130,10 +140,17 @@ func mergeClaudeSettings(path string, want desiredClaudeSettings) (settingsMerge
 			settings["statusLine"] = encoded
 			res.added = append(res.added, "statusLine")
 		default:
-			var entry hookEntry
-			if json.Unmarshal(cur, &entry) == nil && entry.Command == want.statusLine {
+			encoded, outcome, err := reconcileStatusLine(cur, want.statusLine)
+			if err != nil {
+				return res, fmt.Errorf("rewrite statusLine in %s: %w", path, err)
+			}
+			switch outcome {
+			case hookUnchanged:
 				res.existing = append(res.existing, "statusLine")
-			} else {
+			case hookRepointed:
+				settings["statusLine"] = encoded
+				res.updated = append(res.updated, "statusLine")
+			default:
 				// Someone else's status line. Never overwrite it.
 				res.skipped = append(res.skipped, "statusLine")
 			}
@@ -149,21 +166,147 @@ func mergeClaudeSettings(path string, want desiredClaudeSettings) (settingsMerge
 	return res, nil
 }
 
-// hookGroupsContain reports whether any entry in any group already runs command.
-// Groups that don't parse are treated as foreign and skipped, never dropped.
-func hookGroupsContain(groups []json.RawMessage, command string) bool {
-	for _, raw := range groups {
-		var g hookGroup
-		if json.Unmarshal(raw, &g) != nil {
+// hookMergeOutcome is what reconcileHookGroups found for one event.
+type hookMergeOutcome int
+
+const (
+	hookAbsent    hookMergeOutcome = iota // no periscope entry — the caller appends one
+	hookUnchanged                         // exactly one periscope entry, already correct
+	hookRepointed                         // a stale/duplicated periscope entry was rewritten
+)
+
+// reconcileHookGroups makes the event's groups hold exactly one Periscope entry
+// for this subcommand, pointing at this binary, and returns the rewritten groups.
+//
+// Deduping by command identity is not enough. A second periscope build is a
+// genuinely different file, so `psc init` used to append a second `Stop` group
+// beside the one the installed binary had registered — and Claude then ran the
+// Stop hook twice per turn, double-writing sidecars and double-counting cost,
+// silently. Ownership, not file identity, is the question to ask: an entry
+// whose program looks like periscope (looksLikePeriscope) and whose arguments
+// are the ones we register is ours to repoint, wherever it points now.
+//
+// Everything else is left exactly as found — foreign tools' entries, groups
+// that do not parse, and unknown fields on the groups and entries we do rewrite
+// (matcher, timeout, ...). A hook registered under a name that does not look
+// like periscope and is not this very file cannot be recognised as ours and
+// will be appended beside; that is the safe direction to fail.
+func reconcileHookGroups(groups []json.RawMessage, command string) ([]json.RawMessage, hookMergeOutcome, error) {
+	wantArgs := hookArgs(command)
+	found, rewrote := false, false
+	out := make([]json.RawMessage, 0, len(groups))
+
+	for _, rawGroup := range groups {
+		var group map[string]json.RawMessage
+		if json.Unmarshal(rawGroup, &group) != nil {
+			out = append(out, rawGroup) // not a group we understand: never touch it
 			continue
 		}
-		for _, e := range g.Hooks {
-			if e.Command == command {
-				return true
-			}
+		var entries []json.RawMessage
+		if rawEntries, ok := group["hooks"]; !ok || json.Unmarshal(rawEntries, &entries) != nil {
+			out = append(out, rawGroup)
+			continue
 		}
+
+		kept := make([]json.RawMessage, 0, len(entries))
+		groupChanged := false
+		for _, rawEntry := range entries {
+			var entry map[string]json.RawMessage
+			var cmd string
+			if json.Unmarshal(rawEntry, &entry) != nil ||
+				json.Unmarshal(entry["command"], &cmd) != nil ||
+				!ownedByPeriscope(cmd, command, wantArgs) {
+				kept = append(kept, rawEntry)
+				continue
+			}
+			if found { // a second periscope entry: the corrupted state, collapsed
+				groupChanged = true
+				continue
+			}
+			found = true
+			if sameCommand(cmd, command) {
+				// Already this binary — a bare name on PATH or a symlink is a
+				// deliberate registration, not something to hard-code away.
+				kept = append(kept, rawEntry)
+				continue
+			}
+			encoded, err := json.Marshal(command)
+			if err != nil {
+				return nil, hookAbsent, fmt.Errorf("encode command: %w", err)
+			}
+			entry["command"] = encoded
+			rewritten, err := json.Marshal(entry)
+			if err != nil {
+				return nil, hookAbsent, fmt.Errorf("encode hook entry: %w", err)
+			}
+			kept = append(kept, rewritten)
+			groupChanged = true
+		}
+
+		if !groupChanged {
+			out = append(out, rawGroup)
+			continue
+		}
+		rewrote = true
+		if len(kept) == 0 {
+			continue // the group held nothing but a duplicate of ours
+		}
+		encodedEntries, err := json.Marshal(kept)
+		if err != nil {
+			return nil, hookAbsent, fmt.Errorf("encode hook entries: %w", err)
+		}
+		group["hooks"] = encodedEntries
+		rewritten, err := json.Marshal(group)
+		if err != nil {
+			return nil, hookAbsent, fmt.Errorf("encode hook group: %w", err)
+		}
+		out = append(out, rewritten)
 	}
-	return false
+
+	switch {
+	case rewrote:
+		return out, hookRepointed, nil
+	case found:
+		return out, hookUnchanged, nil
+	default:
+		return out, hookAbsent, nil
+	}
+}
+
+// reconcileStatusLine applies the same ownership rule to the statusLine object,
+// preserving any fields on it we do not know about.
+func reconcileStatusLine(cur json.RawMessage, want string) (json.RawMessage, hookMergeOutcome, error) {
+	var entry map[string]json.RawMessage
+	var cmd string
+	if json.Unmarshal(cur, &entry) != nil || json.Unmarshal(entry["command"], &cmd) != nil {
+		return nil, hookAbsent, nil
+	}
+	if sameCommand(cmd, want) {
+		return cur, hookUnchanged, nil
+	}
+	if !ownedByPeriscope(cmd, want, hookArgs(want)) {
+		return nil, hookAbsent, nil
+	}
+	encoded, err := json.Marshal(want)
+	if err != nil {
+		return nil, hookAbsent, fmt.Errorf("encode command: %w", err)
+	}
+	entry["command"] = encoded
+	rewritten, err := json.Marshal(entry)
+	if err != nil {
+		return nil, hookAbsent, fmt.Errorf("encode statusLine: %w", err)
+	}
+	return rewritten, hookRepointed, nil
+}
+
+// ownedByPeriscope reports whether a registered command line is one of ours:
+// either literally this binary (a hard link or a bare name on PATH included),
+// or some other periscope build invoked with the same subcommand.
+func ownedByPeriscope(registered, want, wantArgs string) bool {
+	if sameCommand(registered, want) {
+		return true
+	}
+	return looksLikePeriscope(hookTarget(registered)) && hookArgs(registered) == wantArgs
 }
 
 // readSettingsFile returns the file's contents and the mode to preserve on
@@ -218,4 +361,37 @@ func writeSettingsFile(path string, settings map[string]json.RawMessage, mode os
 		return fmt.Errorf("rename onto %s: %w", path, err)
 	}
 	return nil
+}
+
+// sameCommand reports whether two hook command lines invoke the same program
+// with the same arguments.
+//
+// A command registered as a bare name ("periscope statusline") and the same
+// command written absolutely ("/home/u/.local/bin/periscope statusline") are
+// the same thing, but compare unequal as strings — which made init report our
+// own status line as "owned by another tool" and refuse to manage it. Resolve
+// the executable the way a shell would and compare it by identity, so a bare
+// name on PATH or a symlink is recognised rather than treated as a stranger.
+func sameCommand(a, b string) bool {
+	if a == b {
+		return true
+	}
+	fa, fb := strings.Fields(a), strings.Fields(b)
+	if len(fa) != len(fb) || len(fa) == 0 {
+		return false
+	}
+	for i := 1; i < len(fa); i++ {
+		if fa[i] != fb[i] {
+			return false
+		}
+	}
+	ra, err := resolveHookTarget(fa[0])
+	if err != nil {
+		return false
+	}
+	rb, err := resolveHookTarget(fb[0])
+	if err != nil {
+		return false
+	}
+	return sameBinary(ra, rb)
 }

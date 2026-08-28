@@ -53,8 +53,14 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           merge-multiple: true
+      # install.sh and install.ps1 refuse to install a binary they cannot
+      # verify, so every release must publish the checksums they check against.
+      - name: Checksums
+        run: sha256sum periscope-* > SHA256SUMS && cat SHA256SUMS
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
-          files: periscope-*
+          files: |
+            periscope-*
+            SHA256SUMS
