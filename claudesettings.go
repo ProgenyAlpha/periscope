@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 )
 
 // Merging Periscope's hooks into ~/.claude/settings.json.
@@ -376,7 +375,7 @@ func sameCommand(a, b string) bool {
 	if a == b {
 		return true
 	}
-	fa, fb := strings.Fields(a), strings.Fields(b)
+	fa, fb := hookFields(a), hookFields(b)
 	if len(fa) != len(fb) || len(fa) == 0 {
 		return false
 	}
@@ -394,4 +393,178 @@ func sameCommand(a, b string) bool {
 		return false
 	}
 	return sameBinary(ra, rb)
+}
+
+// settingsRemoveResult reports what removeClaudeSettings actually deleted, so
+// uninstall can say "removed Stop" instead of claiming it in the usage text
+// and doing nothing.
+type settingsRemoveResult struct {
+	path    string
+	removed []string // hook events (and "statusLine") we took back out
+	skipped []string // present but owned by something else; left alone
+}
+
+// removeClaudeSettings deletes Periscope's own entries from settings.json and
+// leaves everything else byte-for-byte as it found it.
+//
+// Ownership is decided by ownedByPeriscope, the same rule the merge uses, so a
+// hook registered by a differently-located periscope build is still recognised
+// and removed. `periscope uninstall` advertises "Remove hooks and clean up"
+// and used to remove no hooks at all: the binary was deleted and the hooks
+// stayed, firing a missing file on every turn for as long as the settings file
+// survived.
+func removeClaudeSettings(path string, want desiredClaudeSettings) (settingsRemoveResult, error) {
+	res := settingsRemoveResult{path: path}
+
+	raw, mode, err := readSettingsFile(path)
+	if err != nil {
+		return res, err
+	}
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return res, nil // nothing registered anywhere
+	}
+
+	settings := map[string]json.RawMessage{}
+	if err := json.Unmarshal(raw, &settings); err != nil {
+		return res, fmt.Errorf("parse %s (leaving it untouched): %w", path, err)
+	}
+
+	hooks := map[string]json.RawMessage{}
+	if rawHooks, ok := settings["hooks"]; ok && len(bytes.TrimSpace(rawHooks)) > 0 &&
+		!bytes.Equal(bytes.TrimSpace(rawHooks), []byte("null")) {
+		if err := json.Unmarshal(rawHooks, &hooks); err != nil {
+			return res, fmt.Errorf(`parse "hooks" in %s (leaving it untouched): %w`, path, err)
+		}
+	}
+
+	changed := false
+	for _, spec := range want.hooks {
+		rawEvent, ok := hooks[spec.event]
+		if !ok || len(bytes.TrimSpace(rawEvent)) == 0 ||
+			bytes.Equal(bytes.TrimSpace(rawEvent), []byte("null")) {
+			continue
+		}
+		var groups []json.RawMessage
+		if err := json.Unmarshal(rawEvent, &groups); err != nil {
+			return res, fmt.Errorf(`parse hooks.%s in %s (leaving it untouched): %w`, spec.event, path, err)
+		}
+
+		groups, dropped, err := stripHookGroups(groups, spec.command)
+		if err != nil {
+			return res, fmt.Errorf("rewrite hooks.%s in %s: %w", spec.event, path, err)
+		}
+		if !dropped {
+			continue
+		}
+		changed = true
+		res.removed = append(res.removed, spec.event)
+
+		// An event left with no groups is noise, not configuration. Delete the
+		// key rather than leaving `"Stop": []` behind.
+		if len(groups) == 0 {
+			delete(hooks, spec.event)
+			continue
+		}
+		encoded, err := json.Marshal(groups)
+		if err != nil {
+			return res, fmt.Errorf("encode hooks.%s: %w", spec.event, err)
+		}
+		hooks[spec.event] = encoded
+	}
+
+	if changed {
+		if len(hooks) == 0 {
+			delete(settings, "hooks")
+		} else {
+			encoded, err := json.Marshal(hooks)
+			if err != nil {
+				return res, fmt.Errorf("encode hooks: %w", err)
+			}
+			settings["hooks"] = encoded
+		}
+	}
+
+	if want.statusLine != "" {
+		if cur, ok := settings["statusLine"]; ok && len(bytes.TrimSpace(cur)) > 0 &&
+			!bytes.Equal(bytes.TrimSpace(cur), []byte("null")) {
+			var entry map[string]json.RawMessage
+			var cmd string
+			switch {
+			case json.Unmarshal(cur, &entry) != nil || json.Unmarshal(entry["command"], &cmd) != nil:
+				// Not a shape we wrote. Leave it.
+				res.skipped = append(res.skipped, "statusLine")
+			case ownedByPeriscope(cmd, want.statusLine, hookArgs(want.statusLine)):
+				delete(settings, "statusLine")
+				res.removed = append(res.removed, "statusLine")
+				changed = true
+			default:
+				res.skipped = append(res.skipped, "statusLine")
+			}
+		}
+	}
+
+	if !changed {
+		return res, nil
+	}
+	if err := writeSettingsFile(path, settings, mode); err != nil {
+		return res, err
+	}
+	return res, nil
+}
+
+// stripHookGroups removes every Periscope-owned entry for this subcommand from
+// an event's groups, dropping any group left empty. Groups and entries it does
+// not recognise are passed through untouched, as in reconcileHookGroups.
+func stripHookGroups(groups []json.RawMessage, command string) ([]json.RawMessage, bool, error) {
+	wantArgs := hookArgs(command)
+	dropped := false
+	out := make([]json.RawMessage, 0, len(groups))
+
+	for _, rawGroup := range groups {
+		var group map[string]json.RawMessage
+		if json.Unmarshal(rawGroup, &group) != nil {
+			out = append(out, rawGroup)
+			continue
+		}
+		var entries []json.RawMessage
+		if rawEntries, ok := group["hooks"]; !ok || json.Unmarshal(rawEntries, &entries) != nil {
+			out = append(out, rawGroup)
+			continue
+		}
+
+		kept := make([]json.RawMessage, 0, len(entries))
+		groupChanged := false
+		for _, rawEntry := range entries {
+			var entry map[string]json.RawMessage
+			var cmd string
+			if json.Unmarshal(rawEntry, &entry) != nil ||
+				json.Unmarshal(entry["command"], &cmd) != nil ||
+				!ownedByPeriscope(cmd, command, wantArgs) {
+				kept = append(kept, rawEntry)
+				continue
+			}
+			groupChanged = true
+			dropped = true
+		}
+
+		if !groupChanged {
+			out = append(out, rawGroup)
+			continue
+		}
+		if len(kept) == 0 {
+			continue // the group held nothing but ours
+		}
+		encodedEntries, err := json.Marshal(kept)
+		if err != nil {
+			return nil, dropped, fmt.Errorf("encode hook entries: %w", err)
+		}
+		group["hooks"] = encodedEntries
+		rewritten, err := json.Marshal(group)
+		if err != nil {
+			return nil, dropped, fmt.Errorf("encode hook group: %w", err)
+		}
+		out = append(out, rewritten)
+	}
+
+	return out, dropped, nil
 }

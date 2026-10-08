@@ -1,5 +1,9 @@
 <style>
-.w-timeline .chart-area{position:relative;height:130px;margin-top:6px}
+/* Everything in this widget is a fixed height, and they summed to 225px inside
+   a 222px tile: a permanent 3px scrollbar on an otherwise tidy card. Measured
+   and trimmed rather than given a whole extra grid row, which would have cost
+   60px of empty space to hide 3. */
+.w-timeline .chart-area{position:relative;height:128px;margin-top:2px}
 .w-timeline canvas{width:100%;height:100%;display:block}
 .w-timeline .tl-stats{display:flex;gap:16px;margin-top:8px}
 .w-timeline .tl-stat{display:flex;flex-direction:column;gap:2px}

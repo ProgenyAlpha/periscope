@@ -500,6 +500,23 @@ nohup "%s" serve >/dev/null 2>&1 &
 `, healthURL, binary)
 }
 
+// periscopeClaudeSettings is the complete set of entries Periscope owns in
+// settings.json. init merges this list in and uninstall takes the same list
+// back out, so the two can never drift into registering a hook that uninstall
+// does not know to remove.
+func periscopeClaudeSettings(app *App) desiredClaudeSettings {
+	binary := periscopeBinary()
+	launcherName, _ := launcherScript(app.Config.Server, binary, runtime.GOOS)
+	return desiredClaudeSettings{
+		hooks: []claudeHookSpec{
+			{event: "SessionStart", command: filepath.Join(app.HomeDir, launcherName)},
+			{event: "Stop", command: binary + " hook stop"},
+			{event: "UserPromptSubmit", command: binary + " hook display"},
+		},
+		statusLine: binary + " statusline",
+	}
+}
+
 func registerHooks(app *App) error {
 	binary := periscopeBinary()
 	slog.Debug("using binary", "path", binary)
@@ -518,14 +535,7 @@ func registerHooks(app *App) error {
 	// sidecar files are ever written, so session ingestion silently dies —
 	// printing the commands and hoping the user pastes them is not enough.
 	settingsPath := filepath.Join(app.ClaudeDir, claudeSettingsName)
-	want := desiredClaudeSettings{
-		hooks: []claudeHookSpec{
-			{event: "SessionStart", command: launcherPath},
-			{event: "Stop", command: binary + " hook stop"},
-			{event: "UserPromptSubmit", command: binary + " hook display"},
-		},
-		statusLine: binary + " statusline",
-	}
+	want := periscopeClaudeSettings(app)
 
 	res, err := mergeClaudeSettings(settingsPath, want)
 	if err != nil {
@@ -603,6 +613,27 @@ func uninstall(app *App) error {
 		iInfo("No scheduled health check found")
 	}
 
+	// Take our hooks back out of settings.json. This is what the usage line
+	// has always promised ("Remove hooks and clean up") and what never
+	// happened: a Stop hook left pointing at a deleted binary fires on every
+	// turn of every future session, and the failure is silent.
+	settingsPath := filepath.Join(app.ClaudeDir, claudeSettingsName)
+	rem, err := removeClaudeSettings(settingsPath, periscopeClaudeSettings(app))
+	if err != nil {
+		slog.Warn("could not remove Claude hooks", "path", settingsPath, "err", err)
+		iWarn(fmt.Sprintf("Could not update %s: %v", settingsPath, err))
+		iInfo("Remove the periscope hooks and statusLine from it by hand.")
+	} else if len(rem.removed) > 0 {
+		slog.Info("claude hooks removed", "path", settingsPath, "removed", rem.removed)
+		iOK("Removed from settings.json: " + strings.Join(rem.removed, ", "))
+	} else {
+		iInfo("No Periscope hooks in settings.json")
+	}
+	for _, k := range rem.skipped {
+		slog.Warn("claude setting owned by another tool, left alone", "path", settingsPath, "key", k)
+		iWarn(fmt.Sprintf("%s points elsewhere — left it alone", k))
+	}
+
 	// Remove scheduled task
 	if runtime.GOOS == "windows" {
 		if err := exec.Command("schtasks", "/Delete", "/TN", "Periscope-AutoStart", "/F").Run(); err == nil {
@@ -617,7 +648,7 @@ func uninstall(app *App) error {
 		fmt.Println()
 		fmt.Printf("  %sRemove %s?%s\n", cBold, app.HomeDir, cReset)
 		fmt.Printf("  %sThis deletes all plugins, themes, and the database.%s\n", cDim, cReset)
-		fmt.Printf("  %sClaude hooks and session data are NOT affected.%s\n", cDim, cReset)
+		fmt.Printf("  %sYour Claude session transcripts are NOT affected.%s\n", cDim, cReset)
 		fmt.Println()
 		if iPrompt(fmt.Sprintf("Delete? %s[y/N]%s ", cDim, cReset)) {
 			os.RemoveAll(app.HomeDir)

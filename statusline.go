@@ -856,7 +856,7 @@ func segDash(url string, theme *TerminalTheme) segment {
 		return segment{empty: true}
 	}
 	return segment{
-		text:  osc8(url, " ↗ dashboard"),
+		text:  osc8(url, " ↗ dash"),
 		color: theme.Blue,
 	}
 }

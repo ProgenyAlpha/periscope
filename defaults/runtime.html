@@ -424,7 +424,13 @@ function escHtml(s) { if (!s) return ''; var d=document.createElement('div'); d.
   // HTML attribute. Encode them so one helper is correct in both contexts.
   return d.innerHTML.replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
 function fmt(n) { return typeof n === 'number' ? n.toLocaleString() : '--'; }
-function fmtK(n) { return typeof n === 'number' ? (n >= 1e6 ? (n/1e6).toFixed(1)+'M' : (n >= 1e3 ? (n/1e3).toFixed(0)+'K' : n.toString())) : '--'; }
+function fmtK(n) {
+  if (typeof n !== 'number') return '--';
+  if (n >= 1e9) return (n/1e9).toFixed(1)+'B';
+  if (n >= 1e6) return (n/1e6).toFixed(1)+'M';
+  if (n >= 1e3) return (n/1e3).toFixed(0)+'K';
+  return n.toString();
+}
 function fmtCost(n) { return typeof n === 'number' ? '$'+n.toFixed(2) : '--'; }
 function shortSid(s) { return s ? s.substring(0,8) : '--'; }
 // Human-readable session label — eliminates meaningless hex IDs
@@ -879,9 +885,12 @@ const DEFAULT_LAYOUT = {
   'cost-timeline':       {x:6,  y:27, w:6,  h:4},
   'tool-usage':          {x:0,  y:31, w:6,  h:5},
   'last-turn':           {x:6,  y:31, w:6,  h:5},
-  'model-usage':         {x:6,  y:36, w:6,  h:5},
-  'statusline-settings': {x:0,  y:36, w:6,  h:7},
-  'session-list':        {x:0,  y:43, w:12, h:7},
+  // Measured against what these two actually render, not guessed: model-usage
+  // at h:5 clipped ~190px of its own rows and statusline-settings ~25px, so
+  // both shipped with a scrollbar inside a half-empty dashboard.
+  'model-usage':         {x:6,  y:36, w:6,  h:9},
+  'statusline-settings': {x:0,  y:36, w:6,  h:8},
+  'session-list':        {x:0,  y:45, w:12, h:7},
 };
 
 const Periscope = {
@@ -897,6 +906,31 @@ const Periscope = {
   _layoutReady: false,
   _widgetOrder: 0,
   _hiddenWidgets: new Set(),
+
+  // Formatting and theme helpers. Widgets reached for Periscope.fmtK,
+  // Periscope.fmtCost, Periscope.fmt and Periscope.getColors long before any
+  // of them existed, so every widget silently fell back to its own copy and
+  // the same number was rounded three different ways across the dashboard.
+  fmtK,
+  fmtCost,
+  fmt(n) { return typeof n === 'number' ? n.toLocaleString() : '--'; },
+
+  // Read off the live custom properties rather than a cached palette, so a
+  // theme switch lands without every widget having to re-register.
+  getColors() {
+    const cs = getComputedStyle(document.documentElement);
+    const read = name => cs.getPropertyValue(name).trim();
+    return {
+      primary:   read('--c-primary'),
+      secondary: read('--c-secondary'),
+      tertiary:  read('--c-tertiary'),
+      accent:    read('--c-accent'),
+      warm:      read('--c-warm'),
+      warning:   read('--c-warning'),
+      danger:    read('--c-danger'),
+      dim:       read('--text-dim'),
+    };
+  },
 
   // Widget API — same contract as before: { id, title, size, priority, init(el), render(el, data), destroy() }
   registerWidget(config) {

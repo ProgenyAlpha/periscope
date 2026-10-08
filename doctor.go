@@ -101,6 +101,7 @@ var expectedSchemaVersion = store.CurrentSchemaVersion()
 // Check names. Constants so the printer, the tests and the summary cannot drift.
 const (
 	checkHooks      = "claude hooks"
+	checkLauncher   = "session launcher"
 	checkStatusLine = "claude statusline"
 	checkSidecars   = "sidecar freshness"
 	checkIngest     = "ingestion freshness"
@@ -564,9 +565,30 @@ func isJSONValue(raw json.RawMessage) bool {
 	return len(t) > 0 && !bytes.Equal(t, []byte("null"))
 }
 
+// envAssignRe matches a leading `VAR=value` on a command line.
+var envAssignRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*=`)
+
+// hookFields splits a hook command and drops any leading environment
+// assignments, so `PATH="$HOME/.local/bin:$PATH" periscope hook stop` is
+// recognised as the same hook as `periscope hook stop`.
+//
+// Prefixing a hook this way is a normal thing to do — Claude runs hooks through
+// a bare /bin/sh whose PATH is whatever the parent process had, so people patch
+// it inline. Reading the assignment as the program made periscope fail to
+// recognise its own Stop hook: doctor called it "not registered", `init` would
+// have appended a second one beside it, and `uninstall` would have left it
+// behind.
+func hookFields(cmd string) []string {
+	fields := strings.Fields(cmd)
+	for len(fields) > 0 && envAssignRe.MatchString(fields[0]) {
+		fields = fields[1:]
+	}
+	return fields
+}
+
 // hookTarget is the executable a hook command runs; hookArgs is the rest.
 func hookTarget(cmd string) string {
-	fields := strings.Fields(cmd)
+	fields := hookFields(cmd)
 	if len(fields) == 0 {
 		return ""
 	}
@@ -574,7 +596,7 @@ func hookTarget(cmd string) string {
 }
 
 func hookArgs(cmd string) string {
-	fields := strings.Fields(cmd)
+	fields := hookFields(cmd)
 	if len(fields) <= 1 {
 		return ""
 	}
@@ -721,7 +743,83 @@ func checkClaudeHooks(env doctorEnv) []checkResult {
 		hooksResult.Remedy = reinit
 	}
 
-	return []checkResult{hooksResult, checkClaudeStatusLine(env, view, want, reinit)}
+	return []checkResult{hooksResult, checkLauncherTarget(env), checkClaudeStatusLine(env, view, want, reinit)}
+}
+
+// launcherTargetRe pulls the binary out of the launcher script. Both the sh and
+// the ps1 form quote it on the line that starts the server, and nothing else in
+// either script is quoted.
+var launcherTargetRe = regexp.MustCompile(`"([^"]+)"\s+serve`)
+
+// checkLauncherTarget opens the SessionStart launcher and checks the binary it
+// actually starts.
+//
+// Verifying that the hook points at the launcher is not the same as verifying
+// the launcher works. The script is written once, with the absolute path of
+// whichever binary ran `periscope init` — so a build run from a scratch
+// directory bakes that path in, and every session afterwards starts that copy
+// instead. Doctor reported twelve green checks against an install whose
+// launcher pointed into /tmp: correct hooks, correct statusline, a healthy
+// server, and a start path that would break the first time the directory was
+// cleaned.
+func checkLauncherTarget(env doctorEnv) checkResult {
+	path := filepath.Join(env.HomeDir, doctorLauncherName())
+	reinit := "Run `periscope init` from the binary you want driving telemetry — it rewrites the launcher."
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return checkResult{checkLauncher, ckFail,
+			"cannot read " + path + ": " + err.Error(), reinit}
+	}
+
+	m := launcherTargetRe.FindSubmatch(raw)
+	if m == nil {
+		return checkResult{checkLauncher, ckWarn,
+			path + " has no recognisable start command", reinit}
+	}
+	target := string(m[1])
+
+	info, err := os.Stat(target)
+	if err != nil {
+		return checkResult{checkLauncher, ckFail,
+			"starts " + target + ", which does not exist — no session will ever start the server", reinit}
+	}
+	if runtime.GOOS != "windows" && info.Mode()&0111 == 0 {
+		return checkResult{checkLauncher, ckFail,
+			"starts " + target + ", which is not executable", reinit}
+	}
+	if !sameBinary(target, env.Binary) {
+		detail := "starts " + target + " rather than this binary (" + env.Binary + ")"
+		if isEphemeralPath(target) {
+			return checkResult{checkLauncher, ckFail,
+				detail + " — and that path is temporary, so it will stop starting at all", reinit}
+		}
+		return checkResult{checkLauncher, ckWarn, detail,
+			"Harmless if that is the copy you want driving telemetry; otherwise " + strings.ToLower(reinit[:1]) + reinit[1:]}
+	}
+	return checkResult{checkLauncher, ckOK, "starts " + target, ""}
+}
+
+// ephemeralPrefixes is a function rather than a constant list so a test can
+// describe a stable install without having to write outside a temp directory.
+var ephemeralPrefixes = func() []string {
+	return []string{"/tmp/", "/var/tmp/", "/dev/shm/", os.TempDir() + string(filepath.Separator)}
+}
+
+// isEphemeralPath reports whether a path lives somewhere the system is entitled
+// to delete without warning. A launcher pointing into one of these is a failure
+// waiting for a reboot, not a preference.
+func isEphemeralPath(p string) bool {
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		abs = p
+	}
+	for _, prefix := range ephemeralPrefixes() {
+		if strings.HasPrefix(abs, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // checkClaudeStatusLine is a warning, never a failure: the terminal statusline

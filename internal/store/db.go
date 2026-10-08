@@ -572,6 +572,12 @@ func ImportFileData(db *sql.DB, dataDir, claudeDir string) error {
 	if err := ImportJSONL(db, filepath.Join(dataDir, "limit-history.jsonl"), "limit_history"); err != nil {
 		errs = append(errs, fmt.Errorf("limit history: %w", err))
 	}
+	// The hook writes percentages with no token figures, so the snapshots it
+	// contributes arrive without the capacity fields. Fill them in here, while
+	// the usage history that backs them is still on hand.
+	if err := BackfillCapacity(db); err != nil {
+		errs = append(errs, fmt.Errorf("capacity backfill: %w", err))
+	}
 	importKVFile(db, filepath.Join(dataDir, "usage-config.json"), "config:usage")
 	importKVFile(db, filepath.Join(dataDir, "usage-api-cache.json"), "cache:usage-api")
 	importKVFile(db, filepath.Join(dataDir, "profile-cache.json"), "cache:profile")
@@ -1510,6 +1516,12 @@ func AppendLimitSnapshot(db *sql.DB, dataDir string, liveUsage json.RawMessage) 
 		}
 	}
 
+	// Stamp the window burn onto the snapshot before it is frozen. Doing it
+	// here is what makes the capacity trend possible at all: percentages alone
+	// carry no denominator, so a snapshot without wt5hr/wtWeekly can never be
+	// turned back into a quota figure once the history behind it is rolled up.
+	annotateCapacity(db, current)
+
 	now := time.Now().UTC().Format(time.RFC3339)
 	current["ts"] = now
 	dataWithTS, _ := json.Marshal(current)
@@ -1919,4 +1931,295 @@ func writeFileAtomic(path string, data []byte) error {
 	}
 	tmp = ""
 	return nil
+}
+
+// --- Snapshot capacity annotation ---
+
+// Token weights mirror TOKEN_WEIGHTS in defaults/runtime.html. Cache reads
+// count for nothing: they are billed but they do not consume rate limit.
+const (
+	weightInput      = 1
+	weightCacheRead  = 0
+	weightCacheWrite = 1
+	weightOutput     = 5
+)
+
+// windowTotals accumulates, per session, the weighted-token totals needed to
+// work out how much of a rate-limit window a session actually burned. History
+// rows carry cumulative counters, so the figure that matters is the delta
+// between the last row inside the window and the baseline before it.
+type windowTotals struct {
+	start  time.Time
+	before map[string]float64
+	first  map[string]float64
+	last   map[string]float64
+	seen   map[string]int
+}
+
+func newWindowTotals(start time.Time) *windowTotals {
+	return &windowTotals{
+		start:  start,
+		before: map[string]float64{},
+		first:  map[string]float64{},
+		last:   map[string]float64{},
+		seen:   map[string]int{},
+	}
+}
+
+func (w *windowTotals) add(sid string, ts time.Time, weighted float64) {
+	if ts.Before(w.start) {
+		// Rows arrive in ascending order, so the last one to land here is the
+		// closest baseline before the window opened.
+		w.before[sid] = weighted
+		return
+	}
+	if w.seen[sid] == 0 {
+		w.first[sid] = weighted
+	}
+	w.seen[sid]++
+	w.last[sid] = weighted
+}
+
+// sum mirrors the widget: baseline is the row before the window, or the first
+// row inside it, and a session with a single in-window row has no baseline to
+// subtract at all.
+func (w *windowTotals) sum() float64 {
+	var total float64
+	for sid, last := range w.last {
+		base := 0.0
+		if b, ok := w.before[sid]; ok {
+			base = b
+		} else if w.seen[sid] > 1 {
+			base = w.first[sid]
+		}
+		total += math.Max(0, last-base)
+	}
+	return total
+}
+
+// capacityPoint is one usage-history row reduced to what capacity needs.
+type capacityPoint struct {
+	sid      string
+	ts       time.Time
+	weighted float64
+}
+
+// loadHistoryPoints reads the usage history once, in ascending time order, so
+// a batch of snapshots can be annotated from a single scan instead of one scan
+// each. Retention bounds the size; this is roughly a megabyte at a week.
+func loadHistoryPoints(db *sql.DB) ([]capacityPoint, error) {
+	rows, err := db.Query("SELECT data FROM history ORDER BY replace(ts, ' ', 'T') ASC")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var points []capacityPoint
+	for rows.Next() {
+		var raw string
+		if err := rows.Scan(&raw); err != nil {
+			continue
+		}
+		var h map[string]any
+		if json.Unmarshal([]byte(raw), &h) != nil {
+			continue
+		}
+		sid, _ := h["sid"].(string)
+		if sid == "" {
+			continue
+		}
+		ts, err := parseHistoryTime(h["ts"])
+		if err != nil {
+			continue
+		}
+		points = append(points, capacityPoint{sid: sid, ts: ts,
+			weighted: numOf(h["input"])*weightInput +
+				numOf(h["cr"])*weightCacheRead +
+				numOf(h["cw"])*weightCacheWrite +
+				numOf(h["out"])*weightOutput})
+	}
+	return points, rows.Err()
+}
+
+// annotateFromPoints stamps a limit snapshot with the weighted tokens burned so
+// far in each window (wt5hr, wtWeekly), and reports whether it changed anything.
+//
+// Dividing those by the matching percent yields the inferred quota, which is
+// the only way to watch the quota move: the API reports a percentage and never
+// the denominator. It is computed on the way in rather than in the dashboard
+// because history is downsampled for transport, so a snapshot from last
+// Tuesday can no longer be reconstructed client side.
+func annotateFromPoints(points []capacityPoint, snap map[string]any) bool {
+	windows := map[string]*windowTotals{}
+	if start, ok := windowStart(snap["reset5hr"], 5*time.Hour); ok {
+		windows["wt5hr"] = newWindowTotals(start)
+	}
+	if start, ok := windowStart(snap["resetWeekly"], 7*24*time.Hour); ok {
+		windows["wtWeekly"] = newWindowTotals(start)
+	}
+	if len(windows) == 0 {
+		return false
+	}
+
+	// Usage after the snapshot was taken is not part of what it measured. The
+	// backfill runs now but annotates rows written minutes or hours ago, and
+	// without this every backfilled snapshot would come out carrying the same
+	// present-day total — which is exactly the flat line the capacity trend is
+	// meant to detect movement in.
+	cutoff, hasCutoff := parseSnapshotTime(snap["ts"])
+
+	for _, p := range points {
+		if hasCutoff && p.ts.After(cutoff) {
+			break // points are in ascending time order
+		}
+		for _, w := range windows {
+			w.add(p.sid, p.ts, p.weighted)
+		}
+	}
+
+	// A zero total means no measurable usage in the window, which the widget
+	// filters out anyway. Writing it would only bloat every snapshot.
+	changed := false
+	for key, w := range windows {
+		if total := w.sum(); total > 0 {
+			snap[key] = math.Round(total)
+			changed = true
+		}
+	}
+	return changed
+}
+
+// annotateCapacity is annotateFromPoints for a single snapshot, on the write
+// path where there is nothing to batch with.
+func annotateCapacity(db *sql.DB, snap map[string]any) {
+	points, err := loadHistoryPoints(db)
+	if err != nil {
+		slog.Warn("capacity annotation: history read failed", "err", err)
+		return
+	}
+	annotateFromPoints(points, snap)
+}
+
+// backfillLimit caps how many snapshots one BackfillCapacity pass will rewrite,
+// so a first run against a long history cannot stall an import.
+const backfillLimit = 48
+
+// BackfillCapacity annotates limit_history rows that arrived without the
+// capacity fields.
+//
+// Most snapshots do: the Stop hook appends a minimal entry (percent and reset
+// only) straight to limit-history.jsonl, which the server later imports, and
+// that path never passes through AppendLimitSnapshot. Annotating on the way in
+// is what makes the capacity trend work for the snapshots that actually exist
+// rather than only the handful the server writes itself.
+//
+// Rows older than the usage history are skipped rather than guessed at: their
+// window cannot be reconstructed once the history behind it is gone.
+func BackfillCapacity(db *sql.DB) error {
+	cutoff := time.Now().UTC().Add(-HistoryRetention).Format(time.RFC3339)
+	rows, err := db.Query(
+		`SELECT id, data FROM limit_history
+		  WHERE replace(ts, ' ', 'T') >= ? AND data NOT LIKE '%"wt5hr"%'
+		  ORDER BY replace(ts, ' ', 'T') DESC LIMIT ?`, cutoff, backfillLimit)
+	if err != nil {
+		return fmt.Errorf("backfill: read limit_history: %w", err)
+	}
+
+	type pending struct {
+		id   int64
+		snap map[string]any
+	}
+	var todo []pending
+	for rows.Next() {
+		var id int64
+		var raw string
+		if err := rows.Scan(&id, &raw); err != nil {
+			continue
+		}
+		var snap map[string]any
+		if json.Unmarshal([]byte(raw), &snap) != nil {
+			continue
+		}
+		todo = append(todo, pending{id: id, snap: snap})
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return fmt.Errorf("backfill: scan limit_history: %w", err)
+	}
+	if len(todo) == 0 {
+		return nil // the common case: one cheap query and out
+	}
+
+	points, err := loadHistoryPoints(db)
+	if err != nil {
+		return fmt.Errorf("backfill: read history: %w", err)
+	}
+
+	updated := 0
+	for _, p := range todo {
+		if !annotateFromPoints(points, p.snap) {
+			continue
+		}
+		encoded, err := json.Marshal(p.snap)
+		if err != nil {
+			continue
+		}
+		if _, err := db.Exec("UPDATE limit_history SET data = ? WHERE id = ?", string(encoded), p.id); err != nil {
+			return fmt.Errorf("backfill: update limit_history: %w", err)
+		}
+		updated++
+	}
+	if updated > 0 {
+		slog.Info("capacity backfilled", "snapshots", updated, "pending", len(todo))
+	}
+	return nil
+}
+
+// parseSnapshotTime reads a snapshot's own timestamp. A snapshot being written
+// right now has none yet, and takes the whole history.
+func parseSnapshotTime(v any) (time.Time, bool) {
+	t, err := parseHistoryTime(v)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return t, true
+}
+
+// windowStart turns a reset timestamp into the moment its window opened. A
+// missing or unparseable reset means that window is simply not annotated.
+func windowStart(reset any, span time.Duration) (time.Time, bool) {
+	s, _ := reset.(string)
+	if s == "" {
+		return time.Time{}, false
+	}
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return t.Add(-span), true
+}
+
+// parseHistoryTime accepts both the RFC3339 form the hooks write and the
+// space-separated form SQLite hands back from a DATETIME default.
+func parseHistoryTime(v any) (time.Time, error) {
+	s, _ := v.(string)
+	if s == "" {
+		return time.Time{}, errors.New("empty timestamp")
+	}
+	return time.Parse(time.RFC3339, strings.Replace(s, " ", "T", 1))
+}
+
+func numOf(v any) float64 {
+	switch n := v.(type) {
+	case float64:
+		return n
+	case json.Number:
+		f, err := n.Float64()
+		if err != nil {
+			return 0
+		}
+		return f
+	}
+	return 0
 }

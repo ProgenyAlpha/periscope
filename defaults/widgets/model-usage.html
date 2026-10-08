@@ -57,6 +57,13 @@ Periscope.registerWidget({
 
     var entries = Object.entries(models).sort(function(a, b) { return b[1].tokens - a[1].tokens; });
 
+    // Model keys come straight off telemetry and are not all well-formed: an
+    // empty string produces a nameless row, and `<synthetic>` was being parsed
+    // as an unknown HTML tag and rendering as nothing at all — a row with real
+    // tokens and real cost against a blank label. Name the empty ones, escape
+    // the rest.
+    entries = entries.map(function(e) { return [e[0] || 'unknown', e[1]]; });
+
     if (entries.length === 0) {
       // Not innerHTML = '': that leaves a titled blank box on a fresh install
       // with nothing to say why. The .empty style below the widget's rules was
@@ -77,7 +84,7 @@ Periscope.registerWidget({
       cs.getPropertyValue('--c-danger').trim() || '#C82337'
     ];
 
-    var fmtK = function(n) { return n >= 1e9 ? (n/1e9).toFixed(1)+'B' : n >= 1e6 ? (n/1e6).toFixed(1)+'M' : n >= 1e3 ? (n/1e3).toFixed(0)+'K' : n.toString(); };
+    var fmtK = Periscope.fmtK;
     var fmtCost = function(v) { return v >= 10 ? '$'+v.toFixed(0) : v >= 1 ? '$'+v.toFixed(1) : '$'+v.toFixed(2); };
     var totalTok = entries.reduce(function(s, e) { return s + e[1].tokens; }, 0);
 
@@ -90,7 +97,7 @@ Periscope.registerWidget({
       var color = palette[i % palette.length];
 
       html += '<div class="model-row">' +
-        '<div class="model-name" title="' + name + '">' + name + '</div>' +
+        '<div class="model-name" title="' + escHtml(name) + '">' + escHtml(name) + '</div>' +
         '<div class="model-bar-wrap"><div class="model-bar" style="width:' + barPct + '%;background:' + color + '"></div></div>' +
         '<div class="model-tokens">' + fmtK(d.tokens) + '</div>' +
         '<div class="model-pct">' + pct + '%</div>' +
